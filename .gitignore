@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.coverage*
+traces/
+reports/
+!traces/examples/
+!reports/examples/
+workdir/
+.superpowers/
+.pytest_cache/
+dist/

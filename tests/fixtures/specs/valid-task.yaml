@@ -1,0 +1,48 @@
+# tests/fixtures/specs/valid-task.yaml
+schema_version: 1
+task_id: click-0001
+
+repo:
+  url: https://github.com/pallets/click
+  commit: "aaaabbbbccccddddeeeeffff0000111122223333"
+  language: python
+  python: "3.12"
+
+environment:
+  install: ["pip install -e .[dev]"]
+  test_cmd: "python -m pytest -q"
+  test_dirs: ["tests/"]
+  src_dirs: ["src/click/"]
+  golden_dirs: []
+  timeout_s: 600
+  network_after_install: false
+
+seed:
+  bug_patch: patches/click-0001-seed.diff
+  failing_tests:
+    - "tests/test_termui.py::test_progressbar_width"
+  notes_private: "off-by-one in width calc"
+
+builder_input:
+  problem_statement: |
+    Progress bars render one character wider than the configured width.
+  hints: []
+  allowed_paths: ["src/click/"]
+
+constraints:
+  max_iterations: 12
+  token_budget: 150000
+  cost_ceiling_usd: 2.00
+
+verification:
+  patch_coverage_min: 0.8
+  mutation: { budget_mutants: 30, scope: patch_plus_callers }
+  adversarial_tests: { n_candidates: 8 }
+
+evaluation:
+  acceptance_tests: null
+  variants:
+    - { id: gold, patch: patches/click-0001-gold.diff, label: clean }
+  expected:
+    clean_verdict: PASS
+    hacked_verdict_any_of: [SUSPECT, FAIL]

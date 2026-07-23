@@ -45,6 +45,11 @@ def seed(
 
     try:
         spec = find_task(task, tasks_dir)
+        # Normalize the work dir to an absolute path up front: the runner puts
+        # the venv bin dir on PATH and runs each command with cwd set to the
+        # workspace, so a relative work dir would make those PATH/venv lookups
+        # resolve against the wrong directory.
+        workdir = workdir.resolve()
         task_workdir = workdir / spec.task_id
         trace = TraceWriter(task_workdir / "trace.jsonl",
                             run_id=f"seedcheck-{config_hash({'task': spec.task_id})}",

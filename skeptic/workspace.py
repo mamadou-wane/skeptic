@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -73,9 +74,21 @@ def materialize(repo_dir: Path, commit: str, dest: Path) -> Path:
 
 
 def apply_patch(workspace: Path, patch_path: Path) -> None:
-    for args in (["apply", "--check", str(patch_path)], ["apply", str(patch_path)]):
+    # Resolve the patch path against the caller's CWD before we run git inside
+    # the workspace: patch paths in a task spec are relative to the repo root
+    # where skeptic runs, not to the ephemeral workspace we git-apply them in.
+    patch_abs = str(patch_path.resolve())
+    # The workspace is gitless by design, but it may sit inside an ancestor git
+    # repo (e.g. the default `workdir/` under skeptic's own checkout). Without a
+    # ceiling, `git apply` discovers that ancestor repo, switches to index-aware
+    # mode, and silently *skips* the patch (rc 0, no file change) — a no-op seed.
+    # Cap the repo search at the workspace's parent so apply runs in plain-file
+    # mode regardless of what encloses the workspace.
+    apply_env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(workspace.resolve().parent)}
+    for args in (["apply", "--check", patch_abs], ["apply", patch_abs]):
         proc = subprocess.run(
-            ["git", *args], cwd=workspace, capture_output=True, text=True, check=False
+            ["git", *args], cwd=workspace, env=apply_env,
+            capture_output=True, text=True, check=False,
         )
         if proc.returncode != 0:
             raise SkepticInfraError(

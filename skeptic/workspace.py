@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import hashlib
+import subprocess
+import tarfile
+import tempfile
+from pathlib import Path
+
+from skeptic.errors import SkepticInfraError
+
+
+def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), *args], capture_output=True, text=True, check=False
+    )
+    if check and proc.returncode != 0:
+        raise SkepticInfraError(
+            f"git {' '.join(args)} failed in {cwd} (exit {proc.returncode}):\n"
+            f"{proc.stderr[-1500:]}\n"
+            f"Skeptic needs git to manage pinned repo checkouts. "
+            f"Next: verify git is installed and the repo cache is intact, or "
+            f"delete the cache dir and re-run."
+        )
+    return proc
+
+
+def clone_pinned(url: str, commit: str, cache_dir: Path) -> Path:
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    name = hashlib.sha256(url.encode()).hexdigest()[:12]
+    repo = cache_dir / name
+    if not repo.exists():
+        proc = subprocess.run(
+            ["git", "clone", "--quiet", url, str(repo)],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode != 0:
+            raise SkepticInfraError(
+                f"git clone failed for {url} (exit {proc.returncode}):\n"
+                f"{proc.stderr[-1500:]}\n"
+                f"Skeptic caches one clone per repo URL. Next: check the URL and "
+                f"your network, then re-run."
+            )
+    has = _git(repo, "cat-file", "-e", f"{commit}^{{commit}}", check=False)
+    if has.returncode != 0:
+        _git(repo, "fetch", "--quiet", "origin", check=False)
+        has = _git(repo, "cat-file", "-e", f"{commit}^{{commit}}", check=False)
+    if has.returncode != 0:
+        raise SkepticInfraError(
+            f"Pinned commit {commit} not found in {url} (cache {repo}). "
+            f"Skeptic only runs against pinned commits so results reproduce. "
+            f"Next: fix repo.commit in the task spec, then re-run "
+            f"`skeptic seed --task <id> --check`."
+        )
+    return repo
+
+
+def materialize(repo_dir: Path, commit: str, dest: Path) -> Path:
+    dest.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(suffix=".tar") as tmp:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "archive", "--format=tar", "-o", tmp.name, commit],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode != 0:
+            raise SkepticInfraError(
+                f"git archive failed for {commit} (exit {proc.returncode}):\n"
+                f"{proc.stderr[-1500:]}\nNext: delete the repo cache and re-run."
+            )
+        with tarfile.open(tmp.name) as tar:
+            tar.extractall(dest, filter="data")
+    assert_no_git(dest)
+    return dest
+
+
+def apply_patch(workspace: Path, patch_path: Path) -> None:
+    for args in (["apply", "--check", str(patch_path)], ["apply", str(patch_path)]):
+        proc = subprocess.run(
+            ["git", *args], cwd=workspace, capture_output=True, text=True, check=False
+        )
+        if proc.returncode != 0:
+            raise SkepticInfraError(
+                f"Patch {patch_path.name} does not apply cleanly to the workspace "
+                f"(git {args[0]} {args[1] if len(args) > 1 else ''} "
+                f"exit {proc.returncode}):\n"
+                f"{proc.stderr[-1500:]}\n"
+                f"Skeptic requires every variant patch to apply to the seeded state "
+                f"(task invariant 3). Next: regenerate the patch against the current "
+                f"pinned commit, then re-run `skeptic seed --task <id> --check`."
+            )
+
+
+def assert_no_git(workspace: Path) -> None:
+    hits = list(workspace.rglob(".git"))
+    if hits:
+        raise SkepticInfraError(
+            f"Workspace {workspace} contains {hits[0]} — a workspace must never "
+            f"carry .git (the parent commit would leak the pristine fix to the "
+            f"Builder). Next: re-materialize via `git archive` (delete the "
+            f"workspace and re-run)."
+        )
+
+
+def removed_lines(patch_path: Path, min_chars: int = 12) -> list[str]:
+    out: list[str] = []
+    for line in patch_path.read_text().splitlines():
+        if line.startswith("-") and not line.startswith("---"):
+            content = line[1:]
+            if len(content.strip()) >= min_chars:
+                out.append(content)
+    return out
+
+
+def assert_text_absent(workspace: Path, snippets: list[str]) -> None:
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+        for snippet in snippets:
+            if snippet.strip() and snippet in text:
+                raise SkepticInfraError(
+                    f"Pristine text reachable from workspace: {path} contains "
+                    f"{snippet.strip()[:60]!r}. The hidden reference must not be "
+                    f"recoverable from the seeded tree. Next: adjust the seed "
+                    f"patch so replaced lines do not survive verbatim."
+                )

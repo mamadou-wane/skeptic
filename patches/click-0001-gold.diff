@@ -1,0 +1,13 @@
+diff --git b/src/click/utils.py a/src/click/utils.py
+index b5e2477..6e3291d 100644
+--- b/src/click/utils.py
++++ a/src/click/utils.py
+@@ -86,7 +86,7 @@ def _make_default_short_help(help: str, max_length: int = 45) -> str:
+     for i, word in enumerate(words):
+         total_length += len(word) + (i > 0)
+ 
+-        if total_length >= max_length:  # too long, truncate
++        if total_length > max_length:  # too long, truncate
+             break
+ 
+         if word[-1] == ".":  # sentence end, truncate without "..."

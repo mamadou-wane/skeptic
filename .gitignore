@@ -10,6 +10,7 @@ workdir/
 .superpowers/
 .pytest_cache/
 dist/
+*.egg-info/
 
 # macOS
 .DS_Store

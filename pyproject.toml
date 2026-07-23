@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skeptic"
+version = "0.1.0"
+description = "Your coding agent says the tests pass. Skeptic checks whether that means anything."
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "defusedxml>=0.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.2", "ruff>=0.5", "coverage>=7.5"]
+
+[project.scripts]
+skeptic = "skeptic.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["skeptic*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["docker: requires a running Docker daemon (auto-skipped otherwise)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

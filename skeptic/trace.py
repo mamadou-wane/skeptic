@@ -70,5 +70,5 @@ def read_trace(path: Path) -> tuple[list[dict], int]:
 
 def write_manifest(path: Path, manifest: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = {"schema_version": SCHEMA_VERSION, **manifest}
+    data = {**manifest, "schema_version": SCHEMA_VERSION}
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")

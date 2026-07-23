@@ -46,3 +46,11 @@ def test_manifest_written_with_schema_version(tmp_path):
     data = json.loads(p.read_text())
     assert data["schema_version"] == 1
     assert data["run_id"] == "r_1"
+
+
+def test_manifest_injected_schema_version_wins_over_caller_key(tmp_path):
+    p = tmp_path / "manifest.json"
+    write_manifest(p, {"schema_version": 99, "run_id": "r_2"})
+    data = json.loads(p.read_text())
+    assert data["schema_version"] == 1
+    assert data["run_id"] == "r_2"

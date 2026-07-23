@@ -26,7 +26,10 @@ include = ["skeptic*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["docker: requires a running Docker daemon (auto-skipped otherwise)"]
+markers = [
+  "docker: requires a running Docker daemon (auto-skipped otherwise)",
+  "slow: builds a real venv and installs pytest from PyPI (network)",
+]
 
 [tool.ruff]
 line-length = 100

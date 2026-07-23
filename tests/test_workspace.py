@@ -7,6 +7,7 @@ from skeptic.errors import SkepticInfraError
 from skeptic.workspace import (
     apply_patch,
     assert_no_git,
+    assert_pristine_unreachable,
     assert_text_absent,
     clone_pinned,
     materialize,
@@ -74,7 +75,7 @@ def test_apply_patch_and_removed_lines(source_repo, tmp_path):
     apply_patch(ws, patch)
     assert "a + b + 1" in (ws / "mod.py").read_text()
 
-    pristine = removed_lines(patch)
+    pristine = removed_lines(patch, min_chars=8)
     assert pristine == ["    return a + b"]
     with pytest.raises(SkepticInfraError, match="mod.py"):
         assert_text_absent(ws, ["a + b + 1"])  # present -> must raise
@@ -98,3 +99,35 @@ def test_assert_no_git_catches_planted_git_dir(tmp_path):
     (ws / ".git").mkdir(parents=True)
     with pytest.raises(SkepticInfraError, match=r"\.git"):
         assert_no_git(ws)
+
+
+def _additive_seed_patch(tmp_path: Path) -> Path:
+    # Removed line has 16 non-whitespace chars (>= default min_chars=12).
+    patch = tmp_path / "seed.diff"
+    patch.write_text(
+        "--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,2 @@\n"
+        "-    return alpha + beta\n+    return alpha + beta + 1\n"
+    )
+    return patch
+
+
+def test_assert_pristine_unreachable_allows_additive_seed(tmp_path):
+    # The pristine line is not a COMPLETE line anywhere in the tree: only the
+    # buggy replacement (`... + 1`) is present, so this must not raise.
+    patch = _additive_seed_patch(tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "mod.py").write_text("def add(alpha, beta):\n    return alpha + beta + 1\n")
+    assert_pristine_unreachable(ws, patch)  # does not raise
+
+
+def test_assert_pristine_unreachable_catches_verbatim_copy(tmp_path):
+    # A leftover copy of the exact pristine line elsewhere in the tree must
+    # still be caught, and the error must name the offending file.
+    patch = _additive_seed_patch(tmp_path)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "mod.py").write_text("def add(alpha, beta):\n    return alpha + beta + 1\n")
+    (ws / "mod.py.bak").write_text("def add(alpha, beta):\n    return alpha + beta\n")
+    with pytest.raises(SkepticInfraError, match="mod.py.bak"):
+        assert_pristine_unreachable(ws, patch)

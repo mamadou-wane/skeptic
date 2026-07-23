@@ -105,7 +105,7 @@ def removed_lines(patch_path: Path, min_chars: int = 12) -> list[str]:
     for line in patch_path.read_text().splitlines():
         if line.startswith("-") and not line.startswith("---"):
             content = line[1:]
-            if len(content.strip()) >= min_chars:
+            if len("".join(content.split())) >= min_chars:
                 out.append(content)
     return out
 
@@ -125,4 +125,36 @@ def assert_text_absent(workspace: Path, snippets: list[str]) -> None:
                     f"{snippet.strip()[:60]!r}. The hidden reference must not be "
                     f"recoverable from the seeded tree. Next: adjust the seed "
                     f"patch so replaced lines do not survive verbatim."
+                )
+
+
+def assert_pristine_unreachable(workspace: Path, patch_path: Path, min_chars: int = 12) -> None:
+    """Raise SkepticInfraError if any substantive pristine line the seed patch
+    removed survives as a COMPLETE line (whitespace-normalized) anywhere in the
+    seeded workspace. Whole-line matching (owner decision 2026-07-23): the seed's
+    own buggy replacement line is a different complete line, so an additive edit
+    (x -> x - 1) does not trip this, while a verbatim leftover copy (backup file,
+    commented-out original, docstring) is still caught."""
+    pristine = {" ".join(line.split()) for line in removed_lines(patch_path, min_chars)}
+    if not pristine:
+        return
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text()
+        except UnicodeDecodeError:
+            text = path.read_text(errors="replace")  # scan non-UTF-8 files too
+        except OSError:
+            continue
+        for raw in text.splitlines():
+            norm = " ".join(raw.split())
+            if norm and norm in pristine:
+                raise SkepticInfraError(
+                    f"Pristine line reachable in the seeded tree: {path} contains "
+                    f"the complete line {norm[:60]!r}, which the seed patch removed. "
+                    f"Skeptic needs the pristine reference to be unrecoverable from "
+                    f"the seeded tree, or the Builder could copy the fix back. Next: "
+                    f"adjust the seed patch so removed lines do not survive verbatim "
+                    f"as a complete line elsewhere."
                 )

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
 import time
-import venv as venv_mod
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +31,15 @@ def _run(cmd: list[str], cwd: Path, timeout_s: int, env: dict[str, str] | None) 
         dur = int((time.monotonic() - start) * 1000)
         out = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
         return ExecResult(-1, out, f"command timed out after {timeout_s}s", dur)
+    except FileNotFoundError as exc:
+        raise SkepticInfraError(
+            f"Executable {cmd[0]!r} not found on the runner PATH "
+            f"(full command: {cmd!r}).\n"
+            f"Skeptic needed it to run the sandboxed command above. "
+            f"Next: check the executable name in the task spec's "
+            f"environment.install/test_cmd, or ensure it is installed in "
+            f"the venv/image."
+        ) from exc
 
 
 def docker_available() -> bool:
@@ -73,7 +82,30 @@ class VenvRunner:
 
     def setup(self, install_cmds: list[str], python: str = "python3.12") -> None:
         if not self.venv_dir.exists():
-            venv_mod.EnvBuilder(with_pip=True).create(self.venv_dir)
+            resolved = shutil.which(python)
+            if resolved is None:
+                raise SkepticInfraError(
+                    f"Interpreter {python!r} not found on PATH. "
+                    f"Skeptic builds the verify venv with the interpreter "
+                    f"named in repo.python. "
+                    f"Next: install {python!r}, or fix repo.python in the "
+                    f"task spec."
+                )
+            proc = subprocess.run(
+                [resolved, "-m", "venv", str(self.venv_dir)],
+                capture_output=True, text=True, check=False,
+            )
+            if proc.returncode != 0:
+                raise SkepticInfraError(
+                    f"venv creation failed for {python!r} ({resolved}) "
+                    f"(exit {proc.returncode}).\n"
+                    f"stderr tail:\n{proc.stderr[-2000:]}\n"
+                    f"Skeptic needs a working venv to install and run the "
+                    f"target repo's tests. "
+                    f"Next: check {resolved} is a working interpreter, or "
+                    f"fix repo.python in the task spec, then re-run "
+                    f"`skeptic seed --task <id> --check`."
+                )
         for cmd in install_cmds:
             result = self.exec(cmd, timeout_s=900)
             if result.exit_code != 0:

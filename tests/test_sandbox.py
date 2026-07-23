@@ -2,7 +2,7 @@ import shutil
 
 import pytest
 
-from skeptic.errors import VenvBuildRefused
+from skeptic.errors import SkepticInfraError, VenvBuildRefused
 from skeptic.sandbox import (
     VenvRunner,
     docker_available,
@@ -52,6 +52,17 @@ def test_venv_runner_refuses_build_stage(venv_runner):
     with pytest.raises(VenvBuildRefused):
         venv_runner.build_stage_guard()
     assert venv_runner.isolation == "venv-reduced-isolation"
+
+
+def test_venv_exec_missing_executable_raises_infra_error(venv_runner):
+    with pytest.raises(SkepticInfraError, match="definitely_not_a_real_binary_zzz"):
+        venv_runner.exec("definitely_not_a_real_binary_zzz --x", timeout_s=5)
+
+
+def test_venv_setup_unknown_python_raises_infra_error(tmp_path):
+    runner = VenvRunner(workspace=tmp_path, venv_dir=tmp_path / "v")
+    with pytest.raises(SkepticInfraError, match="python-does-not-exist-9x9"):
+        runner.setup([], python="python-does-not-exist-9x9")
 
 
 @needs_docker

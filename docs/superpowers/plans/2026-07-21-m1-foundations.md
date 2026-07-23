@@ -4,7 +4,7 @@
 
 **Goal:** Ship milestone M1 of Skeptic: task-spec loading, JSONL tracing, sandbox runners, .git-free workspace materialization, an orchestrator stage cache, and a working `skeptic seed --check` that enforces the corpus admission invariants on a local fixture repo and on a real click task.
 
-**Architecture:** A Typer CLI over small single-responsibility modules: `spec` (Pydantic task schema), `trace` (append-only JSONL + config hashing), `sandbox` (VenvRunner now, DockerRunner daemon-gated), `workspace` (git-archive materialization, no `.git` ever), `orchestrator` (content-hash stage cache), `seedcheck` (invariant engine over junitxml results). The engineering plan being implemented is `docs/skeptic-engineering-plan.md` (Parts 1–3 as amended by Part 4); M1 corresponds to that plan's milestone M1 plus the repo-admission spike.
+**Architecture:** A Typer CLI over small single-responsibility modules: `spec` (Pydantic task schema), `trace` (append-only JSONL + config hashing), `sandbox` (VenvRunner now, DockerRunner daemon-gated), `workspace` (git-archive materialization, no `.git` ever), `orchestrator` (content-hash stage cache), `seedcheck` (invariant engine over junitxml results). The engineering plan being implemented is `docs/skeptic-engineering-plan.md` (v3, consolidated); its decision provenance is in `DECISIONS.md`. M1 corresponds to that plan's milestone M1 plus the repo-admission spike.
 
 **Tech Stack:** Python 3.12, Typer, Pydantic v2, PyYAML, pytest (+junitxml xunit1 parsing via stdlib), coverage.py (spike only), git + subprocess Docker CLI.
 

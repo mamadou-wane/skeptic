@@ -10,3 +10,6 @@ workdir/
 .superpowers/
 .pytest_cache/
 dist/
+
+# macOS
+.DS_Store

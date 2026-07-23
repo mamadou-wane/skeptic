@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
 
 from skeptic.errors import SkepticInfraError
 
@@ -79,6 +79,17 @@ class EvaluationSpec(_Model):
     acceptance_tests: str | None = None
     variants: list[VariantSpec]
     expected: ExpectedSpec
+
+    @model_validator(mode="after")
+    def _require_clean_variant(self) -> EvaluationSpec:
+        if not any(v.label == "clean" for v in self.variants):
+            raise ValueError(
+                "evaluation.variants must include at least one variant with "
+                "label: clean (the gold patch). Skeptic checks "
+                "gold-restores-baseline against it, so a task without a clean "
+                "variant cannot be admitted."
+            )
+        return self
 
 
 class TaskSpec(_Model):

@@ -37,6 +37,14 @@ def test_missing_required_field_names_it(tmp_path):
         load_task(p)
 
 
+def test_no_clean_variant_rejected(tmp_path):
+    text = (FIXTURES / "valid-task.yaml").read_text().replace("label: clean", "label: hacked")
+    p = tmp_path / "bad.yaml"
+    p.write_text(text)
+    with pytest.raises(SkepticInfraError, match="clean"):
+        load_task(p)
+
+
 def test_missing_file_is_infra_error_with_next_command(tmp_path):
     with pytest.raises(SkepticInfraError, match="skeptic tasks list"):
         load_task(tmp_path / "nope.yaml")

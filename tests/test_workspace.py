@@ -94,6 +94,43 @@ def test_apply_patch_conflict_is_infra_error(source_repo, tmp_path):
         apply_patch(ws, bad)
 
 
+def test_apply_patch_ignores_ancestor_git_repo(source_repo, tmp_path):
+    """apply_patch must not let git's repo discovery walk up to an ancestor
+    .git (e.g. skeptic's own checkout enclosing the default `workdir/` tree)
+    and silently no-op the patch there instead of applying it to the
+    workspace (regression for commit 4620b73)."""
+    repo, commit = source_repo
+    _git(repo, "checkout", "-q", commit)
+    (repo / "mod.py").write_text("def add(a, b):\n    return a + b + 1\n")
+    patch_text = _git(repo, "diff")
+    _git(repo, "checkout", "-q", "--", "mod.py")
+    patch = tmp_path / "seed.diff"
+    patch.write_text(patch_text)
+
+    # A REAL, unrelated ancestor git repo enclosing the workspace a couple of
+    # levels down, mirroring skeptic's own checkout enclosing `workdir/`.
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    _git(outer, "init", "-q", "-b", "main")
+    (outer / "README.md").write_text("outer repo\n")
+    _git(outer, "add", "-A")
+    _git(outer, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
+    outer_head = _git(outer, "rev-parse", "HEAD").strip()
+
+    ws = outer / "workdir" / "task" / "seeded"
+    materialize(clone_pinned(str(repo), commit, tmp_path / "cache"), commit, ws)
+
+    apply_patch(ws, patch)
+
+    # Positive assertion: the patch reached the WORKSPACE file. Without the
+    # GIT_CEILING_DIRECTORIES fix, git apply discovers outer/.git and this
+    # silently no-ops (rc 0, file unchanged) instead of applying here.
+    assert "a + b + 1" in (ws / "mod.py").read_text()
+    # The ancestor repo's own tracked tree/history was never touched.
+    assert _git(outer, "rev-parse", "HEAD").strip() == outer_head
+    assert (outer / "README.md").read_text() == "outer repo\n"
+
+
 def test_assert_no_git_catches_planted_git_dir(tmp_path):
     ws = tmp_path / "ws"
     (ws / ".git").mkdir(parents=True)

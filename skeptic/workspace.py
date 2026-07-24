@@ -65,7 +65,9 @@ def materialize(repo_dir: Path, commit: str, dest: Path) -> Path:
         if proc.returncode != 0:
             raise SkepticInfraError(
                 f"git archive failed for {commit} (exit {proc.returncode}):\n"
-                f"{proc.stderr[-1500:]}\nNext: delete the repo cache and re-run."
+                f"{proc.stderr[-1500:]}\nSkeptic needs a clean archive of the "
+                f"pinned commit to materialize a gitless workspace. Next: "
+                f"delete the repo cache and re-run."
             )
         with tarfile.open(tmp.name) as tar:
             tar.extractall(dest, filter="data")

@@ -114,15 +114,19 @@ def load_task(path: Path) -> TaskSpec:
         data = yaml.safe_load(path.read_text())
     except yaml.YAMLError as exc:
         raise SkepticInfraError(
-            f"Task spec {path} is not valid YAML ({exc}). Fix the file, then "
-            f"re-run `skeptic seed --task <id> --check`."
+            f"Task spec {path} is not valid YAML ({exc}). Skeptic needs valid "
+            f"YAML to parse the file into a TaskSpec before it can run "
+            f"anything. Fix the file, then re-run "
+            f"`skeptic seed --task <id> --check`."
         ) from exc
     try:
         return TaskSpec.model_validate(data)
     except ValidationError as exc:
         raise SkepticInfraError(
             f"Task spec {path} failed validation:\n{exc}\n"
-            f"Fix the fields above, then re-run `skeptic seed --task <id> --check`."
+            f"Skeptic needs every required field present and correctly typed "
+            f"before it can run the task. Fix the fields above, then re-run "
+            f"`skeptic seed --task <id> --check`."
         ) from exc
 
 

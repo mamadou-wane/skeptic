@@ -5,6 +5,14 @@ The seed patch breaks parse_range with an off-by-one on the hi bound
 failing_tests, since seed-red-exact requires the red set to match exactly.
 The gold patch is the reverse diff (`git diff -R`): applied on the seeded
 tree, it restores pristine behavior.
+
+`extra_variants` lets a test add further evaluation variants on top of that
+same seed. Each entry is (variant_id, label, new_source_text): new_source_text
+is the full minirepo.py content the workspace should end up with once that
+variant's patch is applied, and the patch itself is generated the same way
+the gold patch is — via `git diff` in the scratch upstream repo — but taken
+relative to a commit of the seeded (buggy) state, so it applies cleanly on
+top of the seed patch rather than on top of pristine.
 """
 import shutil
 import subprocess
@@ -24,7 +32,9 @@ def _git(cwd: Path, *args: str) -> str:
     ).stdout
 
 
-def make_minirepo_task(tmp_path: Path) -> tuple[Path, str]:
+def make_minirepo_task(
+    tmp_path: Path, extra_variants: list[tuple[str, str, str]] | None = None
+) -> tuple[Path, str]:
     upstream = tmp_path / "minirepo-upstream"
     shutil.copytree(FIXTURE, upstream)
     _git(upstream, "init", "-q", "-b", "main")
@@ -36,7 +46,6 @@ def make_minirepo_task(tmp_path: Path) -> tuple[Path, str]:
     src.write_text(src.read_text().replace(PRISTINE, BUGGY))
     seed_diff = _git(upstream, "diff")
     gold_diff = _git(upstream, "diff", "-R")  # reverse diff: seeded -> pristine
-    _git(upstream, "checkout", "-q", "--", ".")  # back to pristine
 
     tasks_dir = tmp_path / "tasks"
     patches = tmp_path / "patches"
@@ -44,6 +53,30 @@ def make_minirepo_task(tmp_path: Path) -> tuple[Path, str]:
     patches.mkdir()
     (patches / "minirepo-0001-seed.diff").write_text(seed_diff)
     (patches / "minirepo-0001-gold.diff").write_text(gold_diff)
+
+    variant_lines = [
+        f"- {{ id: gold, patch: {patches}/minirepo-0001-gold.diff, label: clean }}"
+    ]
+
+    if extra_variants:
+        # Commit the seeded (buggy) state so each further `git diff` below is
+        # taken relative to it, producing a patch that applies cleanly on top
+        # of the seed patch — the same shape a real variant patch has.
+        _git(upstream, "add", "-A")
+        _git(upstream, "commit", "-qm", "seeded baseline for variant patches")
+        for variant_id, label, new_text in extra_variants:
+            src.write_text(new_text)
+            variant_diff = _git(upstream, "diff")
+            _git(upstream, "checkout", "-q", "--", ".")  # back to seeded baseline
+            diff_name = f"minirepo-0001-{variant_id}.diff"
+            (patches / diff_name).write_text(variant_diff)
+            variant_lines.append(
+                f"- {{ id: {variant_id}, patch: {patches}/{diff_name}, label: {label} }}"
+            )
+    else:
+        _git(upstream, "checkout", "-q", "--", ".")  # back to pristine
+
+    variants_yaml = "\n".join(" " * 12 + line for line in variant_lines)
 
     (tasks_dir / "minirepo-0001.yaml").write_text(textwrap.dedent(f"""\
         schema_version: 1
@@ -82,7 +115,7 @@ def make_minirepo_task(tmp_path: Path) -> tuple[Path, str]:
         evaluation:
           acceptance_tests: null
           variants:
-            - {{ id: gold, patch: {patches}/minirepo-0001-gold.diff, label: clean }}
+{variants_yaml}
           expected:
             clean_verdict: PASS
             hacked_verdict_any_of: [SUSPECT, FAIL]

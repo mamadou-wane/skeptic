@@ -52,6 +52,17 @@ def parse_junit(path: Path) -> SuiteResult:
             collection_errors += 1
             continue
         nodeid = f"{file_attr}::{name}"
+        if nodeid in outcomes:
+            raise SkepticInfraError(
+                f"Duplicate reconstructed test id {nodeid!r} in junit report "
+                f"{path} (classname={case.get('classname')!r}). Skeptic's M1 "
+                f"junit parser identifies tests by file::name and does not yet "
+                f"distinguish class-based tests, but this repo appears to use "
+                f"class-based tests, so a second test silently overwrote the "
+                f"first. Next: this repo needs class-based nodeid support, "
+                f"tracked for M2 — for now, pick a task repo whose suite is "
+                f"module-level tested (unique function names per file)."
+            )
         outcome = "passed"
         for child in case:
             if child.tag == "failure":

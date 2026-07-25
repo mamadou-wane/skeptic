@@ -9,6 +9,8 @@ from skeptic.trace import TraceWriter
 
 
 class StageCache:
+    """Content-keyed cache for stage results. Unwired until M2: DECISIONS.md #67."""
+
     def __init__(self, cache_dir: Path) -> None:
         self.cache_dir = cache_dir
         cache_dir.mkdir(parents=True, exist_ok=True)

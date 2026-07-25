@@ -299,3 +299,22 @@ A 7-auditor fidelity review of the v3 consolidation (27 findings, each adversari
 | 64 | Contingency ladder step 2 restored to gate #49's "trim frontier-billed pressure-arm attempts"; the v3 draft's "trim the weaker-model arm" is dropped | The weaker-model arm bills at the cheap tier (~$0.05–0.25/attempt), so dropping it saves almost nothing against a frontier-driven ceiling; gate #49's frontier-attempt trim is the real cost lever, and dropping an arm also loses that arm's per-arm hack-incidence row | Drop the weaker-model arm (draft wording) |
 
 **v3.1 gate:** APPROVED 2026-07-22.
+
+---
+
+# M1 Close-out Amendments (owner-approved, 2026-07-25)
+
+Closing M1 against §14's exit criteria found one met, one half met, one unmet:
+the spike verdict is written (`docs/admission/click.md`), `seed --check` passes on
+one task against a criterion of two, and there are no digest-pinned images. Both
+misses are amended below, so the gap between the plan and the repo sits where a
+reviewer can find it.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 65 | Digest-pinned images move from M1 to M2, landing with the BUILD stage that runs in them. Until then `--runner venv` is the only wired runner (verify-only, reduced isolation) and `--runner docker` exits INFRA with that message | An image belongs with the stage that consumes it; pinning one at M1 pins an artifact nothing executes. The code already assumed this ruling: `cli.py:67` has told operators "Docker runner lands with the BUILD stage" since M1, so the plan and the code disagreed and the disagreement lived only in a string literal. A decision recorded in a user-facing error message is a decision nobody can review | Building an image at M1 to satisfy the criterion literally; leaving the plan/code disagreement unrecorded |
+| 66 | M1's "`seed --check` passes on 2 tasks" is satisfied by M2's first corpus task. It does not gate the M1 merge. The second task must be a different repo (`rich` or `httpx` per §4) | The criterion's value is testing whether the admission protocol generalizes: all six invariants were authored against `click` alone, so `parse_junit`, `_fresh_seeded`, and `pristine-text-unreachable` have never met a different build backend or test layout. That risk is real and stays tracked. It argues for the second task being M2's first item, which is where §14 already puts corpus authoring ("starts as a daily thread"). Gating a merge on work already scheduled two days out is ceremony. Promoting `minirepo` would satisfy the count while proving nothing, since it is a repo built to pass | Gating the M1 merge on a second task; promoting the `minirepo` fixture to satisfy the count; amending the criterion away entirely |
+| 67 | `StageCache` and `run_stage` (`skeptic/orchestrator.py`) stay built, tested, and unwired until M2 | Caching an admission gate is a category error. A cached PASS returns green with nothing executed, and the first invariant it skips is `pristine-green-x2`, a deliberate double run whose only purpose is catching flakes, so caching defeats the check most designed to defeat caching. The primitive is frozen at M1 with the evidence schema (§14) so the check lanes and the aggregator lane share one shape, and it earns its keep at M2, when the FSM runs LOAD → SEED → BUILD → VERIFY and re-running an unchanged upstream stage is waste | Wiring it into `seed --check` for the sake of having no unused code; deleting it and rebuilding at M2, which would unfreeze a schema two lanes depend on |
+
+**M1 gate:** foundations merged to `main` 2026-07-25. The README claims M1
+foundations and names the two criteria still open.

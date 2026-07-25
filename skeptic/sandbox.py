@@ -119,13 +119,26 @@ class VenvRunner:
 
     def exec(self, cmd: str, timeout_s: int, env: dict[str, str] | None = None) -> ExecResult:
         venv_bin = str(self.venv_dir / "bin")
+        # COLUMNS is deliberately absent. Pinning it looks like determinism and
+        # is not: a suite that renders to a terminal width sets that width
+        # explicitly, while a suite that probes terminal-size *fallback* is
+        # testing the behavior when COLUMNS is unset, and pinning it fails those
+        # tests for a reason unrelated to any seeded bug. Measured on both
+        # corpus repos: rich fails 3 tests with COLUMNS pinned, and click's
+        # 1939 pass identically either way, so the pin cost coverage and bought
+        # nothing (DECISIONS.md #68).
+        #
+        # Locale and timezone ARE pinned, because those change program output
+        # without any test opting in.
         base_env = {
             "PATH": f"{venv_bin}:/usr/bin:/bin",
             "VIRTUAL_ENV": str(self.venv_dir),
             "HOME": str(self.workspace),
             "TERM": "dumb",
-            "COLUMNS": "80",
             "NO_COLOR": "1",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "TZ": "UTC",
         }
         if env:
             base_env.update(env)

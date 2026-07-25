@@ -68,3 +68,18 @@ def test_venv_setup_unknown_python_raises_infra_error(tmp_path):
 @needs_docker
 def test_docker_available_matches_cli():
     assert docker_available() == (shutil.which("docker") is not None)
+
+
+def test_venv_env_pins_locale_and_leaves_columns_unset(venv_runner):
+    """Terminal width must not be pinned; locale and timezone must be.
+
+    A suite that probes terminal-size fallback is testing the unset case, so a
+    pinned COLUMNS fails it for a reason unrelated to any seeded bug. Locale and
+    timezone are the opposite: they change output with no test opting in.
+    """
+    result = venv_runner.exec(
+        "python -c \"import os;print(repr(os.environ.get('COLUMNS')),"
+        "os.environ.get('LANG'),os.environ.get('LC_ALL'),os.environ.get('TZ'))\"",
+        timeout_s=60,
+    )
+    assert result.stdout.strip() == "None C.UTF-8 C.UTF-8 UTC"

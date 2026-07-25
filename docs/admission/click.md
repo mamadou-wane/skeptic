@@ -1,4 +1,4 @@
-# click — repo admission report
+# click · repo admission report
 
 Task: `click-0001` · first real-corpus admission (M1 exit criterion).
 
@@ -29,7 +29,7 @@ Python: 3.12.13 · install: `pip install -q -e . pytest` · test: `python -m pyt
 One-line off-by-one in `src/click/_make_default_short_help` (the private helper
 that condenses a command's summary help). The length-vs-limit test uses `>`;
 the seed changes it to `>=`, so a summary whose measured length lands exactly on
-the limit is truncated with an ellipsis instead of kept whole. Additive edit
+the limit is truncated with an ellipsis when it should be kept whole. Additive edit
 (`>` → `>=`), so the removed pristine line does not survive as a complete line
 anywhere in the seeded tree (whole-line `pristine-text-unreachable` invariant).
 
@@ -52,7 +52,7 @@ restores pristine, byte-for-byte).
 - **Own config interference.** `pyproject.toml` ships both pytest and coverage
   config. `[tool.pytest.ini_options]` sets `addopts = "-m 'not stress'"`,
   `filterwarnings = ["error"]`, `testpaths = ["tests"]`; these DO apply to the
-  harness runs (stress stays deselected — 31000 cases — and warnings-as-errors
+  harness runs (stress stays deselected, 31000 cases, and warnings-as-errors
   held the suite green). `[tool.coverage.run]` sets `branch = true`,
   `source = ["click", "tests"]`, plus `[tool.coverage.paths]`/`[report]`. That
   coverage block would be auto-discovered by a bare `coverage run`, but pointing
@@ -92,11 +92,16 @@ Reproduced twice from a clean `workdir/`, exit 0 both times. Whole run
 
 - **Warnings are errors.** `filterwarnings = ["error"]` means any new
   dependency/interpreter deprecation will redden click's suite. Pin the
-  interpreter (3.12) and treat a new warning as a re-pin trigger, not a bug.
+  interpreter (3.12) and treat a new warning as a re-pin trigger.
 - **Runner env is TTY-hostile and that is fine.** The venv runner exports
-  `TERM=dumb`, `COLUMNS=80`, `NO_COLOR=1`, `HOME=<workspace>`. None of click's
-  terminal-touching tests flaked under it; the chosen seed is pure string logic
-  with no TTY dependence.
+  `TERM=dumb`, `NO_COLOR=1`, `HOME=<workspace>`, `LANG`/`LC_ALL=C.UTF-8`, and
+  `TZ=UTC`. None of click's terminal-touching tests flaked under it; the chosen
+  seed is pure string logic with no TTY dependence.
+  *Amended 2026-07-25:* this list previously included `COLUMNS=80`. Admitting
+  rich showed the pin fails terminal-size fallback tests, and click's 1939 pass
+  identically with or without it, so it was removed and the locale/timezone pins
+  added (DECISIONS.md #68). Click's measurements above are unaffected: re-verified
+  green after the change.
 - **Harness robustness fixes were required** to admit the first real repo via
   the CLI (they were latent because every prior test used absolute `tmp_path`
   workspaces outside any git repo). Three defects, all fixed in this change:
@@ -107,7 +112,7 @@ Reproduced twice from a clean `workdir/`, exit 0 both times. Whole run
      The CLI now resolves `--workdir` to an absolute path up front.
   3. The default `workdir/` lives inside skeptic's own git repo, so `git apply`
      discovered the ancestor `.git`, switched to index-aware mode, and silently
-     **skipped** the patch (rc 0, no change) — a no-op seed. `apply_patch` now
+     **skipped** the patch (rc 0, no change), a no-op seed. `apply_patch` now
      caps repo discovery with `GIT_CEILING_DIRECTORIES`. (The invariant engine
      caught the no-op loudly via `seed-red-exact` + `pristine-text-unreachable`;
      it was never a silent pass.)

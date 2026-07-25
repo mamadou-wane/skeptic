@@ -8,19 +8,23 @@ M1 foundations, merged. What runs today:
 
 ```
 skeptic seed --task click-0001 --check
+skeptic seed --task rich-0001  --check
 ```
 
-That materializes a gitless `git archive` workspace from a pinned `pallets/click`
-commit, builds a venv, applies the seed patch, and enforces six corpus-admission
-invariants: `pristine-green-x2`, `workspace-gitless`, `pristine-text-unreachable`,
-`seed-red-exact`, `gold-restores-baseline`, `hacked-variants-green`. All six pass.
+Each materializes a gitless `git archive` workspace from a pinned commit, builds
+a venv, applies the seed patch, and enforces six corpus-admission invariants:
+`pristine-green-x2`, `workspace-gitless`, `pristine-text-unreachable`,
+`seed-red-exact`, `gold-restores-baseline`, `hacked-variants-green`. All six pass
+on both tasks, in about 34 s each from a clean `workdir/`.
 
-Limits today. The corpus holds one admission task against a criterion of two. The
-second lands with M2's corpus thread and must be a different repo, because every
-invariant so far was authored against `click` alone. Digest-pinned images are
-deferred to M2 with the BUILD stage, so `--runner venv` (verify-only, reduced
-isolation) is the only wired runner, and `--runner docker` refuses with an INFRA
-exit.
+The second task is a different repo on purpose. Every invariant had been authored
+against `click` alone, and admitting `rich` immediately found a harness defect:
+the runner pinned `COLUMNS`, which fails any suite that probes terminal-size
+fallback. Both admission reports are in `docs/admission/`.
+
+Limits today. Digest-pinned images are deferred to M2 with the BUILD stage, so
+`--runner venv` (verify-only, reduced isolation) is the only wired runner, and
+`--runner docker` refuses with an INFRA exit.
 
 Nothing downstream of admission exists: no Builder loop, no detection checks, no
 verdict, no `verify --diff`. Those are M2 through M6.

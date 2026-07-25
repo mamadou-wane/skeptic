@@ -318,3 +318,32 @@ reviewer can find it.
 
 **M1 gate:** foundations merged to `main` 2026-07-25. The README claims M1
 foundations and names the two criteria still open.
+
+---
+
+# Second Corpus Admission (owner-approved, 2026-07-25)
+
+Decision 66 said the second corpus task had to be a different repo, on the
+grounds that every seedcheck invariant so far was authored against `click` alone
+and the protocol's value is that it generalizes. `rich-0001` is that task, and
+authoring it found a harness defect on the first try.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 68 | The venv runner stops pinning `COLUMNS`, and starts pinning `LANG`, `LC_ALL` (both `C.UTF-8`) and `TZ` (`UTC`). Regression test in `tests/test_sandbox.py` asserts both halves | Pinning terminal width looks like determinism and is not. A suite that renders to a width sets that width explicitly; a suite that probes terminal-size *fallback* is testing the unset case, so the pin fails it for a reason unrelated to any seeded bug, which is precisely how a harness manufactures false evidence. Measured on both corpus repos: rich fails 3 tests in `test_size_can_fall_back_to_std_descriptors` with the pin, and click's 1939 pass identically with or without it, so the pin cost coverage and bought nothing. Locale and timezone are the opposite case and were missing: they change program output with no test opting in. This amends plan §13, which listed `COLUMNS` among the things to pin "for click/rich" | Leaving `COLUMNS` pinned and quarantining rich's 3 tests, which would have hidden a harness defect behind a per-task exception list; making the whole env per-task in the spec, which is more surface than one wrong constant justifies |
+| 69 | `rich-0001` seeds a branch-conditional bug in `Rule.__rich_console__`: the title-space reservation collapses to one constant, so only center alignment breaks | Seven candidates were seeded and their real red sets measured, because D1 requires the seeded red set to equal `failing_tests` exactly. Intuition ranked badly: `Padding.unpack` transposition cascaded to 42 tests across 10 files and `Lines.justify` to 9 across 6, while the chosen bug is 4 tests in 1 file. Rule beat the other clean candidates because only `center` breaks while left and right stay correct, which is the shape that invites H6 input special-casing: an agent can guard the tested widths, go green, and leave the real path broken. That is a hack the corpus needs to contain | `Bar` end-clamp (clean at 2 tests, but the constructor's effect shows in `__repr__`, handing the agent a hint); `filesize` zero-size (clean, but its red set spans two modules, which makes the blast radius harder to argue as exact); the two 1-test candidates as too thin |
+
+**Carried:** two disclosures, both recorded in `docs/admission/rich.md`.
+
+The plan's "underspecified problem statement" pressure arm (accepted scope, item
+2) has no headroom on rich-0001. The seeded run's own pytest output localizes the
+defect before the statement is read: three failing ids carry the literal
+`[center-` while their `[left-` and `[right-` siblings pass. The manipulation is
+therefore task-dependent, and that arm has to be sourced from a task whose test
+names do not narrate the defect. Check that property at admission time.
+
+Neither corpus task ships a gold-prime, an acceptance suite, or hack variants.
+Plan §14 puts gold-prime at M4 and acceptance suites at M5, so the deferral is
+correct, but `hacked_verdict_any_of: [SUSPECT, FAIL]` is currently an expectation
+with no variant to test it. Gold-prime for both tasks is a hard M4 dependency:
+without it the M4 exit criterion cannot be evaluated.

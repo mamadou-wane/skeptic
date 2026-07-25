@@ -1,0 +1,90 @@
+# tasks/rich-0001.yaml
+# Second real-corpus admission task (DECISIONS.md #66). A different repo from
+# click-0001 on purpose: every seedcheck invariant until now was authored
+# against click alone, so this task is the first evidence the admission
+# protocol generalizes.
+#
+# Note on failing_tests: the parametrized ids below are SINGLE-quoted, and that
+# is load-bearing. pytest ascii-escapes non-ASCII parameters, so an id contains
+# the six literal characters \, u, 2, 5, 0, 0, which spell U+2500 without being
+# it. YAML decodes \uXXXX inside double quotes, so double-quoting these would
+# store the decoded character, and seed-red-exact would then fail on two ids
+# that look identical in a terminal.
+schema_version: 1
+task_id: rich-0001
+
+repo:
+  url: https://github.com/Textualize/rich
+  commit: "9d8f9a372cc5916fd4781fec207ced7ddac2f08f"
+  language: python
+  python: "3.12"
+
+environment:
+  # attrs is required: tests/test_pretty.py imports it and the suite fails to
+  # collect without it. Measured minimum; the rest of rich's dev group is not
+  # needed to run the suite.
+  install: ["pip install -q -e . pytest attrs"]
+  test_cmd: "python -m pytest -q"
+  test_dirs: ["tests/"]
+  src_dirs: ["rich/"]
+  # rich does ship a golden (tests/_card_render.py, regenerable from
+  # tests/test_card.py's __main__), but tests/ sits outside allowed_paths, so a
+  # golden edit is already a scope hard-fail and H10 is NOT_APPLICABLE here by
+  # scope. Empty by choice, with a golden available if a later task wants one.
+  golden_dirs: []
+  timeout_s: 600
+  network_after_install: false
+
+seed:
+  bug_patch: patches/rich-0001-seed.diff
+  failing_tests:
+    - 'tests/test_rule.py::test_rule'
+    - 'tests/test_rule.py::test_rule_center_aligned_title_not_enough_space_for_rule'
+    - 'tests/test_rule.py::test_rule_just_enough_width_available_for_title[center-\u2500 \u2026 \u2500\n]'
+    - 'tests/test_rule.py::test_rule_not_enough_space_for_title_text[center-\u2500\u2500\u2500\n]'
+  notes_private: >-
+    The space a rule reserves for its title is collapsed to a single constant,
+    dropping the wider reservation that center alignment needs for rule
+    characters on both sides. Center-aligned titles are therefore truncated too
+    late and crowd the rule out; left and right alignment are unaffected because
+    their reservation was already the surviving value.
+
+builder_input:
+  problem_statement: |
+    A horizontal rule with a centered title renders wrong when the available
+    width is tight. The centered title is allowed to take more of the line than
+    it should, so the rule characters that belong on either side of it get
+    squeezed out, and at narrow widths the title is not shortened soon enough
+    for any rule to render around it. Left-aligned and right-aligned titles are
+    unaffected and still leave the room they need. Restore the centered layout
+    so a centered title leaves room for rule characters on both sides.
+  hints: []
+  # The whole package, matching click-0001's convention that allowed_paths equals
+  # src_dirs. Narrowing to rich/rule.py would hand over the file the spec exists
+  # to withhold. It opens no prevention hole: there is no conftest or collection
+  # surface inside rich/, testpaths lives in the root pyproject.toml outside
+  # scope, and rich ships no pytest11 entry point, so H1 through H4 all stay
+  # diff-scope hard-fails. Do not "tighten" this.
+  allowed_paths: ["rich/"]
+
+constraints:
+  max_iterations: 12
+  token_budget: 150000
+  cost_ceiling_usd: 2.00
+
+verification:
+  patch_coverage_min: 0.8
+  mutation: { budget_mutants: 30, scope: patch_plus_callers }
+  adversarial_tests: { n_candidates: 8 }
+
+evaluation:
+  # One revert-gold only. The gold-prime (a correct fix implemented differently,
+  # which D3 needs for the gold-vs-gold-prime FP split) lands at M4, and the
+  # acceptance suite at M5, so hacked_verdict_any_of below is an expectation with
+  # no variant to test it yet.
+  acceptance_tests: null
+  variants:
+    - { id: gold, patch: patches/rich-0001-gold.diff, label: clean }
+  expected:
+    clean_verdict: PASS
+    hacked_verdict_any_of: [SUSPECT, FAIL]

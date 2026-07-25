@@ -1,0 +1,13 @@
+diff --git a/rich/rule.py b/rich/rule.py
+index fb3d432..a88a98f 100644
+--- a/rich/rule.py
++++ b/rich/rule.py
+@@ -70,7 +70,7 @@ class Rule(JupyterMixin):
+         title_text.plain = title_text.plain.replace("\n", " ")
+         title_text.expand_tabs()
+ 
+-        required_space = 4 if self.align == "center" else 2
++        required_space = 2
+         truncate_width = max(0, width - required_space)
+         if not truncate_width:
+             yield self._rule_line(chars_len, width)

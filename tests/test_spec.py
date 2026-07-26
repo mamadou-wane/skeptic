@@ -98,8 +98,7 @@ def test_plain_test_cmd_still_loads():
 
 
 # 2026-07-26 review finding 4: shlex.split and sh -c tokenize a quoted
-# argument identically, so quotes are where the two interpretations agree,
-# not where they diverge. Banning `"` and `'` also removed the only way to
+# argument identically. Banning `"` and `'` would remove the only way to
 # express an argument containing a space, since test_cmd is one string.
 
 

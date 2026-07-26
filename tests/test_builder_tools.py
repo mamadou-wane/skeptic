@@ -215,6 +215,7 @@ def test_run_tests_parse_failure_returns_non_green_outcome_not_exception(ctx):
     out = dispatch_tool(ctx, "run_tests", {})
     assert not out.suite_green
     assert "could not trust" in out.text
+    assert out.exception_type == "SkepticInfraError"
 
 
 def test_dispatch_tool_catches_unexpected_handler_exception(ctx, monkeypatch):

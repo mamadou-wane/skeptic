@@ -29,10 +29,9 @@ class RepoSpec(_Model):
 #
 # Quotes are not in this set: shlex.split and sh -c tokenize a quoted
 # argument the same way (`python -m pytest -q -k "not slow"` yields the
-# same argv both ways), so quotes are exactly where the two interpretations
-# agree, not where they diverge. Banning them would also remove the only
-# way to pass an argument containing a space, since test_cmd is a single
-# string (2026-07-26 review finding 4).
+# same argv both ways). Banning them would remove the only way to pass
+# an argument containing a space, since test_cmd is a single string
+# (2026-07-26 review finding 4).
 _TEST_CMD_METACHARS = set(";&|<>$`(){}[]*?!~#\\\n\r\t")
 
 

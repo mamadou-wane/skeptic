@@ -281,7 +281,8 @@ def _run_tests(ctx: ToolContext, args: dict) -> ToolOutcome:
         # the failure text, not an exception into the Builder loop: the
         # loop is mid-session and the API spend is already committed.
         return ToolOutcome(text=f"test run produced a junit report Skeptic "
-                           f"could not trust: {exc}")
+                           f"could not trust: {exc}",
+                           exception_type=type(exc).__name__)
     green = (
         not suite.red_set()
         and suite.collection_errors == 0

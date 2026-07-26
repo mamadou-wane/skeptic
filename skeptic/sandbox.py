@@ -6,6 +6,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar, Self
 
 from skeptic.errors import SkepticInfraError, VenvBuildRefused
 
@@ -207,3 +208,107 @@ class DockerRunner:
             env_args += ["-e", f"{key}={value}"]
         full = args[:-1] + env_args + [args[-1], "sh", "-c", cmd]
         return _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
+
+
+class SessionContainer:
+    """Persistent tool-exec container for one BUILD session.
+
+    BUILD is the one stage where many commands share warm state (the
+    overlay venv, bytecode caches), so it gets a long-lived container;
+    every VERIFY-side run stays fresh-per-container. The workspace mounts
+    rw with tests/configs/goldens shadowed read-only (prevention tier).
+    """
+
+    _BASE_ENV: ClassVar[dict[str, str]] = {
+        "PATH": "/workspace/.sv/bin:/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/workspace",
+        "TERM": "dumb",
+        "NO_COLOR": "1",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TZ": "UTC",
+    }
+    _INSTALL = (
+        "python -m venv --system-site-packages /workspace/.sv && "
+        "/workspace/.sv/bin/pip install -q --no-deps --no-index "
+        "--no-build-isolation -e /workspace"
+    )
+
+    def __init__(self, image: str, workspace: Path,
+                 ro_subpaths: tuple[str, ...] = ()) -> None:
+        self.image = image
+        self.workspace = workspace
+        self.ro_subpaths = ro_subpaths
+        self._container_id: str | None = None
+
+    @property
+    def isolation(self) -> str:
+        return "docker-session"
+
+    def start(self) -> None:
+        run_args = docker_run_args(self.image, self.workspace, self.ro_subpaths)
+        # docker_run_args ends with [-w, /workspace, IMAGE]; insert -d after
+        # `docker run` and keep the container alive for the session
+        args = run_args[:2] + ["-d"] + run_args[2:] + ["sleep", "infinity"]
+        started = _run(args, cwd=self.workspace, timeout_s=60, env=None)
+        if started.exit_code != 0:
+            raise SkepticInfraError(
+                f"tool-exec container failed to start from {self.image} "
+                f"(exit {started.exit_code}): {started.stderr[-800:]}\n"
+                f"Skeptic runs every Builder tool inside this container. "
+                f"Next: `docker run --rm {self.image} true` by hand to see "
+                f"the daemon's complaint."
+            )
+        self._container_id = started.stdout.strip()
+        install = self.exec_shell(self._INSTALL, timeout_s=300)
+        if install.exit_code != 0:
+            self.stop()
+            raise SkepticInfraError(
+                f"offline editable install failed inside the tool-exec "
+                f"container (exit {install.exit_code}).\n"
+                f"stderr tail:\n{install.stderr[-1500:]}\n"
+                f"Skeptic overlays a workspace venv on the image's dependency "
+                f"closure so the repo under test imports from the live tree. "
+                f"Next: rebuild the repo image (`docker rmi {self.image}`) so "
+                f"the constraints include the build backend, then re-run."
+            )
+
+    def _exec(self, tail: list[str], timeout_s: int,
+              env: dict[str, str] | None) -> ExecResult:
+        if self._container_id is None:
+            raise SkepticInfraError(
+                "SessionContainer.exec called before start(). Skeptic starts "
+                "the tool-exec container once per BUILD session. Next: this "
+                "is a harness bug; report the traceback."
+            )
+        merged = {**self._BASE_ENV, **(env or {})}
+        env_args: list[str] = []
+        for key, value in merged.items():
+            env_args += ["-e", f"{key}={value}"]
+        args = ["docker", "exec", *env_args, "-w", "/workspace",
+                self._container_id, *tail]
+        return _run(args, cwd=self.workspace, timeout_s=timeout_s, env=None)
+
+    def exec_shell(self, cmd: str, timeout_s: int,
+                   env: dict[str, str] | None = None) -> ExecResult:
+        """Harness-composed commands: full shell semantics, trusted input."""
+        return self._exec(["sh", "-c", cmd], timeout_s, env)
+
+    def exec_argv(self, argv: list[str], timeout_s: int,
+                  env: dict[str, str] | None = None) -> ExecResult:
+        """Builder-supplied commands: exec form, no shell, so the allowlisted
+        first token cannot chain further commands."""
+        return self._exec(list(argv), timeout_s, env)
+
+    def stop(self) -> None:
+        if self._container_id is not None:
+            _run(["docker", "rm", "-f", self._container_id],
+                 cwd=self.workspace, timeout_s=30, env=None)
+            self._container_id = None
+
+    def __enter__(self) -> Self:
+        self.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.stop()

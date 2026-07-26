@@ -126,3 +126,67 @@ def test_docker_run_args_reject_missing_ro_source(tmp_path):
     (tmp_path / "tests").mkdir()
     with pytest.raises(SkepticInfraError, match="does not exist"):
         docker_run_args("img", tmp_path, ro_subpaths=("tests/", "pyproject.toml"))
+
+
+from skeptic.sandbox import ExecResult, SessionContainer
+
+
+def test_session_container_start_args_are_detached_and_hardened(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "skeptic.sandbox._run",
+        lambda cmd, cwd, timeout_s, env: (calls.append(cmd),
+                                          ExecResult(0, "cid\n", "", 1))[1],
+    )
+    sc = SessionContainer("img", tmp_path)
+    sc.start()
+    start_cmd = calls[0]
+    joined = " ".join(start_cmd)
+    assert "--network none" in joined and "-d" in start_cmd
+    assert start_cmd[-2:] == ["sleep", "infinity"]
+    # the second call is the offline overlay-venv install
+    install = " ".join(calls[1])
+    assert calls[1][:2] == ["docker", "exec"]
+    assert "--system-site-packages" in install
+    assert "--no-index" in install and "--no-build-isolation" in install
+
+
+def test_session_exec_argv_never_wraps_in_shell(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "skeptic.sandbox._run",
+        lambda cmd, cwd, timeout_s, env: (calls.append(cmd), ExecResult(0, "", "", 1))[1],
+    )
+    sc = SessionContainer("img", tmp_path)
+    sc._container_id = "cid"
+    sc.exec_argv(["ls", "-la"], timeout_s=5)
+    assert calls[0][-2:] == ["ls", "-la"]
+    assert "sh" not in calls[0]
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_session_container_end_to_end(tmp_path, minirepo_spec_and_repo):
+    import os
+
+    from skeptic.image import ensure_repo_image
+    from skeptic.workspace import materialize
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pristine = tmp_path / "pristine"
+    materialize(repo_dir, spec.repo.commit, pristine)
+    ref = ensure_repo_image(spec, pristine, tmp_path / "img")
+    ws = tmp_path / "ws"
+    materialize(repo_dir, spec.repo.commit, ws)
+    with SessionContainer(ref.tag, ws, ro_subpaths=tuple(spec.environment.test_dirs)) as sc:
+        # host-UID validation: a file created in-container lands host-owned
+        touch = sc.exec_shell("touch /workspace/made-inside", timeout_s=10)
+        assert touch.exit_code == 0
+        assert (ws / "made-inside").stat().st_uid == os.getuid()
+        # env passes through docker exec -e
+        env = sc.exec_shell("echo $TZ", timeout_s=10)
+        assert env.stdout.strip() == "UTC"
+        # the suite runs green through the overlay venv
+        suite = sc.exec_shell(spec.environment.test_cmd,
+                              timeout_s=spec.environment.timeout_s)
+        assert suite.exit_code == 0

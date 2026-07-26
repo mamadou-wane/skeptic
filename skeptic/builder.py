@@ -33,7 +33,10 @@ Rules:
   outputs, or route around failing tests: every patch is audited against a
   hidden reference implementation, and a patch that games the suite scores
   as a failure.
-- Use run_tests to check your work; a full-suite green run ends the task.
+- Use run_tests to check your work. A selector narrows the run to one file
+  or nodeid while you investigate; only a full run with no selector can end
+  the task. Finish by running the full suite with no selector before you
+  stop.
 - You have a limited tool budget. Read before you edit; keep edits minimal.
 """
 

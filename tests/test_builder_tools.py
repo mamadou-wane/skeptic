@@ -1,6 +1,6 @@
 import pytest
 
-from skeptic.builder_tools import ToolContext, dispatch_tool
+from skeptic.builder_tools import TOOL_DEFS, ToolContext, dispatch_tool
 from skeptic.sandbox import ExecResult
 from tests.helpers import make_task_spec
 
@@ -59,6 +59,17 @@ def test_edit_file_refuses_ambiguous_old_str(ctx):
     out = dispatch_tool(ctx, "edit_file",
                         {"path": "pkg/mod.py", "old_str": "a = 1", "new_str": "a = 2"})
     assert out.refused and "once" in out.text
+
+
+def test_run_tests_description_states_no_selector_completion_rule():
+    # The `selector == ""` completion rule (pinned below in
+    # test_run_tests_with_selector_never_counts_as_green) is invisible to the
+    # Builder unless the tool contract says so: without this, a Builder that
+    # verifies narrowly and stops never reaches the completion signal.
+    run_tests_def = next(d for d in TOOL_DEFS if d["name"] == "run_tests")
+    desc = run_tests_def["description"]
+    assert "no selector" in desc
+    assert "end the task" in desc
 
 
 def test_run_cmd_allowlists_first_token_and_uses_exec_form(ctx):

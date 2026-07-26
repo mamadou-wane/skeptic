@@ -5,7 +5,7 @@ import anthropic
 import httpx
 import pytest
 
-from skeptic.builder import run_build
+from skeptic.builder import SYSTEM_PROMPT, run_build
 from skeptic.builder_tools import ToolContext
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import ExecResult
@@ -101,6 +101,15 @@ def build_env(tmp_path):
     ctx = ToolContext(workspace=ws, session=GreenSession(), spec=spec)
     trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id=spec.task_id)
     return spec, ctx, trace
+
+
+def test_system_prompt_states_no_selector_completion_rule():
+    # A Builder that fixes the bug and verifies with a selector-scoped
+    # run_tests call never sees suite_green=True; the prompt must say the
+    # completion rule requires a full run with no selector, or the loop
+    # structurally never reaches the completion signal.
+    assert "no selector" in SYSTEM_PROMPT
+    assert "full suite" in SYSTEM_PROMPT
 
 
 def test_run_build_stops_on_suite_green(build_env):

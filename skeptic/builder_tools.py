@@ -78,7 +78,11 @@ TOOL_DEFS: list[dict] = [
     },
     {
         "name": "run_tests",
-        "description": "Run the repo test suite; optionally a pytest selector expression.",
+        "description": (
+            "Run the repo test suite. Pass selector to narrow the run to one "
+            "file or nodeid while investigating; only a full run with no "
+            "selector can end the task."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"selector": {

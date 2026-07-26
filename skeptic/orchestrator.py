@@ -22,10 +22,18 @@ class StageCache:
         path = self._path(key)
         if not path.is_file():
             return None
-        return json.loads(path.read_text())
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            # a truncated write from a killed run is a miss; the stage
+            # re-executes and overwrites it atomically
+            return None
 
     def put(self, key: str, value: dict) -> None:
-        self._path(key).write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
+        path = self._path(key)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
+        tmp.replace(path)
 
 
 def run_stage(
@@ -43,7 +51,12 @@ def run_stage(
     trace.event(stage=stage, actor="orchestrator", event="stage_start",
                 payload={"key": key})
     start = time.monotonic()
-    result = fn()
+    try:
+        result = fn()
+    except Exception:
+        trace.event(stage=stage, actor="orchestrator", event="stage_error",
+                    payload={"key": key})
+        raise
     dur_ms = int((time.monotonic() - start) * 1000)
     cache.put(key, result)
     trace.event(stage=stage, actor="orchestrator", event="stage_end",

@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from skeptic.orchestrator import StageCache, run_stage
 from skeptic.trace import TraceWriter, read_trace
 
@@ -44,3 +48,29 @@ def test_cache_survives_new_instance(tmp_path):
     )
     assert result == {"v": 1}
     assert calls == []
+
+
+def test_put_is_atomic_no_tmp_left_behind(tmp_path):
+    cache = StageCache(tmp_path)
+    cache.put("k", {"a": 1})
+    assert [p.name for p in tmp_path.iterdir()] == ["k.json"]
+
+
+def test_get_treats_corrupt_cache_as_miss(tmp_path):
+    cache = StageCache(tmp_path)
+    (tmp_path / "k.json").write_text('{"truncat')
+    assert cache.get("k") is None
+
+
+def test_run_stage_emits_stage_error_on_exception(tmp_path):
+    cache = StageCache(tmp_path / "c")
+    trace = TraceWriter(tmp_path / "t.jsonl", run_id="r", task_id="t")
+
+    def boom() -> dict:
+        raise RuntimeError("nope")
+
+    with pytest.raises(RuntimeError):
+        run_stage(cache, "BUILD", "k", boom, trace)
+    events = [json.loads(line)["event"]
+              for line in (tmp_path / "t.jsonl").read_text().splitlines()]
+    assert events == ["stage_start", "stage_error"]

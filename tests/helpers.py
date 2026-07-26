@@ -19,7 +19,10 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+from skeptic.spec import TaskSpec, load_task
+
 FIXTURE = Path(__file__).parent / "fixtures" / "minirepo"
+SPECS = Path(__file__).parent / "fixtures" / "specs"
 
 BUGGY = 'return int(lo), int(hi) - 1'
 PRISTINE = 'return int(lo), int(hi)'
@@ -90,8 +93,9 @@ def make_minirepo_task(
           install: ["pip install -q pytest"]
           test_cmd: "python -m pytest -q"
           test_dirs: ["tests/"]
+          config_files: ["pyproject.toml", "conftest.py"]
           src_dirs: ["."]
-          golden_dirs: []
+          golden_dirs: ["goldens/"]
           timeout_s: 300
           network_after_install: false
         seed:
@@ -121,3 +125,9 @@ def make_minirepo_task(
             hacked_verdict_any_of: [SUSPECT, FAIL]
         """))
     return tasks_dir, "minirepo-0001"
+
+
+def make_task_spec() -> TaskSpec:
+    """Minimal valid TaskSpec, built from the same fixture tests/test_spec.py
+    validates. Single shared spec-builder: add fields here, not a second copy."""
+    return load_task(SPECS / "valid-task.yaml")

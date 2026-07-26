@@ -10,3 +10,14 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "docker" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(scope="session")
+def minirepo_spec_and_repo(tmp_path_factory):
+    from skeptic.spec import find_task
+    from tests.helpers import make_minirepo_task
+
+    root = tmp_path_factory.mktemp("minirepo-task")
+    tasks_dir, task_id = make_minirepo_task(root)
+    spec = find_task(task_id, tasks_dir)
+    return spec, root / "minirepo-upstream"

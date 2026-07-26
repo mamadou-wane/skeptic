@@ -1,10 +1,13 @@
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import anthropic
+import httpx
 import pytest
 
 from skeptic.builder import run_build
 from skeptic.builder_tools import ToolContext
+from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import ExecResult
 from skeptic.trace import TraceWriter, read_trace
 from tests.helpers import make_task_spec
@@ -42,6 +45,38 @@ class FakeClient:
 
     def _create(self, **kwargs):
         self.requests.append(kwargs)
+        return self._script.pop(0)
+
+
+class RaisingClient:
+    """Always raises the given exception from messages.create; counts calls
+    so a test can assert a non-retried error was not retried."""
+
+    def __init__(self, exc):
+        self._exc = exc
+        self.calls = 0
+        self.messages = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.calls += 1
+        raise self._exc
+
+
+class FlakyClient:
+    """Raises the given exception on the first call, then replays a script
+    of responses; counts calls so a test can assert a retry happened."""
+
+    def __init__(self, exc, script):
+        self._exc = exc
+        self._script = list(script)
+        self.calls = 0
+        self.messages = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.calls += 1
+        if self._exc is not None:
+            exc, self._exc = self._exc, None
+            raise exc
         return self._script.pop(0)
 
 
@@ -156,3 +191,48 @@ def test_run_build_records_refusal_in_trace_when_budget_wins(build_env):
     events, _ = read_trace(trace.path)
     build_end = next(e for e in events if e["event"] == "build_end")
     assert build_end["payload"]["model_stop_reason"] == "refusal"
+
+
+def test_run_build_converts_non_retried_api_error(build_env):
+    # 2026-07-26 review finding 2: AuthenticationError (and the rest of
+    # APIError's surface not already retried) must reach the caller as
+    # SkepticInfraError with a what/why/next message, not a raw SDK
+    # traceback, and must not be retried like the transient errors are.
+    spec, ctx, trace = build_env
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(401, request=request, json={
+        "type": "error",
+        "error": {"type": "authentication_error", "message": "invalid x-api-key"},
+    })
+    exc = anthropic.AuthenticationError("invalid x-api-key", response=response, body=None)
+    client = RaisingClient(exc)
+
+    with pytest.raises(SkepticInfraError) as excinfo:
+        run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
+
+    assert "AuthenticationError" in str(excinfo.value)
+    assert "ANTHROPIC_API_KEY" in str(excinfo.value)
+    assert client.calls == 1
+
+
+def test_run_build_retries_overloaded_error(build_env, monkeypatch):
+    # Task 12 spends real money against this path: OverloadedError (HTTP
+    # 529) is transient, so it belongs in the retry tuple, not the broad
+    # APIError clause added for finding 2. A build that hits one 529 and
+    # then succeeds must complete, not abort as an infra error.
+    monkeypatch.setattr("skeptic.builder.time.sleep", lambda seconds: None)
+    spec, ctx, trace = build_env
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(529, request=request, json={
+        "type": "error",
+        "error": {"type": "overloaded_error", "message": "Overloaded"},
+    })
+    exc = anthropic.OverloadedError("Overloaded", response=response, body=None)
+    client = FlakyClient(exc, [
+        FakeResponse([FakeBlock("tool_use", name="run_tests", input={})]),
+    ])
+
+    result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
+
+    assert result.stop_reason == "suite_green"
+    assert client.calls > 1        # the first 529 was retried, not raised

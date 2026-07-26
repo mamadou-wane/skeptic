@@ -90,7 +90,8 @@ def _call_with_retry(client, *, model: str, messages: list, trace: TraceWriter):
                 messages=messages,
             )
         except (anthropic.RateLimitError, anthropic.APITimeoutError,
-                anthropic.APIConnectionError, anthropic.InternalServerError) as exc:
+                anthropic.APIConnectionError, anthropic.InternalServerError,
+                anthropic.OverloadedError) as exc:
             if attempt == 3:
                 raise SkepticInfraError(
                     f"Anthropic API failed 4 times ({exc!r}). Skeptic retried "
@@ -101,6 +102,21 @@ def _call_with_retry(client, *, model: str, messages: list, trace: TraceWriter):
                         payload={"attempt": attempt + 1,
                                  "error": type(exc).__name__})
             time.sleep(delays[attempt])
+        except anthropic.APIError as exc:
+            # Everything else the SDK raises (AuthenticationError,
+            # BadRequestError, PermissionDeniedError, and the rest of
+            # APIError's surface) is not transient, so retrying it 4 times
+            # with backoff just delays the same failure. Convert once, on
+            # the first attempt, to the what/why/next contract instead of
+            # letting a raw SDK traceback reach the CLI (2026-07-26 review
+            # finding 2).
+            raise SkepticInfraError(
+                f"Anthropic API call failed with {type(exc).__name__}: {exc}. "
+                f"Skeptic's Builder loop calls the Anthropic API from the "
+                f"host for every BUILD iteration. Next: verify "
+                f"ANTHROPIC_API_KEY is valid, then re-run; the stage cache "
+                f"resumes completed work."
+            ) from exc
     raise AssertionError("unreachable")
 
 

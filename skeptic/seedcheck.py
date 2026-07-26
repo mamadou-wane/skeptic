@@ -51,17 +51,29 @@ def parse_junit(path: Path) -> SuiteResult:
         if file_attr is None:
             collection_errors += 1
             continue
-        nodeid = f"{file_attr}::{name}"
+        classname = case.get("classname") or ""
+        module_dotted = file_attr.removesuffix(".py").replace("/", ".")
+        if classname in ("", module_dotted):
+            nodeid = f"{file_attr}::{name}"
+        elif classname.startswith(module_dotted + "."):
+            class_chain = classname[len(module_dotted) + 1:]
+            nodeid = f"{file_attr}::{class_chain.replace('.', '::')}::{name}"
+        else:
+            raise SkepticInfraError(
+                f"junit testcase classname {classname!r} does not extend its "
+                f"file's module path {module_dotted!r} in {path}. Skeptic "
+                f"reconstructs pytest nodeids from file and classname, and an "
+                f"unmappable classname would corrupt the outcome map. Next: "
+                f"inspect the junit XML; if a plugin rewrites classnames this "
+                f"repo needs a dedicated mapping before admission."
+            )
         if nodeid in outcomes:
             raise SkepticInfraError(
                 f"Duplicate reconstructed test id {nodeid!r} in junit report "
-                f"{path} (classname={case.get('classname')!r}). Skeptic's M1 "
-                f"junit parser identifies tests by file::name and does not yet "
-                f"distinguish class-based tests, but this repo appears to use "
-                f"class-based tests, so a second test silently overwrote the "
-                f"first. Next: this repo needs class-based nodeid support, "
-                f"tracked for M2 — for now, pick a task repo whose suite is "
-                f"module-level tested (unique function names per file)."
+                f"{path}. Skeptic reconstructs pytest nodeids from file, "
+                f"classname, and name, and duplicate full nodeids indicate "
+                f"corrupt junit data. Next: inspect the junit XML and test "
+                f"discovery in this repo."
             )
         outcome = "passed"
         for child in case:

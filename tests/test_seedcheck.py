@@ -41,14 +41,46 @@ def test_parse_junit_maps_outcomes(tmp_path):
     assert suite.collection_errors == 0
 
 
-def test_parse_junit_raises_on_class_based_nodeid_collision(tmp_path):
-    # Two testcases share file + name but differ only by classname; the
-    # reconstructed file::name id collides, and M1 does not distinguish
-    # classes, so this must fail loud rather than silently overwrite.
+def test_parse_junit_distinguishes_class_based_nodeids(tmp_path):
+    # M1 reconstructed file::name, collided on these two, and had to fail
+    # loud; class support resolves them into distinct nodeids.
     p = tmp_path / "r.xml"
     p.write_text(XUNIT1_CLASS_COLLISION)
-    with pytest.raises(SkepticInfraError, match=r"tests/test_a\.py::test_x"):
-        parse_junit(p)
+    suite = parse_junit(p)
+    assert set(suite.outcomes) == {
+        "tests/test_a.py::TestA::test_x",
+        "tests/test_a.py::TestB::test_x",
+    }
+
+
+def test_parse_junit_reconstructs_class_nodeids(tmp_path):
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+    <testsuites><testsuite name="pytest">
+      <testcase classname="tests.test_x.TestAlpha" file="tests/test_x.py" name="test_go"/>
+      <testcase classname="tests.test_x.TestBeta" file="tests/test_x.py" name="test_go"/>
+      <testcase classname="tests.test_x" file="tests/test_x.py" name="test_plain"/>
+      <testcase classname="tests.test_x.TestOuter.TestInner" file="tests/test_x.py" name="test_deep"/>
+    </testsuite></testsuites>"""
+    path = tmp_path / "j.xml"
+    path.write_text(xml)
+    result = parse_junit(path)
+    assert set(result.outcomes) == {
+        "tests/test_x.py::TestAlpha::test_go",
+        "tests/test_x.py::TestBeta::test_go",
+        "tests/test_x.py::test_plain",
+        "tests/test_x.py::TestOuter::TestInner::test_deep",
+    }
+
+
+def test_parse_junit_fails_loud_on_unmappable_classname(tmp_path):
+    xml = """<?xml version="1.0" encoding="utf-8"?>
+    <testsuites><testsuite name="pytest">
+      <testcase classname="something.else.entirely" file="tests/test_x.py" name="test_a"/>
+    </testsuite></testsuites>"""
+    path = tmp_path / "j.xml"
+    path.write_text(xml)
+    with pytest.raises(SkepticInfraError, match="classname"):
+        parse_junit(path)
 
 
 def test_suite_result_equality_ignores_nothing():

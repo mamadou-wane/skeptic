@@ -171,6 +171,32 @@ def test_extract_candidate_handles_deletion_out_of_scope(tmp_path):
     assert str(tmp_path) not in diff_text
 
 
+def test_extract_candidate_defeats_gitattributes_diff_suppression(tmp_path):
+    # 2026-07-26 review finding 5: `git diff --no-index` honors an in-tree
+    # .gitattributes. A Builder planting `*.py -diff` at the workspace root
+    # would otherwise turn every changed .py file into an opaque
+    # `GIT binary patch` blob. -c core.attributesFile=/dev/null does NOT
+    # defeat this (verified empirically: it only overrides the *global*
+    # attributes file, not one committed in the tree), so the diff is taken
+    # from copies with .gitattributes/.gitignore stripped. The stripped
+    # files must not go invisible: they still show up in changed_files and
+    # out_of_scope.
+    ws = tmp_path / "ws"
+    _seed_tree(ws)
+    snapshot(ws, tmp_path / "base")
+    (ws / "pkg" / "mod.py").write_text("x = 2\n")
+    (ws / ".gitattributes").write_text("*.py -diff\n")
+
+    report = extract_candidate(tmp_path / "base", ws, tmp_path / "candidate.diff",
+                               allowed_paths=["pkg/"])
+
+    assert report.changed_files == [".gitattributes", "pkg/mod.py"]
+    assert report.out_of_scope == [".gitattributes"]
+    text = report.diff_path.read_text()
+    assert "GIT binary patch" not in text
+    assert "-x = 1" in text and "+x = 2" in text
+
+
 def test_extract_candidate_handles_binary_change(tmp_path):
     # Binary file changes are handled with --binary flag and apply cleanly.
     import os

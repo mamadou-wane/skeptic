@@ -52,8 +52,11 @@ def test_build_prints_cost_and_aborts_without_confirmation(tmp_path, monkeypatch
     monkeypatch.setattr("skeptic.cli._docker_available", lambda: True)
     result = runner.invoke(app, ["build", "--task", "click-0001",
                                  "--workdir", str(tmp_path)], input="n\n")
-    assert result.exit_code != 0
+    # 2026-07-26 review finding 2: a decline must exit EXIT_INFRA (3), not
+    # the EXIT_SUSPECT (1) that typer.confirm(abort=True) collided with.
+    assert result.exit_code == 3
     assert "$2.00" in result.output   # click-0001's cost_ceiling_usd
+    assert "Declined" in result.output
 
 
 # 2026-07-26 review finding 1: the cache key must change whenever a spec

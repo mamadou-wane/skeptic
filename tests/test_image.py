@@ -18,6 +18,16 @@ def test_repo_image_tag_keys_on_repo_commit_and_environment():
     assert repo_image_tag(changed) != tag
 
 
+def test_repo_image_tag_moves_when_base_image_changes(monkeypatch):
+    # A digest bump to BASE_IMAGE must not leave the tag (and therefore the
+    # cached image) unchanged: repo_image_tag hashes the rendered Dockerfile,
+    # which interpolates BASE_IMAGE, not just environment.install.
+    spec = make_task_spec()
+    tag = repo_image_tag(spec)
+    monkeypatch.setattr("skeptic.image.BASE_IMAGE", "python@sha256:" + "0" * 64)
+    assert repo_image_tag(spec) != tag
+
+
 def test_render_dockerfile_two_stages_no_source_in_final(tmp_path):
     spec = make_task_spec()
     text = render_dockerfile(spec)

@@ -20,6 +20,14 @@ class RepoSpec(_Model):
     python: str
 
 
+# Admission (`seed --check`) runs test_cmd through `sh -c`; `skeptic build`
+# runs it through `shlex.split` + exec_argv (no shell). The two agree on a
+# plain argv command and diverge on anything shell-flavored: reject at spec
+# load, before BUILD spends money discovering the divergence with an image
+# already built (2026-07-26 review finding 6; DECISIONS.md #72).
+_TEST_CMD_METACHARS = set(";&|<>$`(){}[]*?!~#\\\"'\n\r\t")
+
+
 class EnvironmentSpec(_Model):
     install: list[str]
     test_cmd: str
@@ -29,6 +37,33 @@ class EnvironmentSpec(_Model):
     golden_dirs: list[str] = []
     timeout_s: int
     network_after_install: bool = False
+
+    @model_validator(mode="after")
+    def _test_cmd_is_argv_safe(self) -> EnvironmentSpec:
+        cmd = self.test_cmd
+        if any(ch in _TEST_CMD_METACHARS for ch in cmd):
+            raise ValueError(
+                f"environment.test_cmd {cmd!r} contains a shell "
+                f"metacharacter. skeptic build runs test_cmd as argv "
+                f"(shlex.split, no shell), so &&, a pipe, a redirect, or a "
+                f"glob would pass `seed --check` (which runs it under "
+                f"sh -c) and only fail once BUILD's image is already built "
+                f"and API spend has started. Next: rewrite test_cmd as a "
+                f"plain argv command with no shell syntax, e.g. "
+                f"`python -m pytest -q`."
+            )
+        first = cmd.split(" ", 1)[0] if cmd else ""
+        if "=" in first:
+            raise ValueError(
+                f"environment.test_cmd {cmd!r} starts with what looks like "
+                f"an environment-variable assignment ({first!r}). skeptic "
+                f"build runs test_cmd as argv (shlex.split, no shell), so "
+                f"that token is executed as the binary name instead of "
+                f"being interpreted as an assignment. Next: move the "
+                f"assignment into environment.install, or drop it from "
+                f"test_cmd."
+            )
+        return self
 
 
 class SeedSpec(_Model):

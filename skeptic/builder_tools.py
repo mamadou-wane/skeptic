@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import ExecResult
 from skeptic.seedcheck import parse_junit
 from skeptic.spec import TaskSpec
@@ -134,9 +135,21 @@ def dispatch_tool(ctx: ToolContext, name: str, args: dict) -> ToolOutcome:
                        f"{', '.join(sorted(_HANDLERS))}.")
     try:
         return handler(ctx, args)
-    except (TypeError, KeyError) as exc:
-        return _refuse(f"Malformed arguments for {name}: {exc!r}. "
-                       f"Check the tool's input schema and retry.")
+    except Exception as exc:  # noqa: BLE001 - the boundary contract below
+        # No handler exception may escape dispatch_tool: this is the
+        # boundary between the untrusted, Builder-driven tool call and the
+        # host-side agent loop, and a paid run is already in progress. A
+        # handler bug (or Builder-triggered corruption, e.g. a planted
+        # conftest.py that rewrites junit classnames so parse_junit can't
+        # reconstruct nodeids) must come back as a tool result the Builder
+        # can react to, not an exception that unwinds do_build before
+        # extract_candidate salvages a candidate (2026-07-26 review finding
+        # 3). Narrower catches (TypeError, KeyError) missed AttributeError
+        # and ValueError from other malformed-input shapes, so this catches
+        # the whole class instead of enumerating exception types.
+        return _refuse(f"{name} raised {type(exc).__name__}: {exc}. "
+                       f"Check the tool's arguments against its input "
+                       f"schema, or try a different approach.")
 
 
 def _list_files(ctx: ToolContext, args: dict) -> ToolOutcome:
@@ -151,7 +164,11 @@ def _list_files(ctx: ToolContext, args: dict) -> ToolOutcome:
             continue
         if p.is_file():
             lines.append(str(rel))
-    return ToolOutcome(text="\n".join(lines[:2000]) or "(empty)")
+    shown = lines[:2000]
+    text = "\n".join(shown) or "(empty)"
+    if len(lines) > len(shown):
+        text += "\n[truncated]"
+    return ToolOutcome(text=text)
 
 
 EXCLUDED_PARTS = {".sv", ".pytest_cache", "__pycache__"}
@@ -244,7 +261,17 @@ def _run_tests(ctx: ToolContext, args: dict) -> ToolOutcome:
     if result.exit_code not in (0, 1) or not junit_host.is_file():
         return ToolOutcome(
             text=f"test run did not complete (exit {result.exit_code}):\n{tail}")
-    suite = parse_junit(junit_host)
+    try:
+        suite = parse_junit(junit_host)
+    except SkepticInfraError as exc:
+        # parse_junit raises on a junit report it cannot trust (an
+        # unmappable classname or a duplicate reconstructed nodeid), which a
+        # Builder can trigger with a planted conftest.py that rewrites
+        # classnames. That must count as a non-green tool result carrying
+        # the failure text, not an exception into the Builder loop: the
+        # loop is mid-session and the API spend is already committed.
+        return ToolOutcome(text=f"test run produced a junit report Skeptic "
+                           f"could not trust: {exc}")
     green = (
         not suite.red_set()
         and suite.collection_errors == 0

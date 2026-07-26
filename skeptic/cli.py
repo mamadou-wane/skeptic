@@ -188,8 +188,14 @@ def build(
         ceiling = spec.constraints.cost_ceiling_usd
         typer.echo(f"Builder run: task={spec.task_id} model={model} "
                    f"cost ceiling ${ceiling:.2f}")
-        if not yes:
-            typer.confirm("Proceed (this spends real API money)?", abort=True)
+        if not yes and not typer.confirm("Proceed (this spends real API money)?"):
+            typer.echo(
+                "Declined: the run was not started, so no API spend "
+                "happened. Skeptic confirms before every billed Builder run "
+                f"unless --yes is passed. Next: re-run `skeptic build --task "
+                f"{spec.task_id} --yes` once you're ready to spend."
+            )
+            raise typer.Exit(EXIT_INFRA)
 
         workdir = workdir.resolve()
         build_dir = workdir / spec.task_id / "build"

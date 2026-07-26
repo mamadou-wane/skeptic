@@ -277,9 +277,10 @@ class SessionContainer:
               env: dict[str, str] | None) -> ExecResult:
         if self._container_id is None:
             raise SkepticInfraError(
-                "SessionContainer.exec called before start(). Skeptic starts "
-                "the tool-exec container once per BUILD session. Next: this "
-                "is a harness bug; report the traceback."
+                "SessionContainer.exec_shell/exec_argv called before "
+                "start(). Skeptic starts the tool-exec container once per "
+                "BUILD session. Next: this is a harness bug; report the "
+                "traceback."
             )
         merged = {**self._BASE_ENV, **(env or {})}
         env_args: list[str] = []

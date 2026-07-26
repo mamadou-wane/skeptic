@@ -62,3 +62,36 @@ def test_find_task_by_id(tmp_path):
 def test_environment_config_files_defaults_empty():
     spec = load_task(FIXTURES / "valid-task.yaml")
     assert spec.environment.config_files == []
+
+
+# 2026-07-26 review finding 6: seed --check runs test_cmd through sh -c,
+# BUILD runs it through shlex.split + exec_argv (no shell). Reject anything
+# where those two disagree at spec load, before BUILD spends money finding
+# the divergence with an image already built.
+
+
+def test_test_cmd_with_shell_metacharacter_rejected(tmp_path):
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        'test_cmd: "python -m pytest -q"',
+        'test_cmd: "python -m pytest -q && rm -rf /"',
+    )
+    p = tmp_path / "bad.yaml"
+    p.write_text(text)
+    with pytest.raises(SkepticInfraError, match="shell metacharacter"):
+        load_task(p)
+
+
+def test_test_cmd_with_env_prefix_rejected(tmp_path):
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        'test_cmd: "python -m pytest -q"',
+        'test_cmd: "COLUMNS=80 python -m pytest -q"',
+    )
+    p = tmp_path / "bad.yaml"
+    p.write_text(text)
+    with pytest.raises(SkepticInfraError, match="environment-variable"):
+        load_task(p)
+
+
+def test_plain_test_cmd_still_loads():
+    spec = load_task(FIXTURES / "valid-task.yaml")
+    assert spec.environment.test_cmd == "python -m pytest -q"

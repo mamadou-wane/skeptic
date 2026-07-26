@@ -30,6 +30,19 @@ def ctx(tmp_path):
     return ToolContext(workspace=ws, session=FakeSession(), spec=spec)
 
 
+def test_list_files_marks_truncation_past_2000_entries(ctx):
+    # read_file already appended "[truncated]" past its byte cap; list_files
+    # truncated at 2000 entries with no marker at all, silently showing the
+    # Builder a partial tree as if it were the whole one.
+    big = ctx.workspace / "pkg" / "many"
+    big.mkdir()
+    for i in range(2001):
+        (big / f"f{i}.py").write_text("")
+    out = dispatch_tool(ctx, "list_files", {"path": "pkg/many"})
+    assert out.text.endswith("[truncated]")
+    assert len(out.text.splitlines()) == 2001  # 2000 entries + the marker
+
+
 def test_read_file_reads_anywhere_in_workspace(ctx):
     out = dispatch_tool(ctx, "read_file", {"path": "tests/test_mod.py"})
     assert "def test" in out.text and not out.refused
@@ -180,3 +193,41 @@ def test_read_file_does_not_truncate_on_byte_size_alone(ctx):
 def test_unknown_tool_is_refused_not_raised(ctx):
     out = dispatch_tool(ctx, "make_coffee", {})
     assert out.refused
+
+
+def test_run_tests_parse_failure_returns_non_green_outcome_not_exception(ctx):
+    # 2026-07-26 review finding 3: a classname that doesn't extend its file's
+    # module path makes parse_junit raise SkepticInfraError (a Builder can
+    # trigger this with a planted conftest.py that rewrites classnames). That
+    # must come back as a tool result, not unwind the Builder loop and lose
+    # the run's candidate.
+    bad_junit = (
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="p">'
+        '<testcase classname="totally.unrelated" file="tests/test_mod.py" name="test"/>'
+        "</testsuite></testsuites>"
+    )
+
+    def fake_argv(argv, timeout_s, env=None):
+        (ctx.workspace / ".skeptic-junit-build.xml").write_text(bad_junit)
+        return ExecResult(0, "1 passed", "", 10)
+
+    ctx.session.exec_argv = fake_argv
+    out = dispatch_tool(ctx, "run_tests", {})
+    assert not out.suite_green
+    assert "could not trust" in out.text
+
+
+def test_dispatch_tool_catches_unexpected_handler_exception(ctx, monkeypatch):
+    # dispatch_tool's guard used to catch only (TypeError, KeyError), missing
+    # any other exception a handler (or a future one) might raise. It must
+    # catch the whole class, not one exception type at a time.
+    from skeptic import builder_tools
+
+    def _boom(_ctx, _args):
+        raise ValueError("boom")
+
+    monkeypatch.setitem(builder_tools._HANDLERS, "boom_tool", _boom)
+    out = dispatch_tool(ctx, "boom_tool", {})
+    assert out.refused
+    assert "ValueError" in out.text
+    assert "boom" in out.text

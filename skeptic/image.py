@@ -29,12 +29,13 @@ class ImageRef:
 
 def repo_image_tag(spec: TaskSpec) -> str:
     slug = spec.repo.url.rstrip("/").rsplit("/", 1)[-1]
-    # The tag keys on everything that shaped the image: change the install
-    # commands or the backend list and the tag changes too, so a stale image
-    # is never silently reused (review finding: a commit-only tag would
-    # survive an install-command edit).
-    env_hash = config_hash({"install": spec.environment.install,
-                            "backends": _BUILD_BACKENDS})[:8]
+    # The tag hashes the rendered Dockerfile, not just the install commands:
+    # that also keys on BASE_IMAGE and the template itself, so a digest bump
+    # or a template edit gets a new tag instead of silently reusing a stale
+    # image (2026-07-26 review finding 1: a commit-only tag would survive
+    # either change, and ensure_repo_image would then skip the build and the
+    # stage cache would serve the previous result under the unchanged tag).
+    env_hash = config_hash({"dockerfile": render_dockerfile(spec)})[:8]
     return f"skeptic-repo-{slug}:{spec.repo.commit[:12]}-{env_hash}"
 
 

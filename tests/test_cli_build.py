@@ -1,3 +1,6 @@
+from pathlib import Path
+from types import SimpleNamespace
+
 from typer.testing import CliRunner
 
 from skeptic.cli import _build_cache_key, app
@@ -84,3 +87,67 @@ def test_build_cache_key_changes_with_repo_commit():
     assert edited.repo.commit != spec.repo.commit
     changed = _build_cache_key(edited, "claude-sonnet-5", "img-id", "seed-hash")
     assert base != changed
+
+
+def test_build_cache_key_changes_with_green_rule_version(monkeypatch):
+    # Today a change to the green rule also moves prompt_version(), because
+    # the Builder-facing text had to change with it. That is luck: a future
+    # edit to the predicate alone would leave the key still and serve a
+    # cached `green` under the new rule's name.
+    spec = make_task_spec()
+    base = _build_cache_key(spec, "claude-sonnet-5", "img-id", "seed-hash")
+    monkeypatch.setattr("skeptic.builder.GREEN_RULE_VERSION", "differential-2")
+    changed = _build_cache_key(spec, "claude-sonnet-5", "img-id", "seed-hash")
+    assert base != changed
+
+
+def test_build_writes_a_baseline_suite_trace_event_on_a_cache_hit(tmp_path, monkeypatch):
+    # DECISIONS row 74 puts the baseline red set in the trace on every run.
+    # A stage-cache hit never executes do_build, so the CLI replays the event
+    # from the cached dict; a terminal line alone would not satisfy the row.
+    from skeptic import candidate, cli, image, workspace
+    from skeptic.orchestrator import StageCache
+    from skeptic.spec import find_task
+    from skeptic.trace import config_hash, read_trace
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(workspace, "clone_pinned",
+                        lambda url, commit, cache: cache)
+    monkeypatch.setattr(workspace, "materialize",
+                        lambda repo, commit, dest: dest.mkdir(parents=True))
+    monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
+    monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
+    monkeypatch.setattr(
+        image, "ensure_repo_image",
+        lambda task_spec, context, out: SimpleNamespace(tag="t:1", image_id="img-id"))
+
+    workdir = tmp_path.resolve()
+    spec = find_task("click-0001", Path("tasks"))
+    seed_hash = config_hash({"seed": Path(spec.seed.bug_patch).read_text()})
+    key = _build_cache_key(spec, "claude-opus-5", "img-id", seed_hash)
+    build_dir = workdir / spec.task_id / "build"
+    cached = {
+        "stop_reason": "green", "iterations": 2, "in_tokens": 10,
+        "out_tokens": 5, "usd": 0.01, "green": True,
+        "green_rule": "differential-1",
+        "baseline_seed_red": ["tests/test_termui.py::test_progressbar_width"],
+        "baseline_environmental_red": ["tests/test_pager.py::test_pager"],
+        "baseline_total": 3, "baseline_collection_errors": 0,
+        "candidate": str(build_dir / "candidate.diff"),
+        "changed_files": ["src/click/termui.py"], "out_of_scope": [],
+        "is_empty": False, "image_id": "img-id",
+    }
+    StageCache(build_dir / "cache").put(key, cached)
+
+    result = runner.invoke(app, ["build", "--task", "click-0001",
+                                 "--workdir", str(workdir), "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "green: True" in result.output
+    events, _ = read_trace(build_dir / "trace.jsonl")
+    payload = next(e for e in events if e["event"] == "baseline_suite")["payload"]
+    assert payload["cached"] is True
+    assert payload["seed_red"] == cached["baseline_seed_red"]
+    assert payload["environmental_red"] == cached["baseline_environmental_red"]
+    assert payload["collection_errors"] == 0

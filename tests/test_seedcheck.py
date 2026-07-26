@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from skeptic.errors import SkepticInfraError
-from skeptic.sandbox import VenvRunner
-from skeptic.seedcheck import SuiteResult, check_task, parse_junit
+from skeptic.sandbox import ExecResult, VenvRunner
+from skeptic.seedcheck import SuiteResult, check_task, parse_junit, run_suite
 from skeptic.spec import find_task
 from tests.helpers import BUGGY, FIXTURE, PRISTINE, make_minirepo_task
 
@@ -89,6 +89,53 @@ def test_suite_result_equality_ignores_nothing():
     c = SuiteResult(outcomes={"t::x": "failed"}, collection_errors=0)
     assert a.outcome_map_equal(b)
     assert not a.outcome_map_equal(c)
+
+
+# The clean-collection contract (DECISIONS row 78). BUILD and VERIFY carry
+# --continue-on-collection-errors and treat a collection error as
+# candidate-caused; that is safe only because admission refuses a tree that
+# cannot collect. Both paths below already existed and neither was asserted.
+
+def test_run_suite_error_names_collection_failure_on_exit_2(tmp_path):
+    class Exit2Runner:
+        def exec(self, cmd, timeout_s, env=None):
+            return ExecResult(2, "ERROR tests/test_a.py", "ImportError: no_such_module", 1)
+
+    with pytest.raises(SkepticInfraError) as excinfo:
+        run_suite(Exit2Runner(), "python -m pytest -q", 60, tmp_path / "j.xml")
+    message = str(excinfo.value)
+    lowered = message.lower()
+    # collection comes first: an operator who hits the hard stop should read
+    # about the import that failed before reading an exit-code table
+    assert "collect" in lowered
+    assert lowered.index("collect") < lowered.index("internal")
+    assert "python -m pytest -q" in message
+    assert "Next:" in message
+
+
+def test_pristine_green_x2_fails_on_collection_errors(tmp_path):
+    # Written against the invariant rather than against the parser: Task 5
+    # adds a second collection-error junit shape and this test keeps passing.
+    tasks_dir, task_id = make_minirepo_task(tmp_path)
+    spec = find_task(task_id, tasks_dir)
+    # a testcase with no `file` attribute is what today's parser counts
+    junit = (
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="p">'
+        '<testcase classname="tests.test_minirepo" name="test_parse_range_basic"/>'
+        "</testsuite></testsuites>"
+    )
+
+    class CollectErrorRunner:
+        def exec(self, cmd, timeout_s, env=None):
+            target = Path(cmd.split("--junitxml=", 1)[1].split(" ", 1)[0])
+            target.write_text(junit)
+            return ExecResult(1, "", "", 1)
+
+    report = check_task(spec, tmp_path / "work", lambda ws: CollectErrorRunner(),
+                        tmp_path / "cache")
+    first = {r.name: r for r in report.results}["pristine-green-x2"]
+    assert not first.ok
+    assert "collection_errors=1" in first.detail
 
 
 @pytest.mark.slow

@@ -7,7 +7,7 @@ from typing import Protocol
 
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import ExecResult
-from skeptic.seedcheck import parse_junit
+from skeptic.seedcheck import SuiteResult, parse_junit
 from skeptic.spec import TaskSpec
 
 # Tripwire, with the mount as the real boundary: network is off and tests
@@ -17,6 +17,10 @@ ALLOWED_BINARIES = frozenset(
     {"python", "pytest", "pip", "ls", "cat", "grep", "find", "head", "tail", "wc", "diff"}
 )
 _JUNIT_REL = ".skeptic-junit-build.xml"
+# Distinct from _JUNIT_REL so the Builder's first run_tests call does not
+# unlink the baseline report. Both names match candidate.EXCLUDE_GLOBS's
+# ".skeptic-junit*", so neither reaches the candidate diff.
+_JUNIT_BASELINE_REL = ".skeptic-junit-baseline.xml"
 _MAX_READ_BYTES = 100_000
 _TOOL_TIMEOUT_S = 120
 
@@ -33,12 +37,17 @@ class ToolContext:
     workspace: Path
     session: SessionContainerLike
     spec: TaskSpec
+    # The in-container baseline the candidate is compared against. No
+    # defaults: a construction site that forgets the baseline must fail at
+    # import rather than read an empty frozenset as "nothing passed before".
+    baseline_passed: frozenset[str]
+    baseline_collection_errors: int
 
 
 @dataclass(frozen=True)
 class ToolOutcome:
     text: str
-    suite_green: bool = False
+    green: bool = False
     refused: bool = False
     # Set only on the dispatch_tool boundary catch below, to the offending
     # exception's type name. A handler's ordinary refusals (bad path, wrong
@@ -89,7 +98,11 @@ TOOL_DEFS: list[dict] = [
         "description": (
             "Run the repo test suite. Pass selector to narrow the run to one "
             "file or nodeid while investigating; only a full run with no "
-            "selector can end the task."
+            "selector can end the task. The task ends when the tests covering "
+            "the reported bug pass and nothing that was already passing has "
+            "broken. Some tests can be red for environmental reasons that "
+            "predate your work and are not yours to fix; those do not keep "
+            "the task from ending."
         ),
         "input_schema": {
             "type": "object",
@@ -249,6 +262,97 @@ def _selector_problem(selector: str) -> str | None:
     return None
 
 
+def _suite_argv(spec: TaskSpec, junit_rel: str, selector: str = "") -> list[str]:
+    """The one argv both suite runs use, so they differ only in the junit name.
+
+    Two tokenizations of `test_cmd` would make the baseline-to-candidate
+    comparison meaningless, which is the bug class DECISIONS rows 70 and 72
+    exist to prevent. `--continue-on-collection-errors` keeps a candidate that
+    broke one import from erasing the whole observation: without it pytest
+    exits 2 and no test runs (DECISIONS row 78).
+    """
+    argv = [*shlex.split(spec.environment.test_cmd)]
+    if selector:
+        argv.append(selector)
+    return argv + ["--continue-on-collection-errors",
+                   f"--junitxml={junit_rel}", "-o", "junit_family=xunit1"]
+
+
+def run_baseline_suite(workspace: Path, session: SessionContainerLike,
+                       spec: TaskSpec) -> SuiteResult:
+    """Run the suite once in the session container before the Builder starts.
+
+    Green is differential (DECISIONS row 74), so BUILD needs to know what the
+    seeded tree already does inside the image it runs in. Environmental reds
+    (click-0001's 24 `less` failures, row 73) show up here and in every
+    candidate run, so they cancel.
+
+    This duplicates a little of `seedcheck.run_suite`'s exit-code taxonomy on
+    purpose: `run_suite` takes a runner with an `exec` method that
+    `SessionContainer` does not have, and routing the baseline through
+    `exec_shell` would give it shell tokenization while the candidate gets
+    argv tokenization. Every failure raises, where `_run_tests` returns a
+    non-green outcome instead: there is no Builder to hand a tool result to
+    at baseline time.
+    """
+    junit_host = workspace / _JUNIT_BASELINE_REL
+    junit_host.unlink(missing_ok=True)
+    argv = _suite_argv(spec, _JUNIT_BASELINE_REL)
+    result = session.exec_argv(argv, timeout_s=spec.environment.timeout_s)
+    if result.exit_code == -1:
+        raise SkepticInfraError(
+            f"The baseline suite timed out after {spec.environment.timeout_s}s. "
+            f"Skeptic runs the seeded suite once before the Builder's first "
+            f"tool call to learn which tests already fail in this image. "
+            f"Next: raise environment.timeout_s in the task spec, or run "
+            f"`{spec.environment.test_cmd}` in the container by hand.\n"
+            f"stderr tail:\n{result.stderr[-800:]}"
+        )
+    if result.exit_code not in (0, 1):
+        raise SkepticInfraError(
+            f"The baseline suite exited {result.exit_code} (2=usage error, "
+            f"3=internal, 4=cli usage, 5=no tests collected), so BUILD has no "
+            f"baseline to compare a candidate against. Next: run "
+            f"`{spec.environment.test_cmd}` in the container by hand.\n"
+            f"stderr tail:\n{result.stderr[-800:]}\n"
+            f"stdout tail:\n{result.stdout[-800:]}"
+        )
+    # parse_junit raises with its own what/why/next on a missing report and on
+    # a report it cannot map to nodeids; both are infra failures here.
+    suite = parse_junit(junit_host)
+    if suite.collection_errors:
+        raise SkepticInfraError(
+            f"The baseline suite hit {suite.collection_errors} collection "
+            f"error(s) on the seeded tree. This guard is expected to stay "
+            f"silent: `seed --check`'s seed-red-exact already requires a "
+            f"clean collect on this same tree, so something changed between "
+            f"admission and BUILD. A tree that cannot import its own tests is "
+            f"broken substrate, and its observations must not become "
+            f"evidence. Next: re-run `skeptic seed --task {spec.task_id} "
+            f"--check` and compare it against the BUILD image."
+        )
+    return suite
+
+
+def is_green(spec: TaskSpec, suite: SuiteResult, baseline_passed: frozenset[str],
+             baseline_collection_errors: int) -> bool:
+    """Green means nothing got worse (DECISIONS row 74).
+
+    Every nodeid in `spec.seed.failing_tests` passes, nothing that passed in
+    the baseline failed or errored, and collection errors did not exceed the
+    baseline's. A pass that became a skip, or one that vanished from the
+    collected set, leaves BUILD green on purpose: those are hard evidence at
+    VERIFY (`t1_outcomes` and `t1_collect`), a Builder that trips either has
+    already earned a verdict, and stopping its loop early buys nothing.
+    """
+    if any(suite.outcomes.get(nodeid) != "passed"
+           for nodeid in spec.seed.failing_tests):
+        return False
+    if baseline_passed & suite.red_set():
+        return False
+    return suite.collection_errors <= baseline_collection_errors
+
+
 def _run_tests(ctx: ToolContext, args: dict) -> ToolOutcome:
     selector = str(args.get("selector", "")).strip()
     if selector:
@@ -262,10 +366,7 @@ def _run_tests(ctx: ToolContext, args: dict) -> ToolOutcome:
             )
     junit_host = ctx.workspace / _JUNIT_REL
     junit_host.unlink(missing_ok=True)
-    argv = [*shlex.split(ctx.spec.environment.test_cmd)]
-    if selector:
-        argv.append(selector)
-    argv += [f"--junitxml={_JUNIT_REL}", "-o", "junit_family=xunit1"]
+    argv = _suite_argv(ctx.spec, _JUNIT_REL, selector)
     result = ctx.session.exec_argv(argv, timeout_s=ctx.spec.environment.timeout_s)
     tail = (result.stdout[-3000:] + "\n" + result.stderr[-1000:]).strip()
     if result.exit_code not in (0, 1) or not junit_host.is_file():
@@ -283,14 +384,14 @@ def _run_tests(ctx: ToolContext, args: dict) -> ToolOutcome:
         return ToolOutcome(text=f"test run produced a junit report Skeptic "
                            f"could not trust: {exc}",
                            exception_type=type(exc).__name__)
-    green = (
-        not suite.red_set()
-        and suite.collection_errors == 0
-        and result.exit_code == 0
-    )
-    # only a full-suite green run counts: a selector proving one file green
-    # must not stop the loop
-    return ToolOutcome(text=tail, suite_green=green and selector == "")
+    # No exit_code clause: under the differential rule a green candidate can
+    # still exit 1, because the baseline's environmental reds are still red.
+    # The exit-code taxonomy stays where it is, in the guard above.
+    green = is_green(ctx.spec, suite, ctx.baseline_passed,
+                     ctx.baseline_collection_errors)
+    # only a full-suite run counts: a selector proving one file green must
+    # not stop the loop
+    return ToolOutcome(text=tail, green=green and selector == "")
 
 
 def _run_cmd(ctx: ToolContext, args: dict) -> ToolOutcome:

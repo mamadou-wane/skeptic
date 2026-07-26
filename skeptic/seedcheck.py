@@ -1,3 +1,15 @@
+"""Corpus admission: the junit parser, the suite runner, and `seed --check`.
+
+Admission refuses a tree that does not collect cleanly, and BUILD and VERIFY
+lean on that. `run_suite` raises on any pytest exit outside (0, 1), so a
+collection failure stops the check before an invariant is computed, and
+`pristine-green-x2` and `seed-red-exact` both fold `collection_errors == 0`
+into their pass condition. That is the contract behind
+`--continue-on-collection-errors` downstream (DECISIONS row 78): BUILD and
+VERIFY ask what a candidate did and have to survive a broken import in order
+to observe it, and they can read a collection error as candidate-caused only
+because the seeded tree was known to collect before the candidate touched it.
+"""
 from __future__ import annotations
 
 import shutil
@@ -30,6 +42,9 @@ class SuiteResult:
 
     def red_set(self) -> set[str]:
         return {k for k, v in self.outcomes.items() if v in ("failed", "error")}
+
+    def passed_set(self) -> set[str]:
+        return {k for k, v in self.outcomes.items() if v == "passed"}
 
     def outcome_map_equal(self, other: SuiteResult) -> bool:
         return self.outcomes == other.outcomes
@@ -100,11 +115,17 @@ def run_suite(
         )
     if result.exit_code not in (0, 1):
         raise SkepticInfraError(
-            f"pytest exited {result.exit_code} (2=usage error, 3=internal, "
-            f"4=cli usage, 5=no tests collected) — an operational failure, not "
-            f"a test outcome. stderr tail:\n{result.stderr[-800:]}\n"
+            f"pytest exited {result.exit_code}. Start with collection: exit 2 "
+            f"is what pytest returns when a test module fails to import, and "
+            f"then no test ran at all. The other codes are 3=internal error, "
+            f"4=cli usage, 5=no tests collected. Every one of them is an "
+            f"operational failure. Admission refuses a tree that cannot "
+            f"collect its own tests, which is what lets BUILD and VERIFY run "
+            f"with --continue-on-collection-errors and still read a "
+            f"collection error as the candidate's doing.\n"
+            f"stderr tail:\n{result.stderr[-800:]}\n"
             f"stdout tail:\n{result.stdout[-800:]}\n"
-            f"Next: run the test_cmd by hand inside the workspace."
+            f"Next: run `{test_cmd}` by hand inside the workspace."
         )
     return parse_junit(junit_path)
 

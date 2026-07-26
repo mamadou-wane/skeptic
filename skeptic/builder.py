@@ -10,6 +10,12 @@ from skeptic.trace import TraceWriter, config_hash
 
 DEFAULT_MODEL = "claude-opus-5"
 
+# Joins the BUILD cache key. prompt_version() already changes whenever the
+# Builder-facing text changes, and today's semantics change happens to move
+# it too. That is luck: a future edit to the green predicate alone would
+# leave the key still and serve a cached `green` under the new rule's name.
+GREEN_RULE_VERSION = "differential-1"
+
 # USD per million tokens, standard rates. Source: Anthropic model pricing
 # (docs.claude.com / the claude-api skill's cached pricing reference),
 # confirmed 2026-07-26 at Task 10 execution: Opus 5 $5/$25, Sonnet 5 $3/$15.
@@ -35,8 +41,11 @@ Rules:
   as a failure.
 - Use run_tests to check your work. A selector narrows the run to one file
   or nodeid while you investigate; only a full run with no selector can end
-  the task. Finish by running the full suite with no selector before you
-  stop.
+  the task. The task ends when the tests covering the reported bug pass and
+  nothing that was already passing has broken. Some tests can be red for
+  environmental reasons that predate your work and are not yours to fix;
+  those do not keep the task from ending. Finish by running the full suite
+  with no selector before you stop.
 - You have a limited tool budget. Read before you edit; keep edits minimal.
 """
 
@@ -52,7 +61,7 @@ class BuildResult:
     in_tokens: int
     out_tokens: int
     usd: float
-    suite_green: bool
+    green: bool
 
 
 def _price(model: str, in_tok: int, out_tok: int) -> float:
@@ -128,7 +137,7 @@ def run_build(
 ) -> BuildResult:
     messages: list[dict] = [{"role": "user", "content": _user_prompt(spec)}]
     in_tokens = out_tokens = iterations = 0
-    suite_green = False
+    green = False
     stop_reason = "model_ended"
     last_model_stop_reason: str | None = None
     trace.event(stage="BUILD", actor="builder", event="build_start",
@@ -155,7 +164,7 @@ def run_build(
             for block in tool_uses:
                 outcome = dispatch_tool(ctx, block.name, dict(block.input))
                 payload = {"tool": block.name, "refused": outcome.refused,
-                           "suite_green": outcome.suite_green}
+                           "green": outcome.green}
                 # Only set on the dispatch_tool unexpected-exception path
                 # (see ToolOutcome.exception_type): an ordinary refusal
                 # (bad path, unknown tool) leaves it out of the payload
@@ -166,21 +175,21 @@ def run_build(
                             payload=payload)
                 results.append({"type": "tool_result", "tool_use_id": block.id,
                                 "content": outcome.text})
-                suite_green = suite_green or outcome.suite_green
+                green = green or outcome.green
             messages.append({"role": "assistant", "content": response.content})
             messages.append({"role": "user", "content": results})
-            if suite_green:
-                stop_reason = "suite_green"
+            if green:
+                stop_reason = "green"
                 break
             if iterations >= spec.constraints.max_iterations:
                 stop_reason = "iteration_cap"
                 break
         # Token budget and cost ceiling are checked unconditionally, whether
-        # or not this response carried a tool call: unlike suite_green and
+        # or not this response carried a tool call: unlike green and
         # iteration_cap (which structurally cannot fire without a dispatched
         # tool), both depend only on accumulated usage. Per the plan's
-        # priority order (suite green, iteration cap, token budget, cost
-        # ceiling, model ends without tool calls), a turn that ends
+        # priority order (green, iteration cap, token budget, cost ceiling,
+        # model ends without tool calls), a turn that ends
         # tool-call-free right as it blows its budget must report the
         # budget breach, not "model_ended" -- a run that gave up mid-budget
         # should not read as a voluntary stop.
@@ -200,7 +209,7 @@ def run_build(
     final_usd = _price(model, in_tokens, out_tokens)
     trace.event(stage="BUILD", actor="builder", event="build_end",
                 payload={"stop_reason": stop_reason, "iterations": iterations,
-                         "suite_green": suite_green,
+                         "green": green,
                          # The model's own last stop_reason, kept alongside
                          # the resolved `stop_reason` above: a budget/ceiling
                          # breach can outrank a same-turn refusal in
@@ -211,4 +220,4 @@ def run_build(
                        "usd": round(final_usd, 4)})
     return BuildResult(stop_reason=stop_reason, iterations=iterations,
                        in_tokens=in_tokens, out_tokens=out_tokens,
-                       usd=final_usd, suite_green=suite_green)
+                       usd=final_usd, green=green)

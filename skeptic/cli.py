@@ -105,6 +105,16 @@ def _docker_available() -> bool:
     return docker_available()
 
 
+def _baseline_payload(
+    seed_red: list[str] | None, environmental_red: list[str] | None,
+    total: int | None, collection_errors: int | None,
+) -> dict:
+    """One `baseline_suite` payload shape for the live run and the cache-hit
+    replay. The values arrive as None when a cache entry predates the keys."""
+    return {"seed_red": seed_red, "environmental_red": environmental_red,
+            "total": total, "collection_errors": collection_errors}
+
+
 def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str) -> str:
     """BUILD stage cache key.
 
@@ -116,12 +126,13 @@ def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str) 
     dependency closure and no source, so a commit bump that doesn't touch
     environment.install can leave image_id unchanged.
     """
-    from skeptic.builder import prompt_version
+    from skeptic.builder import GREEN_RULE_VERSION, prompt_version
     from skeptic.trace import config_hash
 
     return config_hash({
         "stage": "BUILD", "task": spec.task_id, "seed": seed_hash,
         "model": model, "prompt": prompt_version(),
+        "green_rule": GREEN_RULE_VERSION,
         "image": image_id,
         "commit": spec.repo.commit,
         "constraints": spec.constraints.model_dump(),
@@ -143,9 +154,10 @@ def build(
     import json
     import os
     import shutil
+    import time
 
-    from skeptic.builder import PRICING, run_build
-    from skeptic.builder_tools import ToolContext
+    from skeptic.builder import GREEN_RULE_VERSION, PRICING, run_build
+    from skeptic.builder_tools import ToolContext, run_baseline_suite
     from skeptic.candidate import extract_candidate, snapshot
     from skeptic.errors import VenvBuildRefused
     from skeptic.image import ensure_repo_image
@@ -212,13 +224,13 @@ def build(
         shutil.rmtree(pristine)
 
         seeded = build_dir / "workspace"
-        baseline = build_dir / "baseline"
-        for stale in (seeded, baseline):
+        baseline_tree = build_dir / "baseline"
+        for stale in (seeded, baseline_tree):
             if stale.exists():
                 shutil.rmtree(stale)
         materialize(repo, spec.repo.commit, seeded)
         apply_patch(seeded, Path(spec.seed.bug_patch))
-        snapshot(seeded, baseline)
+        snapshot(seeded, baseline_tree)
 
         seed_hash = config_hash({"seed": Path(spec.seed.bug_patch).read_text()})
         cache_key = _build_cache_key(spec, model, image.image_id, seed_hash)
@@ -232,15 +244,43 @@ def build(
             import anthropic
             client = anthropic.Anthropic()
             with SessionContainer(image.tag, seeded, ro_subpaths=ro) as session:
-                ctx = ToolContext(workspace=seeded, session=session, spec=spec)
+                # The baseline runs after the overlay install and before the
+                # Builder's first tool call (row 74). Position here is the
+                # only thing enforcing the second half.
+                started = time.monotonic()
+                baseline_suite = run_baseline_suite(seeded, session, spec)
+                baseline_ms = int((time.monotonic() - started) * 1000)
+                red = baseline_suite.red_set()
+                # the red set alone goes in the trace: click-0001 runs the
+                # 1940 tests row 73 measured, and read_trace loads the whole
+                # trace file into memory
+                seed_red = sorted(red & set(spec.seed.failing_tests))
+                environmental_red = sorted(red - set(spec.seed.failing_tests))
+                trace.event(stage="BUILD", actor="orchestrator",
+                            event="baseline_suite", dur_ms=baseline_ms,
+                            payload=_baseline_payload(
+                                seed_red, environmental_red,
+                                len(baseline_suite.outcomes),
+                                baseline_suite.collection_errors))
+                ctx = ToolContext(
+                    workspace=seeded, session=session, spec=spec,
+                    baseline_passed=frozenset(baseline_suite.passed_set()),
+                    baseline_collection_errors=baseline_suite.collection_errors)
                 result = run_build(spec, ctx, trace, model=model, client=client)
             report = extract_candidate(
-                baseline, seeded, build_dir / "candidate.diff",
+                baseline_tree, seeded, build_dir / "candidate.diff",
                 allowed_paths=spec.builder_input.allowed_paths)
             return {
                 "stop_reason": result.stop_reason, "iterations": result.iterations,
                 "in_tokens": result.in_tokens, "out_tokens": result.out_tokens,
-                "usd": round(result.usd, 4), "suite_green": result.suite_green,
+                "usd": round(result.usd, 4), "green": result.green,
+                "green_rule": GREEN_RULE_VERSION,
+                # both red sets are sorted lists: StageCache.put json.dumps
+                # this dict verbatim, and a set raises there
+                "baseline_seed_red": seed_red,
+                "baseline_environmental_red": environmental_red,
+                "baseline_total": len(baseline_suite.outcomes),
+                "baseline_collection_errors": baseline_suite.collection_errors,
                 "candidate": str(report.diff_path),
                 "changed_files": report.changed_files,
                 "out_of_scope": report.out_of_scope,
@@ -248,12 +288,25 @@ def build(
                 "image_id": image.image_id,
             }
 
-        outcome = run_stage(StageCache(build_dir / "cache"), "BUILD",
-                            cache_key, do_build, trace)
+        cache = StageCache(build_dir / "cache")
+        cache_hit = cache.get(cache_key) is not None
+        outcome = run_stage(cache, "BUILD", cache_key, do_build, trace)
+        if cache_hit:
+            # Row 74 records the baseline red set in the trace on every run,
+            # and a cache hit never executes do_build. Replay it from the
+            # cached dict, tagged so a reader can tell the two apart.
+            trace.event(stage="BUILD", actor="orchestrator",
+                        event="baseline_suite",
+                        payload={**_baseline_payload(
+                            outcome.get("baseline_seed_red"),
+                            outcome.get("baseline_environmental_red"),
+                            outcome.get("baseline_total"),
+                            outcome.get("baseline_collection_errors")),
+                            "cached": True})
         (build_dir / "result.json").write_text(json.dumps(outcome, indent=2) + "\n")
         typer.echo(f"stop: {outcome['stop_reason']} · iterations: "
-                   f"{outcome['iterations']} · suite green: "
-                   f"{outcome['suite_green']} · cost: ${outcome['usd']:.2f}")
+                   f"{outcome['iterations']} · green: "
+                   f"{outcome.get('green')} · cost: ${outcome['usd']:.2f}")
         typer.echo(f"candidate: {outcome['candidate']}")
         if outcome["out_of_scope"]:
             typer.echo(f"out-of-scope edits (recorded for VERIFY): "

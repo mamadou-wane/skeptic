@@ -419,3 +419,30 @@ tense in the rows as the contract the plan now specifies, and read
 
 **Numbering:** these six rulings take 75 through 80, so M3's per-task DECISIONS
 rows start at 81 (plan line 39).
+
+---
+
+# M3 execution (owner-approved, 2026-07-26)
+
+Task 1 of the M3 plan. Row 74 was approved and unimplemented, and every T1
+check M3 builds is differential, so BUILD's absolute stop signal had to move
+first or the two stages would disagree about what "the suite is fine" means.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 81 | Row 74 lands in code, with six sub-decisions. `builder_tools.is_green(spec, suite, baseline_passed, baseline_collection_errors)` is the predicate, `run_baseline_suite` establishes the baseline inside the session container after the overlay install and before the Builder's first tool call, and `_suite_argv` is the one argv builder both suite runs use, so baseline and candidate argv differ only in the junit filename (`.skeptic-junit-baseline.xml` against `.skeptic-junit-build.xml`; both match `candidate.EXCLUDE_GLOBS`, so neither reaches the diff). (a) `collection_errors` is differential rather than pinned at zero. (b) A nonzero baseline `collection_errors` raises INFRA at BUILD. (c) Admission's clean-collection property is written down as a contract: `seedcheck`'s module docstring states it, `run_suite`'s exit-code message names collection failure first and carries the exact next command, and two tests pin both paths. (d) `suite_green` is renamed to `green` in all six spellings: `BuildResult.green`, `ToolOutcome.green`, the `tool_call` and `build_end` trace payload keys, `stop_reason == "green"`, and `result.json`, which also gains `green_rule` plus `baseline_seed_red`, `baseline_environmental_red`, `baseline_total`, and `baseline_collection_errors`. (e) A pass that becomes a skip, or one that vanishes from the collected set, leaves BUILD green. (f) `GREEN_RULE_VERSION = "differential-1"` joins the BUILD cache key. Out of scope and still absolute: `seedcheck`'s `pristine-green-x2` and `hacked-variants-green` | (a) A candidate can break an import the baseline did not have, and under `--continue-on-collection-errors` that run survives instead of aborting, so the count is observable and worth guarding. The differential form applies row 74's own environment-independence argument and reads identically to VERIFY's rule. It does not catch disappearance in general: an H1 deletion, a `-k` in `addopts`, and a `collect_ignore_glob` all remove tests while leaving the count at zero. Clause 1 catches those on the `failing_tests` set and `t1_collect` catches them at VERIFY. (b) A substrate whose seeded tree cannot import its own tests is broken rather than unusual, and VERIFY already treats it that way. Taken with (c) the guard should never fire, because `seed-red-exact` already requires `collection_errors == 0` on the same seeded tree BUILD then runs. It is documented as a guard expected to stay silent: if it fires, something changed between admission and BUILD, and the response is to find out what. (c) Row 78 named the contract; the code enforced it twice by construction and nothing asserted either path. The wording carries most of the value, because the next reader's question is why the two stages disagree about one flag. (d) A `result.json` written last week says `"suite_green": false` for click-0001 and means something the current code does not, and a trace event read by evalkit as a pure function has the same problem. Renaming makes a stale artifact fail loudly, and leaving three spellings behind would defeat the reason for renaming. (e) Both are hard evidence at VERIFY, where `t1_outcomes` and `t1_collect` own them. A Builder that trips either has already earned a verdict, and stopping its loop early buys nothing. BUILD's green is a stop-condition heuristic and the verdict comes from VERIFY, which is why the two are separate code rather than a shared function. (f) Today the semantics change happens to invalidate the cache, because `prompt_version()` hashes the Builder-facing text and that text had to change. That is luck. A future edit to the predicate alone would leave the key still and serve a cached `green` under the new rule's name | Keeping `collection_errors == 0` absolute at BUILD: it re-creates row 73's shape one layer down, where a candidate-caused import break and an environmental one are indistinguishable. Differencing a nonzero baseline away instead of raising, which would launder broken substrate into evidence. Leaving `suite_green` in place and documenting the new meaning: a stale artifact would keep reading as valid. Making pass-to-skipped non-green at BUILD, which duplicates `t1_outcomes` in a stage whose output is not a verdict. Routing the baseline through `seedcheck.run_suite`: it takes a runner with an `exec` method `SessionContainer` does not have, and `exec_shell` would give the baseline shell tokenization while the candidate gets argv tokenization, which is the bug class rows 70 and 72 exist to prevent. `run_baseline_suite` duplicates a little of `run_suite`'s exit-code taxonomy instead |
+
+**Out of scope, on purpose:** `seedcheck.py`'s `pristine-green-x2` and
+`hacked-variants-green` still require an absolute green. They are correct
+today because admission runs under `VenvRunner` on the host, where `less`
+exists. They break the moment admission moves in-container, which is the same
+gap row 73 recorded. Recorded here so the next reader sees a deliberate split
+rather than a half-converted codebase.
+
+**Hole this task did not close:** `SessionContainer._BASE_ENV` and `_INSTALL`
+shape the outcome map and are in no cache key. That was already true for the
+Builder's own test runs; the baseline gives it a second consumer.
+
+**Free side benefit:** the baseline runs after the cost confirmation and
+before the first API call, so a broken environment now fails for zero dollars.
+Row 73's actual outcome was two paid runs and a two-hour diagnosis.

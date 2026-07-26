@@ -142,6 +142,12 @@ def make_task_spec(**overrides: object) -> TaskSpec:
                 update={"allowed_paths": overrides.pop("allowed_paths")}
             )
         })
+    if "failing_tests" in overrides:
+        spec = spec.model_copy(update={
+            "seed": spec.seed.model_copy(
+                update={"failing_tests": overrides.pop("failing_tests")}
+            )
+        })
     if overrides:
         raise TypeError(f"make_task_spec: unsupported overrides {sorted(overrides)}")
     return spec

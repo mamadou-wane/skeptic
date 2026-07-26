@@ -85,7 +85,10 @@ def build_env(tmp_path):
     ws = tmp_path / "ws"
     (ws / "pkg").mkdir(parents=True)
     (ws / "pkg" / "mod.py").write_text("value = 1\n")
-    spec = make_task_spec(allowed_paths=["pkg/"])
+    # failing_tests points at the nodeid GreenSession's junit reports, or the
+    # first green clause could never hold here.
+    spec = make_task_spec(allowed_paths=["pkg/"],
+                          failing_tests=["tests/t.py::test_a"])
 
     class GreenSession:
         def exec_shell(self, cmd, timeout_s, env=None):
@@ -98,28 +101,34 @@ def build_env(tmp_path):
                 "</testsuite></testsuites>")
             return ExecResult(0, "1 passed", "", 5)
 
-    ctx = ToolContext(workspace=ws, session=GreenSession(), spec=spec)
+    ctx = ToolContext(workspace=ws, session=GreenSession(), spec=spec,
+                      baseline_passed=frozenset(), baseline_collection_errors=0)
     trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id=spec.task_id)
     return spec, ctx, trace
 
 
 def test_system_prompt_states_no_selector_completion_rule():
     # A Builder that fixes the bug and verifies with a selector-scoped
-    # run_tests call never sees suite_green=True; the prompt must say the
+    # run_tests call never sees green=True; the prompt must say the
     # completion rule requires a full run with no selector, or the loop
     # structurally never reaches the completion signal.
     assert "no selector" in SYSTEM_PROMPT
     assert "full suite" in SYSTEM_PROMPT
+    # And the differential rule itself (row 74): on click-0001 the Builder
+    # sees 24 red tests in the run that ends the task, and nothing else tells
+    # it those are environmental.
+    assert "already passing" in SYSTEM_PROMPT
+    assert "environmental" in SYSTEM_PROMPT
 
 
-def test_run_build_stops_on_suite_green(build_env):
+def test_run_build_stops_on_green(build_env):
     spec, ctx, trace = build_env
     client = FakeClient([
         FakeResponse([FakeBlock("tool_use", name="run_tests", input={})]),
     ])
     result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
-    assert result.stop_reason == "suite_green"
-    assert result.suite_green and result.iterations == 1
+    assert result.stop_reason == "green"
+    assert result.green and result.iterations == 1
     assert result.in_tokens == 100 and result.out_tokens == 50
 
 
@@ -139,7 +148,7 @@ def test_run_build_stops_when_model_ends_without_tools(build_env):
                                       stop_reason="end_turn")])
     result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
     assert result.stop_reason == "model_ended"
-    assert not result.suite_green
+    assert not result.green
 
 
 def test_run_build_records_refusal_stop(build_env):
@@ -147,7 +156,7 @@ def test_run_build_records_refusal_stop(build_env):
     client = FakeClient([FakeResponse([], stop_reason="refusal")])
     result = run_build(spec, ctx, trace, model="claude-opus-5", client=client)
     assert result.stop_reason == "refusal"
-    assert not result.suite_green
+    assert not result.green
 
 
 def test_run_build_enforces_token_budget(build_env):
@@ -163,11 +172,10 @@ def test_run_build_enforces_token_budget(build_env):
 
 
 def test_run_build_reports_token_budget_when_model_ends_without_tools(build_env):
-    # Priority order (suite green, iteration cap, token budget, cost
-    # ceiling, model ends without tool calls) means a tool-call-free turn
-    # that also blows the token budget must report the budget breach, not
-    # "model_ended" -- otherwise a run that gave up mid-budget reads as a
-    # voluntary stop.
+    # Priority order (green, iteration cap, token budget, cost ceiling, model
+    # ends without tool calls) means a tool-call-free turn that also blows
+    # the token budget must report the budget breach, not "model_ended" --
+    # otherwise a run that gave up mid-budget reads as a voluntary stop.
     spec, ctx, trace = build_env
     spec = spec.model_copy(deep=True)
     spec.constraints.token_budget = 100   # first response's 150 total exceeds it
@@ -175,7 +183,7 @@ def test_run_build_reports_token_budget_when_model_ends_without_tools(build_env)
                                       stop_reason="end_turn")])
     result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
     assert result.stop_reason == "token_budget"
-    assert not result.suite_green
+    assert not result.green
 
 
 def test_run_build_reports_cost_ceiling_when_model_ends_without_tools(build_env):
@@ -187,7 +195,7 @@ def test_run_build_reports_cost_ceiling_when_model_ends_without_tools(build_env)
                                       stop_reason="end_turn")])
     result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
     assert result.stop_reason == "cost_ceiling"
-    assert not result.suite_green
+    assert not result.green
 
 
 def test_run_build_records_refusal_in_trace_when_budget_wins(build_env):
@@ -243,7 +251,7 @@ def test_run_build_records_exception_type_in_tool_call_trace(build_env, monkeypa
         FakeResponse([FakeBlock("tool_use", name="run_tests", input={})]),
     ])
     result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
-    assert result.stop_reason == "suite_green"
+    assert result.stop_reason == "green"
     events, _ = read_trace(trace.path)
     tool_calls = [e for e in events if e["event"] == "tool_call"]
     assert tool_calls[0]["payload"]["refused"] is True
@@ -271,5 +279,5 @@ def test_run_build_retries_overloaded_error(build_env, monkeypatch):
 
     result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
 
-    assert result.stop_reason == "suite_green"
+    assert result.stop_reason == "green"
     assert client.calls > 1        # the first 529 was retried, not raised

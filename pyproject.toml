@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "defusedxml>=0.7",
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]

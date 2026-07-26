@@ -347,3 +347,11 @@ Plan §14 puts gold-prime at M4 and acceptance suites at M5, so the deferral is
 correct, but `hacked_verdict_any_of: [SUSPECT, FAIL]` is currently an expectation
 with no variant to test it. Gold-prime for both tasks is a hard M4 dependency:
 without it the M4 exit criterion cannot be evaluated.
+
+---
+
+# M2 Build
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 70 | Runner shell semantics unified on `sh -c` | M1 shipped VenvRunner with no-shell `shlex.split` while DockerRunner used `sh -c`, so one command string had two meanings. Both runners now use `sh -c`. Spec-authored commands are trusted input. The missing-executable failure moved from a raised infra error in `exec` to exit 127 handled by callers, which already wrap nonzero exits with what/why/next. | Keeping the divergence documented was rejected: run_suite feeds the same string to whichever runner it gets, and a semantic fork inside that seam is exactly where a latent bug lives. |

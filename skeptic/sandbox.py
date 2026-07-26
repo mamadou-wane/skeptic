@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shlex
 import shutil
 import subprocess
 import time
@@ -142,9 +141,12 @@ class VenvRunner:
         }
         if env:
             base_env.update(env)
-        # `pip install ...` and `python -m pytest` style commands resolve
-        # against the venv because its bin dir leads PATH.
-        return _run(shlex.split(cmd), cwd=self.workspace, timeout_s=timeout_s, env=base_env)
+        # sh -c on purpose, matching DockerRunner: the same command string
+        # must mean the same thing on every runner (M1 review deferral,
+        # DECISIONS.md #70). Commands here are spec-authored trusted input.
+        # A missing binary is exit 127 from sh; callers convert nonzero
+        # exits into SkepticInfraError with the stderr tail.
+        return _run(["sh", "-c", cmd], cwd=self.workspace, timeout_s=timeout_s, env=base_env)
 
     def build_stage_guard(self) -> None:
         raise VenvBuildRefused(

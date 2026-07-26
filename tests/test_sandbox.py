@@ -54,9 +54,22 @@ def test_venv_runner_refuses_build_stage(venv_runner):
     assert venv_runner.isolation == "venv-reduced-isolation"
 
 
-def test_venv_exec_missing_executable_raises_infra_error(venv_runner):
-    with pytest.raises(SkepticInfraError, match="definitely_not_a_real_binary_zzz"):
-        venv_runner.exec("definitely_not_a_real_binary_zzz --x", timeout_s=5)
+def test_venv_exec_missing_executable_reports_127(venv_runner):
+    """Under sh -c, a missing binary is exit 127 with a note on stderr.
+
+    The infra-error contract moved one level up: VenvRunner.setup and
+    run_suite convert nonzero exits into SkepticInfraError with the
+    stderr tail, so the operator still sees an actionable message.
+    """
+    result = venv_runner.exec("definitely_not_a_real_binary_zzz --x", timeout_s=5)
+    assert result.exit_code == 127
+    assert "not found" in result.stderr.lower()
+
+
+def test_venv_exec_has_shell_semantics(venv_runner):
+    result = venv_runner.exec("echo a && echo b | tr 'b' 'c'", timeout_s=5)
+    assert result.exit_code == 0
+    assert result.stdout.split() == ["a", "c"]
 
 
 def test_venv_setup_unknown_python_raises_infra_error(tmp_path):

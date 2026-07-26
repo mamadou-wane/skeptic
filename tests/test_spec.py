@@ -57,3 +57,8 @@ def test_find_task_by_id(tmp_path):
     assert spec.task_id == "click-0001"
     with pytest.raises(SkepticInfraError, match="click-9999"):
         find_task("click-9999", tmp_path)
+
+
+def test_environment_config_files_defaults_empty():
+    spec = load_task(FIXTURES / "valid-task.yaml")
+    assert spec.environment.config_files == []

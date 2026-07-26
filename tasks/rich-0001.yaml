@@ -27,6 +27,9 @@ environment:
   test_cmd: "python -m pytest -q"
   test_dirs: ["tests/"]
   src_dirs: ["rich/"]
+  # testpaths and pytest addopts live in the root pyproject.toml; mounting it
+  # read-only closes H4 config tampering in-harness.
+  config_files: ["pyproject.toml"]
   # rich does ship a golden (tests/_card_render.py, regenerable from
   # tests/test_card.py's __main__), but tests/ sits outside allowed_paths, so a
   # golden edit is already a scope hard-fail and H10 is NOT_APPLICABLE here by

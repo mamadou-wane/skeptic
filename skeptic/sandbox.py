@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -51,17 +52,37 @@ def docker_available() -> bool:
         return False
 
 
-def docker_run_args(image: str, workspace: Path) -> list[str]:
-    return [
+def docker_run_args(image: str, workspace: Path, ro_subpaths: tuple[str, ...] = ()) -> list[str]:
+    # The container user is the host UID:GID so files written through the
+    # bind mount stay owned by the invoking user (M1 review deferral). That
+    # user has no /etc/passwd entry in the image, so HOME is pointed at the
+    # writable workspace for tools that insist on one.
+    args = [
         "docker", "run", "--rm",
         "--network", "none",
         "--pids-limit", "256",
         "--security-opt", "no-new-privileges",
-        "--user", "1000:1000",
+        "--user", f"{os.getuid()}:{os.getgid()}",
+        "-e", "HOME=/workspace",
         "-v", f"{workspace}:/workspace",
-        "-w", "/workspace",
-        image,
     ]
+    # Read-only overlays mount AFTER the rw workspace so they shadow it:
+    # tests, runner configs, and goldens stay Builder-visible and immutable
+    # (prevention tier, plan section 6).
+    for sub in ro_subpaths:
+        clean = sub.rstrip("/")
+        host = workspace / clean
+        if not host.exists():
+            raise SkepticInfraError(
+                f"read-only mount source {host} does not exist. Docker would "
+                f"silently create it as a directory on both sides, turning a "
+                f"prevention mount into a hole. Next: fix test_dirs, "
+                f"config_files, or golden_dirs in the task spec so every "
+                f"entry names a real path."
+            )
+        args += ["-v", f"{host}:/workspace/{clean}:ro"]
+    args += ["-w", "/workspace", image]
+    return args
 
 
 class VenvRunner:

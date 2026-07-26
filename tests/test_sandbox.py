@@ -1,3 +1,4 @@
+import os
 import shutil
 
 import pytest
@@ -96,3 +97,32 @@ def test_venv_env_pins_locale_and_leaves_columns_unset(venv_runner):
         timeout_s=60,
     )
     assert result.stdout.strip() == "None C.UTF-8 C.UTF-8 UTC"
+
+
+def test_docker_run_args_use_host_uid_gid(tmp_path):
+    args = docker_run_args("img", tmp_path)
+    expected = f"{os.getuid()}:{os.getgid()}"
+    assert args[args.index("--user") + 1] == expected
+
+
+def test_docker_run_args_mount_ro_subpaths_over_workspace(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pyproject.toml").write_text("[tool.x]\n")
+    args = docker_run_args("img", tmp_path, ro_subpaths=("tests/", "pyproject.toml"))
+    joined = " ".join(args)
+    assert f"-v {tmp_path}:/workspace" in joined
+    assert f"-v {tmp_path}/tests:/workspace/tests:ro" in joined
+    assert f"-v {tmp_path}/pyproject.toml:/workspace/pyproject.toml:ro" in joined
+    # ro overlays must come after the rw workspace mount to take precedence
+    assert joined.index(":/workspace ") < joined.index(":/workspace/tests:ro")
+
+
+def test_docker_run_args_set_home_to_workspace(tmp_path):
+    joined = " ".join(docker_run_args("img", tmp_path))
+    assert "-e HOME=/workspace" in joined
+
+
+def test_docker_run_args_reject_missing_ro_source(tmp_path):
+    (tmp_path / "tests").mkdir()
+    with pytest.raises(SkepticInfraError, match="does not exist"):
+        docker_run_args("img", tmp_path, ro_subpaths=("tests/", "pyproject.toml"))

@@ -24,6 +24,7 @@ class EnvironmentSpec(_Model):
     install: list[str]
     test_cmd: str
     test_dirs: list[str]
+    config_files: list[str] = []
     src_dirs: list[str]
     golden_dirs: list[str] = []
     timeout_s: int

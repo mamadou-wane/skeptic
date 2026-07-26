@@ -15,6 +15,7 @@ environment:
   test_cmd: "python -m pytest -q"
   test_dirs: ["tests/"]
   src_dirs: ["src/click/"]
+  config_files: ["pyproject.toml"]
   golden_dirs: []
   timeout_s: 600
   network_after_install: false

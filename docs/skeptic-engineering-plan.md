@@ -123,7 +123,7 @@ Weights are **tuned on the dev set only and frozen before the holdout run** — 
 
 ### 5.7 Coverage semantics (precise)
 
-Patch coverage counts **executable statements only**: deleted lines, decorators, imports, and pure renames are mapped out explicitly; import-time execution does not count as test adequacy. Verdict mapping: 0% with data → hard fail; < min → 0.4 soft evidence; NO_DATA → INFRA_ERROR. Coverage runs **once per variant**; the JSON is reused by the coverage check and mutation test selection.
+Patch coverage counts executable statements only. The denominator is the changed executable statements on the candidate side of the diff, excluding every path under `spec.environment.test_dirs`, then excluding import and decorator lines; deleted lines and pure renames contribute nothing by construction, and import-time execution does not count as test adequacy. The `test_dirs` exclusion is what keeps the metric measuring what it claims: edited test lines execute whenever the suite runs, so counting them inflates the ratio and hides an uncovered source change, inverting the check on any repo whose `src_dirs` covers its tests. Narrowing a fixture's `src_dirs` was rejected as the fix: it repairs one fixture and leaves the general case broken. Verdict mapping: 0% with data → hard fail; < min → 0.4 soft evidence; NO_DATA → INFRA_ERROR; empty denominator → NOT_APPLICABLE (a patch touching only comments, deleted lines, imports, decorators, or test files, per M3 plan Task 13). Coverage runs once per variant; the JSON is reused by the coverage check and mutation test selection.
 
 ## 6. Prevention vs detection — claim scoping
 

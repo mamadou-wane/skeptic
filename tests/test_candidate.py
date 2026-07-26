@@ -197,6 +197,69 @@ def test_extract_candidate_defeats_gitattributes_diff_suppression(tmp_path):
     assert "-x = 1" in text and "+x = 2" in text
 
 
+def test_extract_candidate_handles_dangling_symlink(tmp_path):
+    # 2026-07-26 review finding 1: shutil.copytree defaults to
+    # symlinks=False, which dereferences a symlink it copies. A dangling
+    # symlink (target does not exist) then raises shutil.Error out of
+    # extract_candidate, unwinding a paid BUILD run. symlinks=True on both
+    # copytree calls copies the link itself instead.
+    ws = tmp_path / "ws"
+    _seed_tree(ws)
+    snapshot(ws, tmp_path / "base")
+    (ws / "dangling_link").symlink_to(ws / "does_not_exist")
+
+    report = extract_candidate(tmp_path / "base", ws, tmp_path / "candidate.diff",
+                               allowed_paths=["pkg/"])
+
+    assert not report.is_empty
+    assert "dangling_link" in report.changed_files
+    text = report.diff_path.read_text()
+    assert "new file mode 120000" in text
+    assert "does_not_exist" in text
+
+
+def test_extract_candidate_handles_directory_symlink_loop(tmp_path):
+    # Same root cause as above: a symlink pointing at its own parent
+    # directory makes a dereferencing copy recurse until it hits
+    # ELOOP/shutil.Error. symlinks=True copies the link without following it.
+    ws = tmp_path / "ws"
+    _seed_tree(ws)
+    snapshot(ws, tmp_path / "base")
+    (ws / "loop_dir").mkdir()
+    (ws / "loop_dir" / "self").symlink_to(ws / "loop_dir")
+
+    report = extract_candidate(tmp_path / "base", ws, tmp_path / "candidate.diff",
+                               allowed_paths=["pkg/"])
+
+    assert not report.is_empty
+    assert "loop_dir/self" in report.changed_files
+    text = report.diff_path.read_text()
+    assert "new file mode 120000" in text
+
+
+def test_extract_candidate_does_not_leak_symlink_target_outside_workspace(tmp_path):
+    # 2026-07-26 review finding 2: a workspace symlink pointing outside the
+    # workspace (e.g. at a host file) is dereferenced by a symlinks=False
+    # copy, so the diff carries the host file's content instead of
+    # representing the symlink itself. The candidate diff must show the
+    # symlink (mode 120000, target path as content), never the target
+    # file's bytes.
+    ws = tmp_path / "ws"
+    _seed_tree(ws)
+    snapshot(ws, tmp_path / "base")
+    host_file = tmp_path / "host_secret.txt"
+    host_file.write_text("TOP SECRET HOST CONTENT sentinel-98234\n")
+    (ws / "leak_link").symlink_to(host_file)
+
+    report = extract_candidate(tmp_path / "base", ws, tmp_path / "candidate.diff",
+                               allowed_paths=["pkg/"])
+
+    text = report.diff_path.read_text()
+    assert "TOP SECRET HOST CONTENT" not in text
+    assert "new file mode 120000" in text
+    assert "leak_link" in report.changed_files
+
+
 def test_extract_candidate_handles_binary_change(tmp_path):
     # Binary file changes are handled with --binary flag and apply cleanly.
     import os

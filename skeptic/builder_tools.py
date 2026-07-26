@@ -40,6 +40,13 @@ class ToolOutcome:
     text: str
     suite_green: bool = False
     refused: bool = False
+    # Set only on the dispatch_tool boundary catch below, to the offending
+    # exception's type name. A handler's ordinary refusals (bad path, wrong
+    # tool name) leave this None; it exists so a genuine harness bug
+    # (AttributeError after a refactor, SkepticInfraError from the sandbox)
+    # is distinguishable in trace.jsonl from the Builder just passing a bad
+    # argument, without parsing outcome.text to tell them apart.
+    exception_type: str | None = None
 
 
 TOOL_DEFS: list[dict] = [
@@ -147,9 +154,12 @@ def dispatch_tool(ctx: ToolContext, name: str, args: dict) -> ToolOutcome:
         # 3). Narrower catches (TypeError, KeyError) missed AttributeError
         # and ValueError from other malformed-input shapes, so this catches
         # the whole class instead of enumerating exception types.
-        return _refuse(f"{name} raised {type(exc).__name__}: {exc}. "
-                       f"Check the tool's arguments against its input "
-                       f"schema, or try a different approach.")
+        return ToolOutcome(
+            text=f"{name} raised {type(exc).__name__}: {exc}. "
+                 f"Check the tool's arguments against its input "
+                 f"schema, or try a different approach.",
+            refused=True, exception_type=type(exc).__name__,
+        )
 
 
 def _list_files(ctx: ToolContext, args: dict) -> ToolOutcome:

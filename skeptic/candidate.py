@@ -31,7 +31,7 @@ def _ignored(name: str) -> bool:
 def snapshot(workspace: Path, dest: Path) -> None:
     """Copy the seeded tree before BUILD so the candidate diff has a baseline."""
     shutil.copytree(
-        workspace, dest,
+        workspace, dest, symlinks=True,
         ignore=lambda _dir, names: [n for n in names if _ignored(n)],
     )
 
@@ -44,9 +44,20 @@ def _diff_safe_copy(src: Path, dest: Path) -> None:
     diff renders (or, with a nonstandard core.excludesFile, what git
     considers). Neither file is part of the candidate under judgment, and
     their own changes are reported separately (_control_file_changes).
+
+    symlinks=True on both this copy and snapshot()'s: shutil.copytree
+    defaults to symlinks=False, which dereferences every symlink it copies.
+    A dangling symlink then raises shutil.Error, a directory symlink loop
+    raises after recursing, and a symlink pointing outside the workspace
+    copies the target's content in instead of the link itself (2026-07-26
+    review findings 1 and 2). git diff --no-index records a symlink as a
+    mode-120000 entry showing the link target, never the target's content,
+    which is the behavior this restores. Both calls need it: if only one
+    preserved symlinks, a symlink present in the pristine tree would be
+    dereferenced on one side and not the other, producing a phantom hunk.
     """
     shutil.copytree(
-        src, dest,
+        src, dest, symlinks=True,
         ignore=lambda _dir, names: [
             n for n in names if _ignored(n) or n in DIFF_CONTROL_NAMES
         ],

@@ -224,6 +224,34 @@ def test_run_build_converts_non_retried_api_error(build_env):
     assert client.calls == 1
 
 
+def test_run_build_records_exception_type_in_tool_call_trace(build_env, monkeypatch):
+    # 2026-07-26 review finding 3: dispatch_tool's broad except now swallows
+    # every exception class, so a genuine harness bug (an AttributeError
+    # after a refactor, a SkepticInfraError from the sandbox) must still be
+    # diagnosable in trace.jsonl. A handler that raises an unexpected
+    # exception must produce a refusal whose tool_call trace payload names
+    # the exception type.
+    from skeptic import builder_tools
+
+    def _boom(_ctx, _args):
+        raise AttributeError("no such attribute")
+
+    monkeypatch.setitem(builder_tools._HANDLERS, "boom_tool", _boom)
+    spec, ctx, trace = build_env
+    client = FakeClient([
+        FakeResponse([FakeBlock("tool_use", name="boom_tool", input={})]),
+        FakeResponse([FakeBlock("tool_use", name="run_tests", input={})]),
+    ])
+    result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
+    assert result.stop_reason == "suite_green"
+    events, _ = read_trace(trace.path)
+    tool_calls = [e for e in events if e["event"] == "tool_call"]
+    assert tool_calls[0]["payload"]["refused"] is True
+    assert tool_calls[0]["payload"]["exception_type"] == "AttributeError"
+    # An ordinary tool call carries no exception_type key at all.
+    assert "exception_type" not in tool_calls[1]["payload"]
+
+
 def test_run_build_retries_overloaded_error(build_env, monkeypatch):
     # Task 12 spends real money against this path: OverloadedError (HTTP
     # 529) is transient, so it belongs in the retry tuple, not the broad

@@ -95,3 +95,36 @@ def test_test_cmd_with_env_prefix_rejected(tmp_path):
 def test_plain_test_cmd_still_loads():
     spec = load_task(FIXTURES / "valid-task.yaml")
     assert spec.environment.test_cmd == "python -m pytest -q"
+
+
+# 2026-07-26 review finding 4: shlex.split and sh -c tokenize a quoted
+# argument identically, so quotes are where the two interpretations agree,
+# not where they diverge. Banning `"` and `'` also removed the only way to
+# express an argument containing a space, since test_cmd is one string.
+
+
+def test_quoted_test_cmd_loads_and_round_trips_to_expected_argv(tmp_path):
+    import shlex
+
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        'test_cmd: "python -m pytest -q"',
+        "test_cmd: 'python -m pytest -q -k \"not slow\"'",
+    )
+    p = tmp_path / "quoted.yaml"
+    p.write_text(text)
+    spec = load_task(p)
+    assert spec.environment.test_cmd == 'python -m pytest -q -k "not slow"'
+    assert shlex.split(spec.environment.test_cmd) == [
+        "python", "-m", "pytest", "-q", "-k", "not slow",
+    ]
+
+
+def test_unbalanced_quote_in_test_cmd_rejected_at_load(tmp_path):
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        'test_cmd: "python -m pytest -q"',
+        "test_cmd: 'python -m pytest -q -k \"not slow'",
+    )
+    p = tmp_path / "bad.yaml"
+    p.write_text(text)
+    with pytest.raises(SkepticInfraError, match="unbalanced quoting"):
+        load_task(p)

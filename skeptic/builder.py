@@ -154,9 +154,16 @@ def run_build(
             results = []
             for block in tool_uses:
                 outcome = dispatch_tool(ctx, block.name, dict(block.input))
+                payload = {"tool": block.name, "refused": outcome.refused,
+                           "suite_green": outcome.suite_green}
+                # Only set on the dispatch_tool unexpected-exception path
+                # (see ToolOutcome.exception_type): an ordinary refusal
+                # (bad path, unknown tool) leaves it out of the payload
+                # entirely rather than writing a null every row.
+                if outcome.exception_type is not None:
+                    payload["exception_type"] = outcome.exception_type
                 trace.event(stage="BUILD", actor="builder.tool", event="tool_call",
-                            payload={"tool": block.name, "refused": outcome.refused,
-                                     "suite_green": outcome.suite_green})
+                            payload=payload)
                 results.append({"type": "tool_result", "tool_use_id": block.id,
                                 "content": outcome.text})
                 suite_green = suite_green or outcome.suite_green

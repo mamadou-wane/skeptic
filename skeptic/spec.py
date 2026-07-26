@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from typing import Literal
 
@@ -25,7 +26,14 @@ class RepoSpec(_Model):
 # plain argv command and diverge on anything shell-flavored: reject at spec
 # load, before BUILD spends money discovering the divergence with an image
 # already built (2026-07-26 review finding 6; DECISIONS.md #72).
-_TEST_CMD_METACHARS = set(";&|<>$`(){}[]*?!~#\\\"'\n\r\t")
+#
+# Quotes are not in this set: shlex.split and sh -c tokenize a quoted
+# argument the same way (`python -m pytest -q -k "not slow"` yields the
+# same argv both ways), so quotes are exactly where the two interpretations
+# agree, not where they diverge. Banning them would also remove the only
+# way to pass an argument containing a space, since test_cmd is a single
+# string (2026-07-26 review finding 4).
+_TEST_CMD_METACHARS = set(";&|<>$`(){}[]*?!~#\\\n\r\t")
 
 
 class EnvironmentSpec(_Model):
@@ -52,6 +60,18 @@ class EnvironmentSpec(_Model):
                 f"plain argv command with no shell syntax, e.g. "
                 f"`python -m pytest -q`."
             )
+        try:
+            shlex.split(cmd)
+        except ValueError as exc:
+            raise ValueError(
+                f"environment.test_cmd {cmd!r} has unbalanced quoting ({exc}). "
+                f"skeptic build tokenizes test_cmd with shlex.split before "
+                f"running it as argv, so an unbalanced quote cannot be "
+                f"tokenized at all; a per-iteration refusal at BUILD is where "
+                f"this would otherwise surface, after API spend has started. "
+                f"Next: fix the quoting in test_cmd, e.g. "
+                f'`python -m pytest -q -k "not slow"`.'
+            ) from exc
         first = cmd.split(" ", 1)[0] if cmd else ""
         if "=" in first:
             raise ValueError(

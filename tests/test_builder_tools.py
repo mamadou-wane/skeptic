@@ -231,3 +231,13 @@ def test_dispatch_tool_catches_unexpected_handler_exception(ctx, monkeypatch):
     assert out.refused
     assert "ValueError" in out.text
     assert "boom" in out.text
+    # 2026-07-26 review finding 3: the exception type must ride on the
+    # outcome itself (not just be embedded in free text) so the builder
+    # loop can carry it into the trace payload without parsing outcome.text.
+    assert out.exception_type == "ValueError"
+
+
+def test_ordinary_refusal_leaves_exception_type_none(ctx):
+    out = dispatch_tool(ctx, "read_file", {"path": "../outside.txt"})
+    assert out.refused
+    assert out.exception_type is None

@@ -127,7 +127,21 @@ def make_minirepo_task(
     return tasks_dir, "minirepo-0001"
 
 
-def make_task_spec() -> TaskSpec:
+def make_task_spec(**overrides: object) -> TaskSpec:
     """Minimal valid TaskSpec, built from the same fixture tests/test_spec.py
-    validates. Single shared spec-builder: add fields here, not a second copy."""
-    return load_task(SPECS / "valid-task.yaml")
+    validates. Single shared spec-builder: add fields here, not a second copy.
+
+    Keyword overrides land on nested spec fields (e.g. allowed_paths onto
+    builder_input) via a deep model_copy, so callers get an isolated spec
+    without duplicating the base fixture.
+    """
+    spec = load_task(SPECS / "valid-task.yaml")
+    if "allowed_paths" in overrides:
+        spec = spec.model_copy(update={
+            "builder_input": spec.builder_input.model_copy(
+                update={"allowed_paths": overrides.pop("allowed_paths")}
+            )
+        })
+    if overrides:
+        raise TypeError(f"make_task_spec: unsupported overrides {sorted(overrides)}")
+    return spec

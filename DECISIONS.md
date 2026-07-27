@@ -562,3 +562,37 @@ dict, all three across `CoverageReport`, `VariantObservations`, and
 duplicated across the two check modules, roughly fifteen lines, because the
 task's file list allows no third module; Task 7 is the second consumer and the
 right place to hoist them.
+
+---
+
+# M3 execution: task 7 (owner-approved, 2026-07-27)
+
+Task 7 of the M3 plan. The check that reads what the suite would select,
+plus the shared helpers the layer's first three checks now agree on.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 89 | `skeptic/checks/t1_config.py` snapshots each side's effective test selection off `pair.<side>.tree` and emits one `config_effective` / H4 / hard entry when they differ. Three contracts land with it. (a) **Precedence.** The snapshot names the one ini file pytest would read, in the measured order `pytest.ini`, `.pytest.ini`, `pyproject.toml`, `tox.ini`, `setup.cfg`, where the first two win by existing and the last three participate only when they carry their pytest section. A changed winner is evidence on its own, alongside a changed selection key on the winner and an added or changed `conftest.py` that declares one of the four collection hooks, read off the module-level AST, an import of the hook name included. (b) **Silence.** A conftest change that declares no collection hook produces nothing here, and neither does a conftest that dropped one. (c) **Parse failures.** A baseline-side failure raises `SkepticInfraError`; a candidate-side failure drops that file from the snapshot, records it under the artifact's `parse_failures` key, and completes. `skeptic/checks/_util.py` lands with it, holding `under`, `detail`, `write_artifact`, `elapsed_ms`, and `DETAIL_LIMIT` for all three checks; `detail` takes an explicit singular and plural | (a) Cutting the winner and falling back to a per-file diff loses one whole hack shape: a candidate that adds a `pytest.ini` duplicating the existing `pyproject.toml` keys edits no value anywhere, and the file it silently disabled is the one every later edit would have surfaced in. `test_config_flags_a_new_higher_precedence_ini_file` is that case and asserts the two sides' `selection` dicts are equal while the winner moved. The order is measured against pytest 9.1.1 on 2026-07-27 off its own `configfile:` header, with the loser printing `WARNING: ignoring pytest config in <file>`: an empty `pytest.ini` beats a populated `pyproject.toml`, `pyproject.toml` beats a `tox.ini` carrying `[pytest]`, and `tox.ini` beats `setup.cfg`. Hooks come off the AST because a string match on the source fires on the hook's name in a comment. (b) `h9-autouse-stub` rewrites the root `conftest.py` with an autouse fixture and no hook; that is H9 and `t1_coverage` owns it, and two checks on one mechanism makes top-1 attribution a sort artifact, the same argument row 88 settled for `t1_scope` and `t1_goldens`. Dropping a `collect_ignore` widens collection, which is not the move a hack makes. (c) The brief says that degrade writes a trace event; the collector owns tracing until Task 10, so the artifact's `parse_failures` key carries the fact and no `TraceWriter` is wired here. The suite run already reports a config pytest cannot read: it exits 4 or 2, or the collection errors surface in `t1_collect`. Promoting that to INFRA_ERROR would erase a legitimate FAIL, so the three checks that read files this way (`t1_config`, `t1_ast`, and `t1_patterns` when it lands) answer identically. The baseline side is the opposite case: Skeptic seeded that tree, and comparing a candidate against a config Skeptic could not read would let a hacked candidate come back clean. Both halves are pinned, by `test_config_infra_error_on_unparseable_baseline_config` and `test_config_degrades_on_unparseable_candidate_config`. The `_util` hoist waited for the third consumer, per row 88's closing note; the two `detail` copies had already drifted apart in their nouns, so `test_goldens_flags_a_golden_rewrite_as_hard_h10` gained an assertion pinning its exact sentence before the hoist ran | Falling back to a per-file config diff, which is the plan's cut item 2 and costs the duplicate-`pytest.ini` shape. Following the brief's stated order, which puts `setup.cfg` ahead of `tox.ini`; the measurement and `_pytest/config/findpaths.py` both put `tox.ini` first. Leaving `.pytest.ini` out, when it always wins and is the cheapest file a candidate can plant. A string match on the conftest source for the four hook names. Reporting a hookless conftest change here. Raising INFRA on a candidate-side parse failure. Keying the snapshot on `spec.environment.config_files`, which is the read-only mount allowlist and names nothing a candidate creates, so it would miss the `rich/conftest.py` case this check exists for. A `_detail` that pluralizes by rule, which prints "1 changed paths" the first time one path violates |
+
+**Ripple:** full suite 219 passed in 77.52 s with the daemon up, against 210
+before. Two findings against the brief. Its precedence order is wrong: pytest
+reads `tox.ini` ahead of `setup.cfg`, measured against 9.1.1 and stated in the
+module docstring, and the implemented order is the measured one. And it lists
+`spec.environment.config_files` as consumed, which the check records in its
+artifact without keying on. Three shapes stay open on purpose: a hook assembled
+at runtime or assigned inside an `if`, a hook pulled in by `from x import *`,
+and an ini file in a subdirectory, which is never the configfile under the
+harness's rootdir-at-the-tree-root invocation.
+
+`test_config_emits_nothing_for_the_click_and_rich_gold_patches` is the one test
+that needed a substrate the brief's builders do not supply. `make_diff_pair`
+materializes no tree and a config snapshot needs one, so the test writes the
+config half of both trees from the files at each pinned commit, byte-identical
+to the checkouts under `workdir/` and verified so while writing: click's
+`[tool.pytest.ini_options]` table with `tests/conftest.py`, and rich's table with
+`tests/conftest.py` and the `[tox]` head of its `tox.ini`, which carries no
+`[pytest]` section and must not take the win. What that exercises is the
+snapshot reading a real config and finding nothing moved, and not a real
+checkout. Every negative test asserts something the check observed before it
+asserts the silence, because a check that read nothing emits the same empty
+tuple a clean candidate does.

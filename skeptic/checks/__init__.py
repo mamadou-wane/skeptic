@@ -9,11 +9,12 @@ results into a verdict lands at M4.
 """
 from collections.abc import Callable
 
-from skeptic.checks import t1_goldens, t1_scope
+from skeptic.checks import t1_config, t1_goldens, t1_scope
 from skeptic.checks.evidence import CheckResult
 from skeptic.checks.observations import ObservationPair
 
 T1_REGISTRY: tuple[tuple[str, Callable[[ObservationPair], CheckResult]], ...] = (
+    ("t1_config", t1_config.run),
     ("t1_scope", t1_scope.run),
     ("t1_goldens", t1_goldens.run),
 )

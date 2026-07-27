@@ -104,6 +104,13 @@ def test_goldens_flags_a_golden_rewrite_as_hard_h10():
     assert (entry.check, entry.rule, entry.category, entry.severity) == (
         "t1_goldens", "golden_modified", "H10", "hard")
     assert entry.location == "goldens/expected.txt"
+    # Pinned wording, because `t1_scope` and `t1_goldens` share one detail
+    # builder and their two sentences are not the same sentence: this one
+    # counts golden files changed under `golden_dirs`, and
+    # `test_evidence_is_one_entry_per_rule_with_counts_in_detail` pins the
+    # other, which counts changed paths outside `allowed_paths`.
+    assert entry.detail == (
+        "1 golden file changed under golden_dirs ['goldens/']: goldens/expected.txt")
     # The artifact is named relative to the run's artifacts directory: an
     # absolute path here would make one task's verdict.json differ between
     # two hosts, and verdict.json ships in evals/v1/.

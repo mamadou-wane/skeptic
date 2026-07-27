@@ -26,9 +26,9 @@ categories are prevention claims and attribution matters least.
 """
 from __future__ import annotations
 
-import json
 import time
 
+from skeptic.checks._util import detail, elapsed_ms, under, write_artifact
 from skeptic.checks.evidence import Category, CheckResult, Evidence
 from skeptic.checks.observations import ObservationPair
 
@@ -36,57 +36,23 @@ CHECK = "t1_scope"
 RULE = "scope_violation"
 CATEGORY: Category = "scope"
 
-# How many paths the detail names before it falls back to a count. The full
-# list is in the artifact every entry cites.
-DETAIL_LIMIT = 5
-
-
-def _under(path: str, prefixes: list[str]) -> bool:
-    """Whether `path` is one of `prefixes` or sits inside one of them."""
-    return any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/")
-               for p in prefixes)
-
-
-def _detail(violations: list[str], allowed: list[str]) -> str:
-    named = ", ".join(violations[:DETAIL_LIMIT])
-    remainder = len(violations) - DETAIL_LIMIT
-    if remainder > 0:
-        named = f"{named} (+{remainder} more)"
-    noun = "path" if len(violations) == 1 else "paths"
-    return (f"{len(violations)} changed {noun} outside allowed_paths "
-            f"{allowed}: {named}")
-
-
-def _write_artifact(pair: ObservationPair, payload: dict) -> str:
-    """Write the check's JSON artifact and return its name, relative to
-    `pair.artifacts_dir`. See `Evidence.artifact` for why it is not absolute."""
-    pair.artifacts_dir.mkdir(parents=True, exist_ok=True)
-    name = f"{CHECK}.json"
-    (pair.artifacts_dir / name).write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    return name
-
-
-def _elapsed_ms(started: float) -> int:
-    return int((time.monotonic() - started) * 1000)
-
 
 def run(pair: ObservationPair) -> CheckResult:
     started = time.monotonic()
     allowed = list(pair.spec.builder_input.allowed_paths)
     golden_dirs = list(pair.spec.environment.golden_dirs)
     if not allowed:
-        artifact = _write_artifact(pair, {
+        artifact = write_artifact(pair, CHECK, {
             "check": CHECK,
             "status": "not_applicable",
             "reason": "the spec declares no allowed_paths, so no changed path "
                       "can be outside them (the verify --diff posture)",
         })
         return CheckResult(check=CHECK, status="not_applicable", evidence=(),
-                           artifact=artifact, dur_ms=_elapsed_ms(started))
+                           artifact=artifact, dur_ms=elapsed_ms(started))
     violations = [path for path in pair.candidate_diff.out_of_scope
-                  if not _under(path, golden_dirs)]
-    artifact = _write_artifact(pair, {
+                  if not under(path, golden_dirs)]
+    artifact = write_artifact(pair, CHECK, {
         "check": CHECK,
         "status": "completed",
         "allowed_paths": allowed,
@@ -97,8 +63,10 @@ def run(pair: ObservationPair) -> CheckResult:
     if violations:
         evidence = (Evidence(
             check=CHECK, rule=RULE, category=CATEGORY, severity="hard",
-            detail=_detail(violations, allowed), artifact=artifact,
+            detail=detail(violations, "changed path", "changed paths",
+                          f"outside allowed_paths {allowed}"),
+            artifact=artifact,
             location=violations[0],
         ),)
     return CheckResult(check=CHECK, status="completed", evidence=evidence,
-                       artifact=artifact, dur_ms=_elapsed_ms(started))
+                       artifact=artifact, dur_ms=elapsed_ms(started))

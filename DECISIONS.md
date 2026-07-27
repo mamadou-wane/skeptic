@@ -843,3 +843,38 @@ decorators, and this check does not extend it: a third cut needs its own
 fixture and its own ruling. On a three-line function reached by a test that is
 2 of 3, which is under a 0.8 minimum, so M4's weighting of the soft row is
 where the cost of that gets set.
+
+---
+
+# M3 execution: task 14, milestone close-out (owner-approved, 2026-07-27)
+
+The M3 exit criterion. No library code: one table-driven self-test that runs
+every fixture through the whole T1 layer in both postures, plus the gold half
+that matters more.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 96 | Task 14 lands `tests/test_hack_fixtures.py`'s matrix and closes M3. Five contracts. (a) **The matrix runs one collected pair twice.** Each of the ten fixtures is collected once through a session-scoped cache, then `run_t1_layer` runs over that pair under the task's real spec and again under a spec copy carrying `allowed_paths: []`. (b) **Posture decides what is asserted.** In-harness the expected `(check, rule, category, severity)` rows are asserted by presence, no hard row appears that the table does not account for, and no row appears twice; position is asserted in the diff posture alone, as the category and the severity of `order_evidence(...)[0]`. A third case ties `MATRIX` to the corpus directory listing, so a ninth fixture cannot sit outside the test named for all of them. (c) **Amendment to the corpus table.** `h10-regenerated` is the one hack that carries no `t1_scope` row in-harness: its only changed path is `goldens/expected.txt`, which `t1_scope` defers to `t1_goldens` under row 88's ownership split, so `tests/fixtures/hacks/README.md`'s "every fixture except `gold` and `gold-prime`" sentence was wrong for it. The matrix carries the measured shape and that sentence is corrected here, in the task that measured it. (d) **The click gold negative extracts its diff.** Task 11 hand-wrote `changed_files=["src/click/utils.py"]`; the full layer reads `changed_files` in `t1_ast` and `out_of_scope` in `t1_scope`, so the pair is now built from `materialize` plus the seed patch, a snapshot with the gold patch applied over it, and `extract_candidate`, which reproduces that one path and an empty out-of-scope list. (e) **Nothing was cut.** All four ordered cut candidates landed: the click gold negative in both places, `t1_config`'s winning-file precedence, `t1_ast`'s parametrize-case removal, and `gold-prime`. `t1_patterns` stays in `CHECK_PRECEDENCE`, outside `MANDATORY_CHECKS`, with the M4 comment Task 3 wrote. | (a) The checks are pure and only `t1_scope` and `t1_ast` read `allowed_paths`, so the second pass costs no container against about 4 s of collection per fixture, and one pair under two postures is one observation rather than two that nothing makes agree. (b) Measured 2026-07-27 over the eight hack fixtures: top-1 attribution is 8 of 8 in the diff posture. In-harness two of the eight land somewhere else at position 0, and neither is a detection failure: `CHECK_PRECEDENCE` puts `t1_scope` ahead of `t1_coverage`, so `h9-autouse-stub` leads with the scope row, and `t1_ast`'s H2 row is suppressed in that posture under row 90(a), so `h2-weakening` has no mechanism row there at all. The figure travels with its posture in the module docstring, the test docstring, the README, and the ledger, because "8 of 8" alone invites a reader to hear a claim about the harness end to end. (c) Measured: `h10-regenerated`'s in-harness rows are `t1_goldens · golden_modified · H10 · hard` and nothing else. This is row 88's split working, so the fixture README was stale rather than the code being wrong, and the task that proved a sentence wrong is the task that fixes it. (d) A hand-supplied `changed_files` asserts the input to two of the checks under test. The extraction adds one `git archive`, one tree copy, and one `git diff --no-index` to a test that already pays a network clone and two instrumented runs of a 1939-test suite. (e) The cut list exists so a cut is recorded rather than discovered; the honest record is that execution never reached it. | Collecting each fixture twice, once per posture: two observations of one tree that nothing makes agree, at double the container cost. Asserting the exact in-harness evidence list: it pins soft rows the layer may legitimately add at M4 and turns every future check into a matrix edit. Publishing top-1 attribution without the posture. Leaving the click negative on a hand-written diff, which would have left `t1_scope` and `t1_ast` reading a literal on the one fixture that is a real repo. |
+
+**Ripple:** full suite 334 passed in 205.84 s with the daemon up after the fix
+round, against 323 in 163.49 s at `54965a0`. Ruff clean. Three new test
+functions, eleven collected cases: the matrix parametrized over the eight hack
+fixtures, the gold negative parametrized over `gold` and `gold-prime`, and the
+fast corpus-coverage case. The click case was extended rather than cloned and
+keeps its name minus the two-check clause.
+
+**What the gold half proves, and what it does not.** Three clean patches
+produce no evidence from any check in either posture, and every check either
+completes or reports NOT_APPLICABLE. That is a per-check result. "Gold comes
+back PASS" is a verdict claim and needs M4's aggregator. A published
+false-positive rate splits `gold` from `gold-prime` across the whole corpus,
+which is an M5 number and needs gold-prime patches for click and rich that do
+not exist. `gold-prime` is what keeps the minirepo half from being one negative
+run twice: it rewrites the whole function, so `t1_coverage` scores five changed
+statements where `gold` scores one.
+
+**Per-check INFRA still propagates.** `run_t1_layer` captures nothing, so a
+check that raises ends the run with the other checks' evidence unread. No
+fixture in the corpus raises one, which is why the matrix needs no capture, and
+M4's aggregator is where the capture belongs (rows 93 and 95, and the
+`t1_outcomes` docstring).

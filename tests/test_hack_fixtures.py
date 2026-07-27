@@ -25,6 +25,27 @@ Task 13 added four more of the same kind for `t1_coverage`, where the number
 under test is a ratio rather than a set difference. `h9-autouse-stub` is the
 only fixture in the corpus that reaches the hard H9 row, and it reaches it with
 both differential checks silent.
+
+Task 14 is the M3 exit criterion: every fixture through `run_t1_layer`, twice,
+once under the task's real spec and once under a copy declaring no
+`allowed_paths`. The second pass is the `verify --diff` posture, and
+`test_every_fixture_through_the_full_t1_layer` reports the top-1 attribution
+figure there: `order_evidence(...)[0].category` against the fixture table's
+primary-evidence column, over the minirepo fixture corpus, which is the only
+corpus with hack variants. Anywhere that figure is quoted the posture is named
+in the same sentence. In-harness two of the eight fixtures would report
+something other than their mechanism at position 0: `t1_scope` outranks
+`t1_coverage`, so `h9-autouse-stub` leads with the scope row, and `t1_ast`'s
+H2 row is suppressed in that posture, so `h2-weakening` has no mechanism row
+there at all.
+
+What the gold half proves is narrower than it looks. `gold`, `gold-prime`, and
+the click gold patch produce no evidence from any check, in both postures.
+That is a per-check false-positive result and it lands here. "Gold comes back
+PASS from the full VERIFY pipeline" needs the aggregator and lands at M4. A
+published false-positive rate splits gold from gold-prime across the whole
+corpus and lands at M5, and it cannot be computed at all until gold-prime
+patches exist for click and rich, which is an M4 dependency.
 """
 import json
 from pathlib import Path
@@ -32,15 +53,24 @@ from pathlib import Path
 import pytest
 
 from skeptic.builder_tools import is_green
-from skeptic.candidate import CandidateReport, extract_candidate, snapshot
-from skeptic.checks import t1_collect, t1_config, t1_coverage, t1_outcomes
+from skeptic.candidate import extract_candidate, snapshot
+from skeptic.checks import (
+    T1_REGISTRY,
+    run_t1_layer,
+    t1_collect,
+    t1_config,
+    t1_coverage,
+    t1_outcomes,
+)
+from skeptic.checks.evidence import order_evidence, split_results
+from skeptic.checks.observations import ObservationPair
 from skeptic.collector import collect_pair
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import VenvRunner
 from skeptic.seedcheck import SuiteResult, run_suite
 from skeptic.spec import TaskSpec, load_task
 from skeptic.workspace import apply_patch, clone_pinned, materialize
-from tests.helpers import apply_fixture, seeded_tree
+from tests.helpers import HACKS, apply_fixture, seeded_tree
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -164,6 +194,42 @@ def _hacked_pair(spec: TaskSpec, repo_dir, hack_id: str, tmp_path):
     return collect_pair(spec, repo_dir, candidate, tmp_path / "work")
 
 
+# Task 14's three layer helpers, shared by every test below that runs the whole
+# T1 layer rather than one check.
+
+
+def _rows(results) -> list[tuple[str, str, str, str]]:
+    """Every entry the layer produced, as `(check, rule, category, severity)`."""
+    return [(e.check, e.rule, e.category, e.severity)
+            for result in results for e in result.evidence]
+
+
+def _diff_posture(pair: ObservationPair) -> ObservationPair:
+    """The same observations under a spec that declares no `allowed_paths`.
+
+    The `verify --diff` posture, reached without a second collection: the
+    checks are pure, so the second pass over one pair costs no container. Only
+    `t1_scope` and `t1_ast` read the field, and both are why the copy exists.
+    `t1_scope` outranks `t1_coverage` under `CHECK_PRECEDENCE`, and `t1_ast`
+    holds its H2 row back for as long as the spec declares any allowed path.
+    """
+    return pair.model_copy(update={"spec": pair.spec.model_copy(update={
+        "builder_input": pair.spec.builder_input.model_copy(
+            update={"allowed_paths": []})})})
+
+
+def _assert_layer_ran(results) -> None:
+    """Every registered check reported, and `t1_ast` reported outside both lists.
+
+    `run_t1_layer` captures no per-check INFRA until M4, so a check that raised
+    would never reach this assertion. No fixture in the corpus raises one.
+    """
+    completed, not_applicable = split_results(results)
+    assert sorted(completed + not_applicable) == sorted(
+        name for name, _ in T1_REGISTRY)
+    assert [r.check for r in results if r.status == "attribution"] == ["t1_ast"]
+
+
 @pytest.mark.docker
 @pytest.mark.slow
 @pytest.mark.parametrize(
@@ -201,15 +267,20 @@ def test_fixture_through_the_collector_produces_the_expected_rows(
 
 @pytest.mark.docker
 @pytest.mark.slow
-def test_click_gold_patch_produces_no_evidence_from_either_check(tmp_path):
+def test_click_gold_patch_produces_no_evidence_from_the_full_layer(tmp_path):
     """The sharpest false-positive test in the repo, on a real corpus repo.
 
     click-0001's pinned commit fails 24 tests inside the deps-only image
     because `less` is absent from `python:3.12-slim` (DECISIONS row 73). Those
     24 are red in the baseline and red in the candidate, so a differential rule
-    subtracts them out and an absolute rule anywhere in either check fails
-    right here. It is the failure mode row 74 exists to prevent, measured on a
-    real repo instead of on a literal outcome map.
+    subtracts them out and an absolute rule anywhere in the layer fails right
+    here. It is the failure mode row 74 exists to prevent, measured on a real
+    repo instead of on a literal outcome map.
+
+    Task 14 took this from two checks to the whole layer, which is why the
+    candidate diff is now extracted rather than hand-written: `t1_scope` reads
+    `out_of_scope` and `t1_ast` reads `changed_files`, so a hand-supplied list
+    would assert the input to two of the checks under test.
 
     Slow twice over: the clone fetches pallets/click over the network, and the
     image build is a full dependency resolve carrying Task 2's coverage layer.
@@ -220,9 +291,15 @@ def test_click_gold_patch_produces_no_evidence_from_either_check(tmp_path):
     spec = spec.model_copy(update={"seed": spec.seed.model_copy(
         update={"bug_patch": str(ROOT / spec.seed.bug_patch)})})
     repo_dir = clone_pinned(spec.repo.url, spec.repo.commit, tmp_path / "cache")
-    candidate = CandidateReport(
-        diff_path=ROOT / "patches" / "click-0001-gold.diff",
-        changed_files=["src/click/utils.py"], out_of_scope=[], is_empty=False)
+    baseline = materialize(repo_dir, spec.repo.commit, tmp_path / "seeded")
+    apply_patch(baseline, Path(spec.seed.bug_patch))
+    fixed = tmp_path / "fixed"
+    snapshot(baseline, fixed)
+    apply_patch(fixed, ROOT / "patches" / "click-0001-gold.diff")
+    candidate = extract_candidate(baseline, fixed, tmp_path / "candidate.diff",
+                                  allowed_paths=spec.builder_input.allowed_paths)
+    assert candidate.changed_files == ["src/click/utils.py"]
+    assert candidate.out_of_scope == []
 
     pair = collect_pair(spec, repo_dir, candidate, tmp_path / "work")
 
@@ -237,9 +314,21 @@ def test_click_gold_patch_produces_no_evidence_from_either_check(tmp_path):
     assert all(pair.candidate.outcomes[nodeid] == "passed" for nodeid in seeded)
     assert set(pair.candidate.collected) == set(pair.baseline.collected)
 
-    assert t1_collect.run(pair).evidence == ()
-    assert t1_outcomes.run(pair).evidence == ()
+    results = run_t1_layer(pair)
+    _assert_layer_ran(results)
+    assert _rows(results) == []
     assert _artifact(pair, "t1_outcomes")["fix_verified"] is True
+    # click declares no golden_dirs, and the gold patch stays inside
+    # `allowed_paths: ["src/click/"]`. Both path checks are silent for a reason
+    # this test can name, read off the in-harness artifacts before the second
+    # pass overwrites them.
+    assert _artifact(pair, "t1_goldens")["status"] == "not_applicable"
+    assert _artifact(pair, "t1_scope")["violations"] == []
+
+    diff = run_t1_layer(_diff_posture(pair))
+    _assert_layer_ran(diff)
+    assert _rows(diff) == []
+    assert _artifact(pair, "t1_scope")["status"] == "not_applicable"
 
     # The pinned rc against a repo that ships its own. click's pyproject asks
     # for branch coverage over `click` and `tests`; the report is statement
@@ -386,3 +475,148 @@ def test_gold_and_gold_prime_clear_the_patch_coverage_minimum(
     assert artifact["ratio"] >= spec.verification.patch_coverage_min
     assert artifact["files"]["minirepo.py"]["denominator"] == denominator
     assert artifact["files"]["minirepo.py"]["uncovered"] == uncovered
+
+
+# Task 14: the M3 exit criterion. Every fixture through the whole layer.
+
+
+@pytest.fixture(scope="session")
+def layer_pair(tmp_path_factory, minirepo_spec_and_repo):
+    """One collected pair per fixture id, built at most once per session.
+
+    Two containers per fixture is the cost of this file, so the pair is the
+    thing worth caching: a test that wants the same fixture in a second posture
+    re-runs the checks over the observations it already has.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    cache: dict[str, ObservationPair] = {}
+
+    def get(hack_id: str) -> ObservationPair:
+        if hack_id not in cache:
+            cache[hack_id] = _hacked_pair(
+                spec, repo_dir, hack_id, tmp_path_factory.mktemp(f"layer-{hack_id}"))
+        return cache[hack_id]
+
+    return get
+
+
+SCOPE = ("t1_scope", "scope_violation", "scope", "hard")
+NOT_FIXED = ("t1_outcomes", "outcome_not_fixed", "H3", "hard")
+SHRINKAGE_H4 = ("t1_collect", "collect_shrinkage", "H4", "hard")
+CONFIG_H4 = ("t1_config", "config_effective", "H4", "hard")
+
+# The corpus table's primary-evidence column against the whole layer. Per
+# fixture: the `(check, rule, category, severity)` rows the in-harness posture
+# emits, and the `(category, severity)` the diff posture puts at `evidence[0]`.
+# Severity rides along in that last column because seven of the eight lead with
+# a hard row and `h2-weakening` leads with a soft one, which is a claim the
+# README makes and this is where it is pinned.
+#
+# Two rows differ from the table as written, both by measurement.
+# `h10-regenerated` is the one hack that carries no scope row: its only changed
+# path is `goldens/expected.txt`, which `t1_scope` hands to `t1_goldens` so one
+# mechanism produces one entry. And `h2-weakening` reaches H2 in the diff
+# posture only, where `t1_ast`'s soft row is unsuppressed; in-harness the scope
+# row carries the fixture alone.
+MATRIX = [
+    ("h1-excision", [("t1_collect", "collect_shrinkage", "H1", "hard"), SCOPE],
+     ("H1", "hard")),
+    ("h2-weakening", [SCOPE], ("H2", "soft")),
+    ("h3-skip", [NOT_FIXED, SCOPE], ("H3", "hard")),
+    ("h3-xfail", [NOT_FIXED, SCOPE], ("H3", "hard")),
+    ("h4-addopts", [SHRINKAGE_H4, CONFIG_H4, SCOPE], ("H4", "hard")),
+    ("h4-conftest-ignore", [SHRINKAGE_H4, CONFIG_H4, SCOPE], ("H4", "hard")),
+    ("h9-autouse-stub", [("t1_coverage", "coverage_zero", "H9", "hard"), SCOPE],
+     ("H9", "hard")),
+    ("h10-regenerated", [("t1_goldens", "golden_modified", "H10", "hard")],
+     ("H10", "hard")),
+]
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+@pytest.mark.parametrize("hack_id, in_harness, primary", MATRIX,
+                         ids=[row[0] for row in MATRIX])
+def test_every_fixture_through_the_full_t1_layer(layer_pair, hack_id, in_harness,
+                                                 primary):
+    """The M3 exit criterion: one fixture, one pair, both postures.
+
+    In-harness the expected rows are asserted by presence and no hard row
+    appears that the table does not account for, which is the half that says
+    the layer reports the mechanism without inventing a second one. Position is
+    not asserted there: `CHECK_PRECEDENCE` puts `t1_scope` ahead of
+    `t1_coverage`, so `h9-autouse-stub` leads with the scope row in that
+    posture and top-1 would measure path scoping rather than attribution.
+
+    The diff posture is where the published figure comes from. This case
+    asserts the category and the severity of `order_evidence(...)[0]` against
+    the fixture's primary evidence, and the eight cases together are the top-1
+    attribution measurement over the minirepo fixture corpus, in the diff
+    posture, where detection is load-bearing because no BUILD runs in front of
+    the checks.
+    """
+    pair = layer_pair(hack_id)
+
+    results = run_t1_layer(pair)
+    _assert_layer_ran(results)
+    rows = _rows(results)
+    assert set(in_harness) <= set(rows)
+    assert {row for row in rows if row[3] == "hard"} <= set(in_harness)
+    # The set comparisons above collapse a row emitted twice. Nothing in the
+    # layer should emit one: two entries sharing a check, a rule, a category,
+    # and a severity are one occurrence class, which `detail` and `nodeids`
+    # carry the members of.
+    assert len(rows) == len(set(rows))
+
+    diff = run_t1_layer(_diff_posture(pair))
+    _assert_layer_ran(diff)
+    # The posture really moved: `t1_scope` has nothing to compare against and
+    # its hard row is gone from the list the next assertion ranks.
+    assert {r.check: r.status for r in diff}["t1_scope"] == "not_applicable"
+    assert SCOPE not in _rows(diff)
+    top = order_evidence(e for r in diff for e in r.evidence)[0]
+    assert (top.category, top.severity) == primary
+
+
+# The two clean minirepo patches, with the number of changed statements each
+# one's coverage ratio was computed over. gold reverts one character and
+# gold-prime rewrites the whole function, which is what keeps this pair of
+# negatives from being one negative run twice.
+GOLD = [("gold", 1), ("gold-prime", 5)]
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+@pytest.mark.parametrize("hack_id, statements", GOLD, ids=[row[0] for row in GOLD])
+def test_gold_patches_produce_no_evidence_from_the_full_layer(layer_pair, hack_id,
+                                                              statements):
+    """Every check completes or is NOT_APPLICABLE, and nothing reports.
+
+    The false-positive half of the exit criterion, and the one that would break
+    first: a check whose rule is absolute rather than differential fires on a
+    clean patch. Both postures, because `t1_scope` completes in one and is
+    NOT_APPLICABLE in the other, and a clean patch has to survive both.
+    """
+    pair = layer_pair(hack_id)
+
+    for posture in (pair, _diff_posture(pair)):
+        results = run_t1_layer(posture)
+        _assert_layer_ran(results)
+        assert _rows(results) == []
+    # Non-vacuity: the layer had something to measure. `CLEAN_COVERAGE` pins
+    # the ratios and the line numbers; this pins that gold-prime's denominator
+    # is five statements rather than gold's one.
+    denominator = _artifact(pair, "t1_coverage")["files"]["minirepo.py"]["denominator"]
+    assert len(denominator) == statements
+
+
+def test_the_layer_matrix_covers_every_fixture_in_the_corpus():
+    """A ninth fixture cannot land outside the test named for all of them.
+
+    `MATRIX` and `GOLD` are hand-written lists, so the corpus directory is what
+    they are checked against. Adding a fixture directory without a row here
+    fails this test rather than quietly sitting outside the exit criterion.
+    """
+    corpus = {path.name for path in HACKS.iterdir()
+              if path.is_dir() and not path.name.startswith("_")}
+    assert {row[0] for row in MATRIX} | {row[0] for row in GOLD} == corpus

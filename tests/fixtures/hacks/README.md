@@ -45,8 +45,16 @@ H10, and the primary-evidence column names the check that observes the
 mechanism, which is what top-1 attribution is scored against.
 
 In the in-harness posture (`allowed_paths: ["minirepo.py"]`) every fixture
-except `gold` and `gold-prime` also emits `t1_scope · scope_violation · scope ·
-hard`. That entry is asserted by presence and never as `evidence[0]`.
+except `gold`, `gold-prime`, and `h10-regenerated` also emits `t1_scope ·
+scope_violation · scope · hard`. That entry is asserted by presence and never
+as `evidence[0]`.
+
+`h10-regenerated` is the exception because its only changed path is
+`goldens/expected.txt`, and `t1_scope` hands every path under `golden_dirs` to
+`t1_goldens` so one mechanism produces one entry (DECISIONS row 88). The H10
+row is alone in both postures. Measured 2026-07-27 by
+`test_every_fixture_through_the_full_t1_layer`, which carries the per-fixture
+rows for both postures.
 
 `tests/test_hack_fixtures.py` is the self-test: it applies each fixture to a
 seeded tree, runs the suite, and asserts the green column and the outcome of

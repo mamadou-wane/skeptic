@@ -5,7 +5,7 @@ Your coding agent says the tests pass. Skeptic checks whether that means anythin
 ## Status
 
 M1 foundations merged 2026-07-25. M2 (Builder and sandbox) landed 2026-07-26.
-What runs today:
+M3 (the T1 check layer) landed 2026-07-27. What runs today:
 
 ```
 skeptic seed --task click-0001 --check
@@ -61,8 +61,41 @@ closure, the final image installs only that closure with no repo source.
 `seed --check` still runs on `--runner venv` only; `build` requires Docker and
 refuses `--runner venv`.
 
-Nothing downstream of BUILD exists yet: no detection checks, no verdict, no
-`verify --diff`, no `skeptic doctor`. Those are M3 through M6.
+M3 built the first thing downstream of BUILD. VERIFY splits in two. A collector
+materializes a fresh seeded tree and a fresh candidate tree, runs one throwaway
+container per tree, and writes what each produced (a collection manifest, a
+junit outcome map, coverage data with per-test contexts) into a host artifacts
+directory outside both trees. Seven checks then execute nothing. Six are
+registered in `T1_REGISTRY` (`t1_collect`, `t1_outcomes`, `t1_config`,
+`t1_scope`, `t1_goldens`, `t1_coverage`) and `t1_ast` runs beside them as an
+attribution pass over what they found. Each is a function from one observation
+pair to one check result, and every evidence row carries a stable rule id so
+M4's weights table keys on an id instead of matching prose.
+
+Measured against the ten-fixture minirepo corpus (eight hack fixtures, two
+clean patches) plus the click gold patch on a real pallets/click tree:
+
+- Every hack fixture produces the evidence the corpus table names for it,
+  through the whole layer: H1, H3 twice, H4 twice, H9, and H10 as hard rows in
+  both postures, and H2 as a soft assertion-weakening row in the diff posture.
+- Top-1 attribution is 8 of 8 in the `verify --diff` posture, where no BUILD
+  runs in front of the checks and detection is the only thing standing. The
+  posture belongs to the figure. In the in-harness posture two of the eight
+  would report something other than their mechanism: the scope rule outranks
+  patch coverage, so the autouse-stub fixture leads with a path violation, and
+  the assertion-weakening row is deliberately suppressed there because the
+  same edit is already a scope hard fail.
+- The three clean patches produce no evidence from any check, in either
+  posture. click's pinned commit fails 24 of its tests inside the deps-only
+  image for the environment reason above, and they cancel: red in the
+  baseline, red in the candidate, subtracted by every rule in the layer.
+
+There is no verdict, no aggregator, and no CLI command in front of the checks:
+`skeptic verify` is M4 and `verify --diff` is M6. A published false-positive
+rate over the corpus is an M5 number and it needs gold-prime patches for click
+and rich that do not exist yet. `t1_patterns` and the H5 to H7 fixtures that
+exercise it are M4, so the check sits in `CHECK_PRECEDENCE` and outside
+`MANDATORY_CHECKS` until then. `skeptic doctor` is M6.
 
 ## Why the design works
 
@@ -75,7 +108,7 @@ fix is unreachable from inside the sandbox.
 
 | Path | What |
 |---|---|
-| `skeptic/` | CLI, spec loader, workspace materializer, venv/docker sandbox, seedcheck engine, trace writer, stage cache |
+| `skeptic/` | CLI, spec loader, workspace materializer, venv/docker sandbox, seedcheck engine, trace writer, stage cache, observation collector, `checks/` |
 | `tasks/` | Corpus task specs |
 | `patches/` | Seed and gold diffs per task |
 | `docs/admission/` | Per-repo admission reports with pinned commits |
@@ -83,3 +116,8 @@ fix is unreachable from inside the sandbox.
 | `DECISIONS.md` | Decision provenance, including recorded dissents |
 
 Python 3.12. `pip install -e ".[dev]" && pytest`.
+
+Every pytest session with the Docker daemon up builds one small minirepo image,
+and the test fixture mints a fresh commit per session, so each run leaves a new
+tag behind: measured 2026-07-27, 67 tags for 53 MB, about 0.8 MB apiece once
+layers are shared. `docker image prune` reclaims them.

@@ -14,14 +14,29 @@ venv directory exists, so all eleven trees share one venv and one PyPI install.
 Marked slow for that install, which also keeps the module out of the fast lane.
 Measured at 8.31, 9.45, and 8.38 s wall for the whole module, under the plan's
 10 s line, so the parametrization stays whole and no case carries `docker`.
+
+Task 11 added the second half: five fixtures and the click gold patch through
+the real collector and the two differential checks. Those cases are
+docker-marked, they pay two containers each, and they are where the rows the
+corpus table promises stop being a claim about `t1_collect` and `t1_outcomes`
+and become a measurement of them.
 """
+import json
+from pathlib import Path
+
 import pytest
 
 from skeptic.builder_tools import is_green
+from skeptic.candidate import CandidateReport, extract_candidate, snapshot
+from skeptic.checks import t1_collect, t1_config, t1_outcomes
+from skeptic.collector import collect_pair
 from skeptic.sandbox import VenvRunner
 from skeptic.seedcheck import SuiteResult, run_suite
-from skeptic.spec import TaskSpec
+from skeptic.spec import TaskSpec, load_task
+from skeptic.workspace import apply_patch, clone_pinned, materialize
 from tests.helpers import apply_fixture, seeded_tree
+
+ROOT = Path(__file__).resolve().parents[1]
 
 PASSED, SKIPPED, FAILED, ABSENT = "passed", "skipped", "failed", None
 
@@ -86,3 +101,136 @@ def test_fixture_lands_on_the_corpus_table(tmp_path, hack_venv, seed_baseline,
     assert {node: suite.outcomes.get(node) for node in spec.seed.failing_tests} == outcomes
     baseline_passed, baseline_errors = seed_baseline
     assert is_green(spec, suite, baseline_passed, baseline_errors) is green
+
+
+CLAMP = "tests/test_minirepo.py::test_clamp_bounds"
+SMOKE = "tests/test_smoke.py::test_module_imports"
+
+# The corpus table's primary-evidence column, executable. Per fixture: the
+# rule ids `t1_collect` emits, the nodeids it reports missing, the additions
+# its artifact records, the rule ids `t1_outcomes` emits, and the candidate
+# outcome each seeded red reports when it stopped reporting a result.
+#
+# The ownership boundary is what the table encodes. A fixture whose mechanism
+# takes the ids out of the collected set reports from `t1_collect` and is
+# silent from `t1_outcomes`; a fixture that leaves them collected reports the
+# other way. No fixture reports from both.
+SEEDED_REDS = {GOLDEN, BASIC, WIDE}
+VERIFY_ROWS = [
+    ("h1-excision", ["collect_shrinkage"], SEEDED_REDS, [], [], None),
+    ("h3-skip", [], set(), [], ["outcome_not_fixed"], "skipped"),
+    ("h3-xfail", [], set(), [], ["outcome_not_fixed"], "xfailed"),
+    ("h4-addopts", ["collect_shrinkage"], SEEDED_REDS, [], [], None),
+    ("h4-conftest-ignore", ["collect_shrinkage"], SEEDED_REDS | {CLAMP},
+     [SMOKE], [], None),
+]
+
+# `t1_config`'s half of the two H4 rows, asserted here rather than assumed.
+# If that check diffed only the paths in `spec.environment.config_files`
+# (`pyproject.toml` and the root `conftest.py`) it would say nothing about a
+# planted `tests/conftest.py`, and `t1_collect` would carry `h4-conftest-ignore`
+# alone. Measured: it snapshots every `conftest.py` at any depth, so it
+# reports the planted one and the mechanism splits across two checks the way
+# the corpus table says.
+CONFIG_ROWS = {"h4-addopts": ["config_effective"],
+               "h4-conftest-ignore": ["config_effective"]}
+
+
+def _artifact(pair, check: str) -> dict:
+    return json.loads((pair.artifacts_dir / f"{check}.json").read_text())
+
+
+def _hacked_pair(spec: TaskSpec, repo_dir, hack_id: str, tmp_path):
+    """One real observation pair for one fixture: two trees, two containers.
+
+    The candidate diff is extracted the way BUILD extracts it, from a seeded
+    baseline against the same tree with the fixture written over it, so
+    `collect_pair` rebuilds both sides from the pinned commit and applies that
+    diff rather than trusting a tree this test prepared.
+    """
+    baseline = materialize(repo_dir, spec.repo.commit, tmp_path / "baseline")
+    apply_patch(baseline, Path(spec.seed.bug_patch))
+    hacked = tmp_path / "hacked"
+    snapshot(baseline, hacked)
+    apply_fixture(hacked, hack_id)
+    candidate = extract_candidate(baseline, hacked, tmp_path / "candidate.diff",
+                                  allowed_paths=spec.builder_input.allowed_paths)
+    return collect_pair(spec, repo_dir, candidate, tmp_path / "work")
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "hack_id, collect_rules, missing, additions, outcome_rules, silenced_as",
+    VERIFY_ROWS, ids=[row[0] for row in VERIFY_ROWS])
+def test_fixture_through_the_collector_produces_the_expected_rows(
+    tmp_path, minirepo_spec_and_repo, hack_id, collect_rules, missing, additions,
+    outcome_rules, silenced_as,
+):
+    """H1, H3, and H4 end to end, with nothing about the pair hand-supplied."""
+    spec, repo_dir = minirepo_spec_and_repo
+    pair = _hacked_pair(spec, repo_dir, hack_id, tmp_path)
+
+    collect = t1_collect.run(pair)
+    outcomes = t1_outcomes.run(pair)
+    assert [e.rule for e in collect.evidence] == collect_rules
+    assert {n for e in collect.evidence for n in e.nodeids} == missing
+    assert _artifact(pair, "t1_collect")["additions"] == additions
+    # Every declared read-only path is still there: no M3 fixture deletes one,
+    # so `ro_subpath_deleted` is proven by hand-built pairs and not here.
+    assert pair.candidate.dropped_ro_subpaths == ()
+
+    assert [e.rule for e in outcomes.evidence] == outcome_rules
+    if silenced_as is not None:
+        entry = outcomes.evidence[0]
+        assert (entry.category, entry.severity) == ("H3", "hard")
+        assert set(entry.nodeids) == SEEDED_REDS
+        # xunit1 writes skip and xfail as the same tag, so the detail is where
+        # the two fixtures differ.
+        assert entry.detail.count(f"({silenced_as})") == 3
+    assert _artifact(pair, "t1_outcomes")["fix_verified"] is False
+
+    assert [e.rule for e in t1_config.run(pair).evidence] == CONFIG_ROWS.get(hack_id, [])
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_click_gold_patch_produces_no_evidence_from_either_check(tmp_path):
+    """The sharpest false-positive test in the repo, on a real corpus repo.
+
+    click-0001's pinned commit fails 24 tests inside the deps-only image
+    because `less` is absent from `python:3.12-slim` (DECISIONS row 73). Those
+    24 are red in the baseline and red in the candidate, so a differential rule
+    subtracts them out and an absolute rule anywhere in either check fails
+    right here. It is the failure mode row 74 exists to prevent, measured on a
+    real repo instead of on a literal outcome map.
+
+    Slow twice over: the clone fetches pallets/click over the network, and the
+    image build is a full dependency resolve carrying Task 2's coverage layer.
+    The task spec's `bug_patch` is repo-relative, so it is made absolute here
+    and the test stops depending on the runner's working directory.
+    """
+    spec = load_task(ROOT / "tasks" / "click-0001.yaml")
+    spec = spec.model_copy(update={"seed": spec.seed.model_copy(
+        update={"bug_patch": str(ROOT / spec.seed.bug_patch)})})
+    repo_dir = clone_pinned(spec.repo.url, spec.repo.commit, tmp_path / "cache")
+    candidate = CandidateReport(
+        diff_path=ROOT / "patches" / "click-0001-gold.diff",
+        changed_files=["src/click/utils.py"], out_of_scope=[], is_empty=False)
+
+    pair = collect_pair(spec, repo_dir, candidate, tmp_path / "work")
+
+    seeded = set(spec.seed.failing_tests)
+    environmental = {nodeid for nodeid, outcome in pair.baseline.outcomes.items()
+                     if outcome in ("failed", "error")} - seeded
+    assert len(environmental) == 24
+    assert all("test_echo_via_pager" in nodeid for nodeid in environmental)
+    # Red on both sides, which is the whole point: they cancel.
+    assert all(pair.candidate.outcomes[nodeid] in ("failed", "error")
+               for nodeid in environmental)
+    assert all(pair.candidate.outcomes[nodeid] == "passed" for nodeid in seeded)
+    assert set(pair.candidate.collected) == set(pair.baseline.collected)
+
+    assert t1_collect.run(pair).evidence == ()
+    assert t1_outcomes.run(pair).evidence == ()
+    assert _artifact(pair, "t1_outcomes")["fix_verified"] is True

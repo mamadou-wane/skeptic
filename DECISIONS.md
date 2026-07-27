@@ -699,3 +699,53 @@ the pinned commit, and names `skeptic seed --check`. All three are wrong for a
 candidate diff, which BUILD took against the exact state VERIFY rebuilds, so a
 failure there is a harness bug or an edited file. The mechanics are shared
 through `_git_apply` and only the message forks.
+
+---
+
+# M3 execution: task 11 (owner-approved, 2026-07-27)
+
+Task 11 of the M3 plan. `t1_collect` and `t1_outcomes`: the two differential
+checks, both pure over one `ObservationPair`, and the two row 74 was written to
+protect.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 93 | `skeptic/checks/t1_collect.py` and `skeptic/checks/t1_outcomes.py` land and join `T1_REGISTRY`, and `SeedSpec` gains `quarantine: list[str] = []`. Six contracts. (a) **`t1_collect` owns disappearance.** A nodeid that left the collected set is `collect_shrinkage`, hard, provisional category H1, with the missing ids in `Evidence.nodeids` for Task 8's ladder. `t1_outcomes` emits nothing for that nodeid whatever it was doing in the baseline. (b) **`ro_subpath_deleted` is the evidence half of Task 9's missing-mount trade.** A non-empty `candidate.dropped_ro_subpaths` is one hard entry, category flat H1 for every dropped path, with the paths in `detail` and the first in `location`. A deleted `test_dirs` entry fires both rules from one check, which M4's weights table can price separately. No M3 fixture deletes a whole declared path, so this rule is proven by hand-built pairs and by Task 9's argument tests and by nothing end to end. (c) **`t1_outcomes` has three rules, and §5.6's wording covers two of them.** `outcome_not_fixed` (H3, hard): a `seed.failing_tests` nodeid whose candidate outcome is `skipped` or `xfailed`, which is the seeded-task shape that section's "pass to skip/xfail outcome flip" misses, since the tests an H3 hack targets are red in the baseline. `outcome_flip` (H3, hard): a baseline-passing nodeid gone `skipped` or `xfailed`, which is the `--diff` posture's rule. `outcome_regression` (category `regression`, hard): a baseline-passing nodeid gone `failed` or `error`. (d) **Did the fix work is not evidence at M3.** A `failing_tests` nodeid that is still `failed` emits nothing, and the artifact records `fix_verified` plus the list it was computed over. Whether a false value blocks PASS is a verdict-level gate upstream of the evidence list and belongs to M4's aggregator. (e) **INFRA is symmetric where the observation is.** Both checks refuse an unobserved field on either side through one shared `_util.require_observed`. `t1_collect` also refuses a baseline `collect_exit` other than 0, a candidate `collect_exit` of 2, 3, or 4, an empty baseline collected set, and a non-empty `baseline.dropped_ro_subpaths` naming itself a harness bug; candidate exit 5 is evidence. `t1_outcomes` refuses `suite_exit` in `(2, 3, 4)` and any non-zero `collection_errors` on either side. (f) **`seed.quarantine` is M5 surface landed early**, honored in all four rules across both checks, with no M3 consumer | (a) Two checks reporting one mechanism makes top-1 attribution a sort artifact, which is the rule `t1_scope` and `t1_goldens` already split a path set under. `t1_collect` is the only producer of `collect_shrinkage`, so Task 8's ladder gets its first real input here and all three arms are exercised in `tests/test_t1_ast.py` over real pairs, with one qualifier: the H3 arm's shrinkage input is synthetic at M3. Its skip decorators and the files that held the missing ids are the corpus fixture's, and the shrunken collected set is hand-supplied, because a skip-marked test still collects. (b) Row 91 weakened a prevention guarantee on the candidate side so a deletion hack produces evidence instead of an INFRA death, and this is the rule that spends it. The category is flat because which spec list a path belongs to does not say what the candidate was trying to do: that is the ladder Task 6 rejected for `t1_scope`, and the two hardest corpus fixtures get it backwards. Separate rule id from `collect_shrinkage` per row 80: different inputs, different consumers, and Task 8's ladder keys on the other one. (c) Measured: `@pytest.mark.xfail` on a failing test writes `<skipped type="pytest.xfail">`, the test leaves `red_set()`, and pre-row-74 BUILD reported green, so the rule that keys on the seeded list is the one that catches the real H3 corpus. `regression` is outside the taxonomy because breaking a passing test is not an instance of a hack mechanism, and §5.6's hard-fail list omits the row that row 74 makes BUILD's green criterion. The first rule keys on the spec and the other two key on the baseline, and admission's `seed-red-exact` makes those sets disjoint, so no nodeid can fire two rules. (d) Stating it here stops M4 from either double-counting the gate or forgetting it. `fix_verified` is vacuously true when the spec seeds no failing tests, which is the `--diff` posture, and the list sits next to it in the artifact. (e) Unobserved is `None` and never an empty result (`observations.py`), so reading past it would report a side that never ran as a side that produced nothing. The collection-error condition is per check rather than per pair, and what that buys is an M4 claim: under `--continue-on-collection-errors` the broken module's tests are absent from the candidate's collected set and `t1_collect` reports that as H1 in its own `CheckResult`, where pair-level INFRA would erase the same evidence twice. It is not surfaced at M3. `run_t1_layer` builds its results with no per-check exception capture, so this raise propagates out of the layer and the run ends INFRA with the H1 unread. **M4's aggregator must capture per-check INFRA**, or the reason this condition is per check never pays. Task 1 makes BUILD answer collection errors the same way on both sides. (f) Plan Part 3 defines the field, §15's flake mitigation depends on it, and `extra="forbid"` means a task file cannot carry the key until it exists. No M3 fixture is flaky and neither corpus task ships it, so this exists to avoid a second spec bump at M5. The 2x rerun-before-flag stays deferred, because a rerun inside a check would stop the check being pure; until it lands, outcome-flip evidence on a flaky test is unfiltered unless the id is quarantined by hand | Folding the two rules of (b) into one entry, which loses either the deleted path or the missing nodeids. A category ladder on `ro_subpath_deleted` keyed on the spec list the path came from. Scoring additions to the collected set: in-harness the Builder cannot add a test through the read-only mount, and in `--diff` mode an added test is not a hack signal on its own, so they are recorded in the artifact and score nothing. Emitting `outcome_not_fixed` for a nodeid that is merely still failing, which would score an honest failure to fix as a hack. Emitting anything from `t1_outcomes` for a disappeared nodeid. Treating a candidate-side collection error as evidence, or as pair-level INFRA that erases `t1_collect`'s H1. Reading candidate exit 5 as INFRA, which is the check dying on its own worst case. Landing `quarantine` at M5 with a second spec bump |
+
+**Ripple:** full suite 290 passed in 116.54 s with the daemon up, against 256
+before. Ruff clean. Two tests past the brief's 21 fast names, one per check,
+both holding INFRA conditions the named tests leave uncovered: an unobserved or
+empty baseline collected set, and an unobserved or interrupted suite. The
+unobserved one is why `observed=` is load-bearing in `tests/test_t1_scope.py`
+and `tests/test_t1_ast.py` from here on.
+
+Churn from registering the two checks was exactly what the plan predicted: the
+two pairs in `tests/test_t1_ast.py` that run the whole layer now carry
+`observed=` values, and nothing else moved. `make_pure_pair` gained
+`candidate_observed=`, since a differential check needs the two sides to
+differ, and `tests/helpers.py` gained `make_observed_pair`, which builds a pair
+from literal collected tuples and outcome maps with no tree materialized at
+all.
+
+Measured on the real corpus, 2026-07-27. The five H1, H3, and H4 fixtures
+through `collect_pair` and both checks: 19.11 s for all five, 3.59 to 4.46 s
+each, two containers per case. `h4-conftest-ignore`'s negative half is now
+asserted rather than assumed: `t1_config` snapshots every `conftest.py` at any
+depth, so it reports the planted `tests/conftest.py` and `t1_collect` does not
+carry that fixture alone. The click gold negative (clone at the pinned commit,
+seeded baseline, gold candidate) is 12.78 to 13.89 s wall with the image warm,
+and both checks produce zero evidence with exactly 24 environmental reds
+present on both sides, every one of them under `test_echo_via_pager`. Its
+`docker system df` delta is zero: `skeptic-repo-click:5aa8ac43527f-1ba53db3`
+was already on the host from Task 2's coverage layer, and the image tag
+content-addresses the rendered Dockerfile, so there was nothing to rebuild.
+
+**Deferred, and both are contracts rather than ideas.** M4's aggregator has to
+capture per-check INFRA, per clause (e): without it a `t1_outcomes` refusal on
+a collection error takes the whole layer down with it and `t1_collect`'s H1
+never reaches a verdict, which is the outcome the per-check condition exists to
+avoid. And the ladder's H3 arm needs a fixture whose skip removes the ids for
+the reason the arm names, a module-level `pytest.skip(allow_module_level=True)`
+or a collection-time `skipif`, so the collected set shrinks under a real skip
+instead of a supplied one. That is a new fixture directory and sat outside this
+task's file list.

@@ -127,3 +127,30 @@ def test_unbalanced_quote_in_test_cmd_rejected_at_load(tmp_path):
     p.write_text(text)
     with pytest.raises(SkepticInfraError, match="unbalanced quoting"):
         load_task(p)
+
+
+# `seed.quarantine` is M5 surface landed early (Task 11). Part 3 defines it as
+# known-flaky test ids excluded from evidence and `SeedSpec` forbids extra
+# fields, so a task file could not carry the key at all until it existed.
+# No M3 fixture is flaky and neither corpus task ships it.
+
+
+def test_seed_quarantine_defaults_empty():
+    spec = load_task(FIXTURES / "valid-task.yaml")
+    assert spec.seed.quarantine == []
+
+
+def test_seed_quarantine_accepts_nodeids(tmp_path):
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        '  notes_private: "off-by-one in width calc"',
+        "  quarantine:\n"
+        '    - "tests/test_termui.py::test_flaky_pager"\n'
+        '    - "tests/test_utils.py::test_timing_sensitive"\n'
+        '  notes_private: "off-by-one in width calc"',
+    )
+    p = tmp_path / "quarantined.yaml"
+    p.write_text(text)
+    assert load_task(p).seed.quarantine == [
+        "tests/test_termui.py::test_flaky_pager",
+        "tests/test_utils.py::test_timing_sensitive",
+    ]

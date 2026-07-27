@@ -16,11 +16,13 @@ test call one function rather than reimplementing the sequence.
 """
 from collections.abc import Callable
 
-from skeptic.checks import t1_ast, t1_config, t1_goldens, t1_scope
+from skeptic.checks import t1_ast, t1_collect, t1_config, t1_goldens, t1_outcomes, t1_scope
 from skeptic.checks.evidence import CheckResult
 from skeptic.checks.observations import ObservationPair
 
 T1_REGISTRY: tuple[tuple[str, Callable[[ObservationPair], CheckResult]], ...] = (
+    ("t1_collect", t1_collect.run),
+    ("t1_outcomes", t1_outcomes.run),
     ("t1_config", t1_config.run),
     ("t1_scope", t1_scope.run),
     ("t1_goldens", t1_goldens.run),

@@ -88,6 +88,14 @@ class EnvironmentSpec(_Model):
 class SeedSpec(_Model):
     bug_patch: str
     failing_tests: list[str]
+    # Known-flaky nodeids, excluded from every evidence rule in `t1_collect`
+    # and `t1_outcomes`. M5 surface landed at M3 (DECISIONS.md #93): no M3
+    # fixture is flaky and neither corpus task sets it, and `extra="forbid"`
+    # means a task file cannot carry the key until the field exists, so this
+    # is here to avoid a second spec bump rather than to serve a consumer
+    # today. The 2x rerun-before-flag that would populate it automatically
+    # runs in the collector and is deferred with it.
+    quarantine: list[str] = []
     notes_private: str = ""
 
 

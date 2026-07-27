@@ -19,10 +19,11 @@ applies cleanly on top of the seed patch rather than on top of pristine.
 committed post-hack file bodies under fixtures/hacks/<id>/, applied to a
 seeded tree at test time. See fixtures/hacks/README.md.
 
-`make_pure_pair` and `make_diff_pair` are the two builders every check test
-rides on. Both hand back an `ObservationPair` with nothing executed: the first
-from a hack fixture applied to a seeded tree, the second from a committed
-patch and a real task spec.
+`make_pure_pair`, `make_diff_pair`, and `make_observed_pair` are the builders
+every check test rides on. All three hand back an `ObservationPair` with
+nothing executed: the first from a hack fixture applied to a seeded tree, the
+second from a committed patch and a real task spec, and the third from literal
+collected tuples and outcome maps, with no tree materialized at all.
 """
 import shutil
 import subprocess
@@ -225,12 +226,10 @@ def make_task_spec(**overrides: object) -> TaskSpec:
                 update={"allowed_paths": overrides.pop("allowed_paths")}
             )
         })
-    if "failing_tests" in overrides:
-        spec = spec.model_copy(update={
-            "seed": spec.seed.model_copy(
-                update={"failing_tests": overrides.pop("failing_tests")}
-            )
-        })
+    seed_fields = {key: overrides.pop(key) for key in ("failing_tests", "quarantine")
+                   if key in overrides}
+    if seed_fields:
+        spec = spec.model_copy(update={"seed": spec.seed.model_copy(update=seed_fields)})
     if overrides:
         raise TypeError(f"make_task_spec: unsupported overrides {sorted(overrides)}")
     return spec
@@ -242,13 +241,17 @@ def make_task_spec(**overrides: object) -> TaskSpec:
 _PAIR_ROOTS: list[tempfile.TemporaryDirectory] = []
 
 # Execution-derived fields, all unobserved by default. See the `observed`
-# argument of make_pure_pair.
+# argument of make_pure_pair. `dropped_ro_subpaths` is in the mapping so a
+# test can set it, and its default is the empty tuple rather than None:
+# empty means the container mounted every declared path, which is also what
+# a pair with no execution carries (`VariantObservations`).
 _UNOBSERVED: dict[str, object] = {
     "collected": None,
     "collect_exit": None,
     "outcomes": None,
     "collection_errors": None,
     "suite_exit": None,
+    "dropped_ro_subpaths": (),
 }
 
 
@@ -291,10 +294,44 @@ def _side(
                                coverage=None, **values)
 
 
+def make_observed_pair(
+    baseline: Mapping[str, object],
+    candidate: Mapping[str, object] | None = None,
+    spec: TaskSpec | None = None,
+) -> ObservationPair:
+    """A pair carrying two sides' execution-derived values and nothing else.
+
+    `t1_collect` and `t1_outcomes` read the observations and the spec, so a
+    literal collected tuple and a literal outcome map is the whole input: no
+    tree materialized, no clone, no diff. `candidate` defaults to `baseline`,
+    which is the pair where nothing moved.
+
+    Both `tree` paths name a directory that was never created, and the
+    candidate diff names a file that was never written, for the reason
+    `make_diff_pair` gives: a check that reaches for one should find a path
+    that says so.
+    """
+    root = _pair_root("skeptic-observed-pair-")
+    artifacts = root / "artifacts"
+    return ObservationPair(
+        spec=spec if spec is not None else make_task_spec(),
+        baseline=_side("baseline", root / "unmaterialized-baseline",
+                       artifacts / "baseline", baseline),
+        candidate=_side("candidate", root / "unmaterialized-candidate",
+                        artifacts / "candidate",
+                        baseline if candidate is None else candidate),
+        candidate_diff=CandidateReport(
+            diff_path=root / "unwritten-candidate.diff", changed_files=[],
+            out_of_scope=[], is_empty=False),
+        artifacts_dir=artifacts,
+    )
+
+
 def make_pure_pair(
     hack_id: str,
     allowed_paths: list[str] | None = None,
     observed: Mapping[str, object] | None = None,
+    candidate_observed: Mapping[str, object] | None = None,
 ) -> ObservationPair:
     """A check-ready pair for one hack fixture, with nothing executed.
 
@@ -308,6 +345,8 @@ def make_pure_pair(
     every one of them `None`, which is what the checks that execute nothing
     want. `t1_collect` raises INFRA when either side's `collected` is `None`,
     so a test that runs the whole registered layer passes a `collected` here.
+    `candidate_observed` overrides `observed` on the candidate side, which is
+    what a differential test needs: the two sides have to differ.
     """
     root = _pair_root("skeptic-pure-pair-")
     tree, spec = seeded_tree(root)
@@ -323,7 +362,8 @@ def make_pure_pair(
     return ObservationPair(
         spec=spec,
         baseline=_side("baseline", baseline_tree, artifacts / "baseline", observed),
-        candidate=_side("candidate", tree, artifacts / "candidate", observed),
+        candidate=_side("candidate", tree, artifacts / "candidate",
+                        observed if candidate_observed is None else candidate_observed),
         candidate_diff=report,
         artifacts_dir=artifacts,
     )

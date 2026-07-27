@@ -1,4 +1,4 @@
-"""The four things every check in the layer does the same way.
+"""The five things every check in the layer does the same way.
 
 Private to `skeptic.checks`. Hoisted at Task 7, when the third check made the
 duplication across `t1_scope` and `t1_goldens` real: the two copies of the
@@ -8,6 +8,11 @@ shared builder with an explicit singular and plural now prevents.
 `detail` takes both noun forms rather than pluralizing by rule, because
 English pluralization by rule is wrong often enough that a check would
 eventually print "1 changed paths" or "2 golden filess".
+
+`require_observed` is the two differential checks' shared refusal. They are
+the only checks that read execution-derived fields, and both owe the same
+answer to an unobserved one, so the message lives here rather than in two
+copies that would drift the way the detail builder did.
 """
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ import time
 from collections.abc import Sequence
 
 from skeptic.checks.observations import ObservationPair
+from skeptic.errors import SkepticInfraError
 
 # How many names the detail spells out before it falls back to a count. The
 # full list is in the artifact every entry cites.
@@ -36,6 +42,31 @@ def detail(items: Sequence[str], singular: str, plural: str, tail: str) -> str:
         named = f"{named} (+{remainder} more)"
     noun = singular if len(items) == 1 else plural
     return f"{len(items)} {noun} {tail}: {named}"
+
+
+def require_observed(
+    pair: ObservationPair, check: str, fields: Sequence[str]
+) -> None:
+    """Raise unless both sides recorded every field `check` reads.
+
+    `None` means Skeptic did not observe the field, never an empty result
+    (`observations.py`), so a check that read past it would report an
+    unobserved side as a tree that collected nothing or ran nothing.
+    """
+    for side in (pair.baseline, pair.candidate):
+        absent = [name for name in fields if getattr(side, name) is None]
+        if not absent:
+            continue
+        raise SkepticInfraError(
+            f"The {side.side} observation did not record "
+            f"{', '.join(absent)}. `{check}` differences the two sides on "
+            f"{', '.join(fields)}, and `None` means Skeptic did not observe "
+            f"the field rather than an empty result, so reading past it would "
+            f"report a side that was never run as a side that produced "
+            f"nothing. This is a harness bug, never evidence. Next: build the "
+            f"pair through `collector.collect_pair`, which fills every field, "
+            f"and report the traceback if it left one empty."
+        )
 
 
 def write_artifact(pair: ObservationPair, check: str, payload: dict) -> str:

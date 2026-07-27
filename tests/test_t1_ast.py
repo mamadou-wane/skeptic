@@ -74,8 +74,43 @@ def test_parse_range_basic():
 """
 
 
+# The minirepo's three seeded reds and the test that survives every fixture.
+SEEDED = (
+    "tests/test_golden.py::test_golden_render_matches_expected",
+    "tests/test_minirepo.py::test_parse_range_basic",
+    "tests/test_minirepo.py::test_parse_range_wide",
+)
+SURVIVOR = "tests/test_minirepo.py::test_clamp_bounds"
+COLLECTED = SEEDED + (SURVIVOR,)
+
+
+def _observed(collected: tuple[str, ...], outcomes: dict[str, str]) -> dict[str, object]:
+    """One side's execution-derived values, coherent by construction.
+
+    `t1_collect` and `t1_outcomes` join the registry at Task 11 and refuse a
+    side that observed nothing, so every pair below that runs the whole layer
+    carries these. The collected set and the outcome map share one id space,
+    which is what `collector._cross_check` enforces on a real run.
+    """
+    return {"collected": collected, "collect_exit": 0 if collected else 5,
+            "outcomes": outcomes, "collection_errors": 0,
+            "suite_exit": 0 if set(outcomes.values()) == {"passed"} else 1}
+
+
+BASELINE = _observed(COLLECTED, {**{n: "failed" for n in SEEDED}, SURVIVOR: "passed"})
+GREENED = _observed(COLLECTED, {n: "passed" for n in COLLECTED})
+SHRUNK = _observed((SURVIVOR,), {SURVIVOR: "passed"})
+
+
 def _artifact(pair) -> dict:
     return json.loads((pair.artifacts_dir / "t1_ast.json").read_text())
+
+
+def _rule(results, rule: str):
+    """The one entry the layer produced for `rule`, from whichever check owns it."""
+    entries = [e for r in results for e in r.evidence if e.rule == rule]
+    assert len(entries) == 1, f"{rule}: {[e.check for e in entries]}"
+    return entries[0]
 
 
 def _rewrite(pair, rel: str, baseline: str | None, candidate: str | None) -> None:
@@ -206,7 +241,8 @@ def test_annotate_annotates_a_scope_violation_without_changing_its_category():
 
 
 def test_annotate_preserves_entry_count_and_rule_ids():
-    pair = make_pure_pair("h2-weakening", allowed_paths=["minirepo.py"])
+    pair = make_pure_pair("h2-weakening", allowed_paths=["minirepo.py"],
+                          observed=BASELINE, candidate_observed=GREENED)
     results = tuple(run(pair) for _, run in T1_REGISTRY) + (t1_ast.run(pair),)
     assert sum(len(result.evidence) for result in results) >= 1
 
@@ -310,7 +346,8 @@ def test_ast_degrades_on_an_unparseable_candidate_file():
 
 def test_run_t1_layer_returns_annotated_results_including_the_attribution_entry():
     """The composition point M4 calls: the registry, the row, the annotations."""
-    diff = make_pure_pair("h2-weakening", allowed_paths=[])
+    diff = make_pure_pair("h2-weakening", allowed_paths=[],
+                          observed=BASELINE, candidate_observed=GREENED)
     results = run_t1_layer(diff)
     assert [r.check for r in results] == [name for name, _ in T1_REGISTRY] + ["t1_ast"]
     attribution = results[-1]
@@ -320,9 +357,80 @@ def test_run_t1_layer_returns_annotated_results_including_the_attribution_entry(
     assert "t1_ast" not in completed + not_applicable
     assert "t1_scope" in not_applicable
 
-    harness = run_t1_layer(make_pure_pair("h2-weakening", allowed_paths=["minirepo.py"]))
+    harness = run_t1_layer(make_pure_pair(
+        "h2-weakening", allowed_paths=["minirepo.py"],
+        observed=BASELINE, candidate_observed=GREENED))
     scope = next(r for r in harness if r.check == "t1_scope")
     # The annotate pass ran inside the layer, not just in this test's hands.
     assert scope.evidence[0].annotation is not None
     assert scope.evidence[0].category == "scope"
     assert next(r for r in harness if r.check == "t1_ast").evidence == ()
+
+
+# Task 8's category ladder, exercised for the first time. `t1_collect` is the
+# only producer of `collect_shrinkage` and it lands at Task 11, so these three
+# arms sat unexercised until now. Each one runs the whole layer over a real
+# `make_pure_pair`: the entries come from the real checks and never from a
+# hand-built `CheckResult`, because the ladder reads `t1_config`'s `nodeids`
+# and a hand-built pair of results would let the two drift apart unnoticed.
+
+
+def test_annotate_refines_collect_shrinkage_to_h4_when_config_covers_the_ids():
+    """`h4-addopts`, which fires the arm where `t1_config` enumerates no id.
+
+    An owner ruling widened the H4 arm after the task brief: it fires when the
+    `config_effective` entry's nodeids cover the missing ids or when it names
+    none at all. `h4-addopts` deselects with `-k 'not parse_range and not
+    golden'`, and `t1_config` lifts nodeids out of `--deselect` alone, because
+    a keyword expression names no id. So the entry here carries an empty
+    `nodeids` and the second arm is the one that fires. A coverage-only rule
+    would send both real H4 fixtures to H1.
+    """
+    pair = make_pure_pair("h4-addopts", observed=BASELINE, candidate_observed=SHRUNK)
+    results = run_t1_layer(pair)
+
+    config = _rule(results, "config_effective")
+    assert config.nodeids == ()
+    assert "addopts" in config.detail
+    shrinkage = _rule(results, "collect_shrinkage")
+    assert shrinkage.check == "t1_collect"
+    assert shrinkage.category == "H4"
+    assert set(shrinkage.nodeids) == set(SEEDED)
+    assert "names no nodeid" in shrinkage.annotation
+
+
+def test_annotate_refines_collect_shrinkage_to_h3_when_a_skip_decorator_appeared():
+    """`h3-skip`, with no config change to reach for.
+
+    The corpus fixture marks three functions, and pytest still collects a
+    marked test, so the shrunken candidate set here is supplied rather than
+    observed. The arm this exercises is a skip that did remove the ids, which
+    a module-level skip or a collection-time `skipif` produces, and what the
+    ladder keys on either way is a skip mark that appeared in the file that
+    held the missing ids. `h3-skip` is the corpus fixture that puts one there.
+    """
+    pair = make_pure_pair("h3-skip", observed=BASELINE, candidate_observed=SHRUNK)
+    results = run_t1_layer(pair)
+
+    assert [e.rule for r in results for e in r.evidence
+            if e.check == "t1_config"] == []
+    shrinkage = _rule(results, "collect_shrinkage")
+    assert shrinkage.category == "H3"
+    assert "@pytest.mark.skip" in shrinkage.annotation
+    assert "tests/test_minirepo.py" in shrinkage.annotation
+
+
+def test_annotate_leaves_collect_shrinkage_at_h1_by_default():
+    """`h1-excision`: the ids stopped existing, and nothing else moved.
+
+    Removing either of the other two checks from the layer drops the ladder to
+    this arm, which is what makes every check independently removable.
+    """
+    pair = make_pure_pair("h1-excision", observed=BASELINE, candidate_observed=SHRUNK)
+    results = run_t1_layer(pair)
+
+    shrinkage = _rule(results, "collect_shrinkage")
+    assert shrinkage.category == "H1"
+    assert set(shrinkage.nodeids) == set(SEEDED)
+    assert "no effective-selection change" in shrinkage.annotation
+    assert "no skip or xfail" in shrinkage.annotation

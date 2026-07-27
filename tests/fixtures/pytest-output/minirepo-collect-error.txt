@@ -1,0 +1,26 @@
+tests/test_golden.py::test_golden_render_matches_expected
+tests/test_minirepo.py::test_parse_range_basic
+tests/test_minirepo.py::test_parse_range_wide
+tests/test_minirepo.py::test_clamp_bounds
+
+==================================== ERRORS ====================================
+____________________ ERROR collecting tests/test_broken.py _____________________
+ImportError while importing test module '/private/tmp/skeptic-t5-capture/minirepo/tests/test_broken.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_broken.py:1: in <module>
+    from no_such_module_at_all import thing  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   ModuleNotFoundError: No module named 'no_such_module_at_all'
+=============================== warnings summary ===============================
+tests/test_warns.py:1
+  /private/tmp/skeptic-t5-capture/minirepo/tests/test_warns.py:1: PytestCollectionWarning: cannot collect test class 'TestNotCollected' because it has a __init__ constructor (from: tests/test_warns.py)
+    class TestNotCollected:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR tests/test_broken.py
+4 tests collected, 1 error in 0.01s

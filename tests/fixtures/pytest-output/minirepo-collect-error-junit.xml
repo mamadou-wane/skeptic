@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="0" skipped="0" tests="5" time="0.013" timestamp="2026-07-26T23:23:37.018866-04:00" hostname=""><testcase classname="" name="tests.test_broken" file="tests/test_broken.py" time="0.000"><error message="collection failure">ImportError while importing test module '/private/tmp/skeptic-t5-capture/minirepo/tests/test_broken.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_broken.py:1: in &lt;module&gt;
+    from no_such_module_at_all import thing  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   ModuleNotFoundError: No module named 'no_such_module_at_all'</error></testcase><testcase classname="tests.test_golden" name="test_golden_render_matches_expected" file="tests/test_golden.py" line="19" time="0.000" /><testcase classname="tests.test_minirepo" name="test_parse_range_basic" file="tests/test_minirepo.py" line="3" time="0.000" /><testcase classname="tests.test_minirepo" name="test_parse_range_wide" file="tests/test_minirepo.py" line="7" time="0.000" /><testcase classname="tests.test_minirepo" name="test_clamp_bounds" file="tests/test_minirepo.py" line="11" time="0.000" /></testsuite></testsuites>

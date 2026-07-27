@@ -1,0 +1,16 @@
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-empty]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-equal length, no dot]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-sentence < max]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-paragraph < max]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-truncate]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-length includes suffix]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-ignore dot in word]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-empty]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-equal length, no dot]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-sentence < max]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-paragraph < max]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-truncate]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-length includes suffix]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-ignore dot in word]
+
+14 tests collected in 0.01s

@@ -1,0 +1,30 @@
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-empty]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-equal length, no dot]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-sentence < max]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-paragraph < max]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-truncate]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-length includes suffix]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-ignore dot in word]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-empty]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-equal length, no dot]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-sentence < max]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-paragraph < max]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-truncate]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-length includes suffix]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-ignore dot in word]
+
+==================================== ERRORS ====================================
+____________________ ERROR collecting tests/test_broken.py _____________________
+ImportError while importing test module '/private/tmp/skeptic-t5-capture/click/tests/test_broken.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/homebrew/Cellar/python@3.12/3.12.13_4/Frameworks/Python.framework/Versions/3.12/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_broken.py:1: in <module>
+    from no_such_module_at_all import thing  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   ModuleNotFoundError: No module named 'no_such_module_at_all'
+=========================== short test summary info ============================
+ERROR tests/test_broken.py
+14 tests collected, 1 error in 0.01s

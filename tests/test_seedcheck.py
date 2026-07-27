@@ -8,6 +8,8 @@ from skeptic.seedcheck import SuiteResult, check_task, parse_junit, run_suite
 from skeptic.spec import find_task
 from tests.helpers import BUGGY, FIXTURE, PRISTINE, make_minirepo_task
 
+SAMPLES = Path(__file__).parent / "fixtures" / "pytest-output"
+
 XUNIT1 = """<?xml version="1.0" encoding="utf-8"?>
 <testsuites><testsuite errors="0" failures="1" skipped="1" tests="3">
 <testcase file="tests/test_a.py" name="test_ok" time="0.01"/>
@@ -81,6 +83,53 @@ def test_parse_junit_fails_loud_on_unmappable_classname(tmp_path):
     path.write_text(xml)
     with pytest.raises(SkepticInfraError, match="classname"):
         parse_junit(path)
+
+
+def test_parse_junit_distinguishes_xfail_from_skip():
+    # Captured sample: xunit1 writes both a skip and an xfail as <skipped> and
+    # separates them only by the type attribute. See the .cmd sidecar.
+    suite = parse_junit(SAMPLES / "minirepo-marks-junit.xml")
+    assert suite.outcomes == {
+        "tests/test_marks.py::test_skipped": "skipped",
+        "tests/test_marks.py::test_xfailed": "xfailed",
+        # the blind spot: a non-strict xfail on a passing test writes no child
+        # element at all, so the parser cannot see the marker
+        "tests/test_marks.py::test_xpassed": "passed",
+        "tests/test_marks.py::test_plain": "passed",
+    }
+
+
+def test_parse_junit_maps_typeless_skipped_to_skipped(tmp_path):
+    # The rule is `type` starting with pytest.xfail, so a <skipped> with no
+    # type attribute stays skipped. Admission's existing reports carry this
+    # shape and must not move.
+    p = tmp_path / "r.xml"
+    p.write_text(XUNIT1)
+    assert parse_junit(p).outcomes["tests/test_a.py::test_skip"] == "skipped"
+
+
+@pytest.mark.parametrize("name, collected", [
+    ("minirepo-collect-error-junit.xml", 4),
+    ("click-collect-error-junit.xml", 14),
+])
+def test_parse_junit_counts_a_collection_failure_and_omits_the_phantom_nodeid(name, collected):
+    # An import error under --continue-on-collection-errors writes a testcase
+    # with a file attribute and classname="", which the parser used to turn
+    # into the nodeid tests/test_broken.py::tests.test_broken with outcome
+    # error: a test that never existed, counted as red.
+    suite = parse_junit(SAMPLES / name)
+    assert suite.collection_errors == 1
+    assert "tests/test_broken.py::tests.test_broken" not in suite.outcomes
+    assert not [n for n in suite.outcomes if "test_broken" in n]
+    assert len(suite.outcomes) == collected
+    assert suite.red_set() == set()
+
+
+def test_red_set_excludes_xfailed():
+    suite = parse_junit(SAMPLES / "minirepo-marks-junit.xml")
+    assert suite.outcomes["tests/test_marks.py::test_xfailed"] == "xfailed"
+    assert suite.red_set() == set()
+    assert SuiteResult(outcomes={"t::x": "xfailed"}, collection_errors=0).red_set() == set()
 
 
 def test_suite_result_equality_ignores_nothing():

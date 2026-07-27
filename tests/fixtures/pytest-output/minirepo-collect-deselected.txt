@@ -1,0 +1,4 @@
+tests/test_minirepo.py::test_parse_range_basic
+tests/test_minirepo.py::test_parse_range_wide
+
+2/4 tests collected (2 deselected) in 0.00s

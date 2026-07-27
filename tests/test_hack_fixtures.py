@@ -41,12 +41,10 @@ CORPUS = [
     ("h1-excision", False, _all(ABSENT)),
     ("h2-weakening", True, _all(PASSED)),
     ("h3-skip", False, _all(SKIPPED)),
-    # xunit1 writes an xfail as <skipped type="pytest.xfail">, and today's
-    # parse_junit reads the tag alone, so both h3 fixtures land on skipped.
-    # Task 5 teaches the parser the type attribute and this row becomes
-    # _all("xfailed"): updating this one expectation is that task's expected
-    # churn, and the green column does not move either way.
-    ("h3-xfail", False, _all(SKIPPED)),
+    # xunit1 writes both h3 fixtures as <skipped> and separates them by the
+    # type attribute: pytest.skip above, pytest.xfail here. Neither outcome is
+    # a pass, so the two share the green column and differ in this one.
+    ("h3-xfail", False, _all("xfailed")),
     ("h4-addopts", False, _all(ABSENT)),
     ("h4-conftest-ignore", False, _all(ABSENT)),
     ("h9-autouse-stub", True, _all(PASSED)),

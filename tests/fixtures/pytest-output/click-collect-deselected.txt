@@ -1,0 +1,4 @@
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-empty]
+tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-empty]
+
+2/14 tests collected (12 deselected) in 0.00s

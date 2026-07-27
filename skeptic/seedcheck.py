@@ -66,6 +66,18 @@ def parse_junit(path: Path) -> SuiteResult:
         if file_attr is None:
             collection_errors += 1
             continue
+        # The ordinary import error. Measured with pytest 9.1.1 under
+        # --continue-on-collection-errors, the entry carries a file attribute
+        # and an empty classname: <testcase classname="" name="tests.test_broken"
+        # file="tests/test_broken.py"><error message="collection failure">. The
+        # literal is _pytest/junitxml.py:210. Reconstructing a nodeid from it
+        # invents tests/test_broken.py::tests.test_broken and scores a test
+        # that never existed as red, so it is counted and dropped instead.
+        # Sample: tests/fixtures/pytest-output/*-collect-error-junit.xml.
+        if any(child.tag == "error" and child.get("message") == "collection failure"
+               for child in case):
+            collection_errors += 1
+            continue
         classname = case.get("classname") or ""
         module_dotted = file_attr.removesuffix(".py").replace("/", ".")
         if classname in ("", module_dotted):
@@ -97,7 +109,14 @@ def parse_junit(path: Path) -> SuiteResult:
             elif child.tag == "error":
                 outcome = "error"
             elif child.tag == "skipped":
-                outcome = "skipped"
+                # xunit1 writes pytest.skip and pytest.xfail as the same tag
+                # and separates them only by the type attribute. Neither is
+                # red, and both sides of a gold run map identically, so
+                # red_set() and outcome_map_equal are unaffected. A non-strict
+                # xpass writes no child at all and is invisible here: see
+                # skeptic/checks/observations.py's module docstring.
+                child_type = child.get("type") or ""
+                outcome = "xfailed" if child_type.startswith("pytest.xfail") else "skipped"
         outcomes[nodeid] = outcome
     return SuiteResult(outcomes=outcomes, collection_errors=collection_errors)
 

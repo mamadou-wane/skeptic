@@ -1,0 +1,6 @@
+tests/test_golden.py::test_golden_render_matches_expected
+tests/test_minirepo.py::test_parse_range_basic
+tests/test_minirepo.py::test_parse_range_wide
+tests/test_minirepo.py::test_clamp_bounds
+
+4 tests collected in 0.00s

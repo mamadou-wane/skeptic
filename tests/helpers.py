@@ -18,13 +18,26 @@ applies cleanly on top of the seed patch rather than on top of pristine.
 `load_hack_fixture`, `seeded_tree`, and `apply_fixture` are the hack corpus:
 committed post-hack file bodies under fixtures/hacks/<id>/, applied to a
 seeded tree at test time. See fixtures/hacks/README.md.
+
+`make_pure_pair` and `make_diff_pair` are the two builders every check test
+rides on. Both hand back an `ObservationPair` with nothing executed: the first
+from a hack fixture applied to a seeded tree, the second from a committed
+patch and a real task spec.
 """
 import shutil
 import subprocess
+import tempfile
 import textwrap
 from collections.abc import Mapping
 from pathlib import Path
 
+from skeptic.candidate import CandidateReport, extract_candidate, snapshot
+from skeptic.checks.observations import (
+    ObservationPair,
+    Side,
+    VariantObservations,
+    parse_unified_diff,
+)
 from skeptic.spec import TaskSpec, find_task, load_task
 from skeptic.workspace import apply_patch, clone_pinned, materialize
 
@@ -221,3 +234,147 @@ def make_task_spec(**overrides: object) -> TaskSpec:
     if overrides:
         raise TypeError(f"make_task_spec: unsupported overrides {sorted(overrides)}")
     return spec
+
+
+# Held so the directories outlive every path the pairs below carry into them.
+# The builders take no tmp_path: a check test asks for a pair and gets one, and
+# Python removes these roots when the interpreter exits.
+_PAIR_ROOTS: list[tempfile.TemporaryDirectory] = []
+
+# Execution-derived fields, all unobserved by default. See the `observed`
+# argument of make_pure_pair.
+_UNOBSERVED: dict[str, object] = {
+    "collected": None,
+    "collect_exit": None,
+    "outcomes": None,
+    "collection_errors": None,
+    "suite_exit": None,
+}
+
+
+def _pair_root(prefix: str) -> Path:
+    handle = tempfile.TemporaryDirectory(prefix=prefix)
+    _PAIR_ROOTS.append(handle)
+    return Path(handle.name)
+
+
+def _with_allowed_paths(spec: TaskSpec, allowed_paths: list[str] | None) -> TaskSpec:
+    """Override the spec's allowed_paths, or hand back the spec unchanged.
+
+    A check reads `spec.builder_input.allowed_paths` to decide whether it
+    applies at all, so a builder that overrode only the scoping it passes to
+    `extract_candidate` would hand a check two disagreeing views of scope.
+    """
+    if allowed_paths is None:
+        return spec
+    return spec.model_copy(update={
+        "builder_input": spec.builder_input.model_copy(
+            update={"allowed_paths": list(allowed_paths)}
+        )
+    })
+
+
+def _side(
+    side: Side, tree: Path, artifacts: Path, observed: Mapping[str, object] | None
+) -> VariantObservations:
+    values = dict(_UNOBSERVED)
+    if observed:
+        unknown = sorted(set(observed) - set(values))
+        if unknown:
+            raise TypeError(
+                f"observed carries {unknown}, which is not an execution-derived "
+                f"field; known fields are {sorted(values)}"
+            )
+        values.update(observed)
+    artifacts.mkdir(parents=True, exist_ok=True)
+    return VariantObservations(side=side, tree=tree, artifacts=artifacts,
+                               coverage=None, **values)
+
+
+def make_pure_pair(
+    hack_id: str,
+    allowed_paths: list[str] | None = None,
+    observed: Mapping[str, object] | None = None,
+) -> ObservationPair:
+    """A check-ready pair for one hack fixture, with nothing executed.
+
+    Materializes a seeded tree, snapshots it as the baseline, applies the
+    fixture over the seeded copy, and extracts the candidate diff the way BUILD
+    does, so `changed_files` and `out_of_scope` are computed rather than
+    asserted. `allowed_paths` overrides the spec's list and the scoping
+    `extract_candidate` applies with it.
+
+    `observed` sets execution-derived values on both sides. The default leaves
+    every one of them `None`, which is what the checks that execute nothing
+    want. `t1_collect` raises INFRA when either side's `collected` is `None`,
+    so a test that runs the whole registered layer passes a `collected` here.
+    """
+    root = _pair_root("skeptic-pure-pair-")
+    tree, spec = seeded_tree(root)
+    spec = _with_allowed_paths(spec, allowed_paths)
+    baseline_tree = root / "baseline"
+    snapshot(tree, baseline_tree)
+    apply_fixture(tree, hack_id)
+    report = extract_candidate(
+        baseline_tree, tree, root / "candidate.diff",
+        allowed_paths=spec.builder_input.allowed_paths,
+    )
+    artifacts = root / "artifacts"
+    return ObservationPair(
+        spec=spec,
+        baseline=_side("baseline", baseline_tree, artifacts / "baseline", observed),
+        candidate=_side("candidate", tree, artifacts / "candidate", observed),
+        candidate_diff=report,
+        artifacts_dir=artifacts,
+    )
+
+
+def make_diff_pair(
+    spec_path: Path,
+    patch_path: Path,
+    allowed_paths: list[str] | None = None,
+) -> ObservationPair:
+    """A check-ready pair for a committed patch, with no clone and no tree.
+
+    `t1_scope` and `t1_goldens` read `changed_files` and `out_of_scope`, so a
+    parsed patch plus the spec's `allowed_paths` is the whole input, and the
+    real gold patches become false-positive fixtures that need no network
+    fetch and no image build. Measured: the two gold-negative tests are the
+    only ones in `tests/test_t1_scope.py` under 5 ms, against 0.11 s for a
+    `make_pure_pair` test, which materializes a tree.
+
+    One gap against `extract_candidate`, which is the thing this builder
+    stands in for: that function drops paths with an excluded component
+    (`candidate.EXCLUDE_NAMES` and `EXCLUDE_GLOBS`, the overlay venv, pytest
+    caches, bytecode, junit artifacts), and this builder keeps every path
+    `parse_unified_diff` found. Both committed gold patches touch one source
+    file each, so nothing is filtered today, and a hand-written patch that
+    names `__pycache__/x.pyc` would reach a check here and not in a real run.
+
+    Both `tree` paths name a directory that was never created. Nothing
+    materialized a tree here, and a check that reaches for one should find
+    a path that says so.
+    """
+    spec = _with_allowed_paths(load_task(spec_path), allowed_paths)
+    changed = sorted(parse_unified_diff(patch_path.read_text()))
+    # The prefix rule extract_candidate applies at BUILD.
+    out_of_scope = [
+        f for f in changed
+        if not any(f == p.rstrip("/") or f.startswith(p.rstrip("/") + "/")
+                   for p in spec.builder_input.allowed_paths)
+    ]
+    report = CandidateReport(
+        diff_path=patch_path, changed_files=changed,
+        out_of_scope=out_of_scope, is_empty=not changed,
+    )
+    root = _pair_root("skeptic-diff-pair-")
+    artifacts = root / "artifacts"
+    return ObservationPair(
+        spec=spec,
+        baseline=_side("baseline", root / "unmaterialized-baseline",
+                       artifacts / "baseline", None),
+        candidate=_side("candidate", root / "unmaterialized-candidate",
+                        artifacts / "candidate", None),
+        candidate_diff=report,
+        artifacts_dir=artifacts,
+    )

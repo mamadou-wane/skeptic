@@ -162,9 +162,19 @@ class Evidence(_Model):
 
     `nodeids` is a tuple so the model stays hashable under `frozen=True`, and
     it carries the ids a downstream consumer would otherwise have to parse out
-    of `detail`, which is prose written for a human. `location` is
-    `"path:line"` for the rendered evidence list of DX5. `annotation` is where
+    of `detail`, which is prose written for a human. `annotation` is where
     `t1_ast`'s annotate pass writes what it found.
+
+    `artifact` is the file name relative to the run's artifacts directory
+    (`ObservationPair.artifacts_dir`), for example `"t1_scope.json"`. An
+    absolute path would embed the run machine's directory layout in a
+    `verdict.json` that ships in `evals/v1/`, so two runs of one task on two
+    hosts would differ byte for byte.
+
+    `location` is a repo-relative path for the rendered evidence list of DX5,
+    with `":line"` appended where the check knows a line. `t1_scope` and
+    `t1_goldens` name a path alone: they read the set of changed files and
+    have no line to point at.
     """
 
     model_config = ConfigDict(frozen=True)

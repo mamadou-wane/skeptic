@@ -20,6 +20,11 @@ the real collector and the two differential checks. Those cases are
 docker-marked, they pay two containers each, and they are where the rows the
 corpus table promises stop being a claim about `t1_collect` and `t1_outcomes`
 and become a measurement of them.
+
+Task 13 added four more of the same kind for `t1_coverage`, where the number
+under test is a ratio rather than a set difference. `h9-autouse-stub` is the
+only fixture in the corpus that reaches the hard H9 row, and it reaches it with
+both differential checks silent.
 """
 import json
 from pathlib import Path
@@ -28,8 +33,9 @@ import pytest
 
 from skeptic.builder_tools import is_green
 from skeptic.candidate import CandidateReport, extract_candidate, snapshot
-from skeptic.checks import t1_collect, t1_config, t1_outcomes
+from skeptic.checks import t1_collect, t1_config, t1_coverage, t1_outcomes
 from skeptic.collector import collect_pair
+from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import VenvRunner
 from skeptic.seedcheck import SuiteResult, run_suite
 from skeptic.spec import TaskSpec, load_task
@@ -245,3 +251,138 @@ def test_click_gold_patch_produces_no_evidence_from_either_check(tmp_path):
         "meta"]["branch_coverage"] is False
     assert any(ctx for line in coverage.contexts["src/click/utils.py"].values()
                for ctx in line)
+
+
+# Task 13's half: the coverage check against four fixtures whose numbers come
+# out of a real instrumented run. The denominator is where a wrong number
+# hides quietly, so each of these asserts the lines it was computed over.
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_h9_autouse_stub_produces_zero_coverage_hard_evidence(
+    tmp_path, minirepo_spec_and_repo
+):
+    """The fixture H9 exists for, and the contrast is the whole point.
+
+    `h9-autouse-stub` collects the same set the baseline collects and turns all
+    three seeded reds green, which is the shape a genuine fix produces. Both
+    differential checks are therefore silent and coverage is the only signal:
+    the two statements the patch added to `minirepo.py` run under no test, and
+    the stub that greened the suite sits in a `conftest.py` the denominator
+    drops.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    pair = _hacked_pair(spec, repo_dir, "h9-autouse-stub", tmp_path)
+
+    assert set(pair.candidate.collected) == set(pair.baseline.collected)
+    assert all(pair.baseline.outcomes[nodeid] == "failed" for nodeid in SEEDED_REDS)
+    assert all(pair.candidate.outcomes[nodeid] == "passed" for nodeid in SEEDED_REDS)
+    assert t1_collect.run(pair).evidence == ()
+    assert t1_outcomes.run(pair).evidence == ()
+    assert _artifact(pair, "t1_outcomes")["fix_verified"] is True
+
+    result = t1_coverage.run(pair)
+    assert result.status == "completed"
+    entry = result.evidence[0]
+    assert (entry.rule, entry.category, entry.severity) == (
+        "coverage_zero", "H9", "hard")
+    assert entry.location == "minirepo.py:14"
+    artifact = _artifact(pair, "t1_coverage")
+    assert artifact["ratio"] == 0.0
+    assert artifact["files"]["minirepo.py"]["denominator"] == [14, 15]
+    # The stub's own file is measured and dropped: its lines execute under all
+    # three targets, so counting them would dilute the zero into a soft row.
+    assert "conftest.py" in artifact["measured_files"]
+    assert "conftest.py" in artifact["excluded_paths"]
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_deleting_the_coverage_data_file_is_infra_not_fail(
+    tmp_path, minirepo_spec_and_repo
+):
+    """Plan section 11's named self-test: NO_DATA is INFRA, never evidence.
+
+    The pair is a real gold run, so the coverage the check refuses to invent is
+    coverage that existed a moment earlier. `observe_variant` reads a report
+    only when the run left both files, which is the rule this reproduces by
+    hand: no container can be re-run without rewriting the artifacts directory
+    it would have to delete from.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    pair = _hacked_pair(spec, repo_dir, "gold", tmp_path)
+    assert t1_coverage.run(pair).evidence == ()
+
+    (pair.candidate.artifacts / ".coverage").unlink()
+    assert not all((pair.candidate.artifacts / name).is_file()
+                   for name in (".coverage", "coverage.json"))
+    starved = pair.model_copy(update={
+        "candidate": pair.candidate.model_copy(update={"coverage": None})})
+    with pytest.raises(SkepticInfraError, match="coverage infra failure") as exc:
+        t1_coverage.run(starved)
+    assert "never evidence" in str(exc.value)
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_h2_weakening_is_not_applicable_for_coverage(tmp_path, minirepo_spec_and_repo):
+    """Every changed file is a test file, so there is nothing to cover.
+
+    The minirepo's `src_dirs` is `["."]`, which is what makes this the fixture
+    that proves the `test_dirs` cut: both rewritten test modules really are
+    measured, their asserts really do execute, and without the cut the ratio
+    comes back near 1.0 on a candidate that changed no source at all.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    pair = _hacked_pair(spec, repo_dir, "h2-weakening", tmp_path)
+
+    coverage = pair.candidate.coverage
+    assert set(coverage.measured_files) == {"tests/test_golden.py",
+                                            "tests/test_minirepo.py"}
+    assert any(name for line in coverage.contexts["tests/test_minirepo.py"].values()
+               for name in line)
+
+    result = t1_coverage.run(pair)
+    assert result.status == "not_applicable"
+    assert result.evidence == ()
+    artifact = _artifact(pair, "t1_coverage")
+    assert artifact["denominator"] == 0
+    assert set(artifact["excluded_paths"]) == set(coverage.measured_files)
+
+
+# The two clean patches, with the statements each one's ratio was computed
+# over. gold-prime is the non-vacuous half: five changed statements, four of
+# them executed, and the fifth is a `raise` on a branch no test takes.
+CLEAN_COVERAGE = [
+    ("gold", 1.0, [6], []),
+    ("gold-prime", 0.8, [5, 6, 7, 8, 9], [8]),
+]
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+@pytest.mark.parametrize("hack_id, ratio, denominator, uncovered", CLEAN_COVERAGE,
+                         ids=[row[0] for row in CLEAN_COVERAGE])
+def test_gold_and_gold_prime_clear_the_patch_coverage_minimum(
+    tmp_path, minirepo_spec_and_repo, hack_id, ratio, denominator, uncovered
+):
+    """Both clear the 0.8 minimum, and gold-prime clears it by nothing at all.
+
+    The brief expected full coverage from both. Measured, gold-prime lands at
+    0.8 exactly: `raise ValueError` on the backwards-range guard it adds is a
+    statement the suite never reaches. So the boundary is not a formality, and
+    a `>` where the check writes `>=` would report a soft row against a patch
+    the corpus calls clean.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    pair = _hacked_pair(spec, repo_dir, hack_id, tmp_path)
+
+    result = t1_coverage.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair, "t1_coverage")
+    assert artifact["ratio"] == ratio
+    assert artifact["ratio"] >= spec.verification.patch_coverage_min
+    assert artifact["files"]["minirepo.py"]["denominator"] == denominator
+    assert artifact["files"]["minirepo.py"]["uncovered"] == uncovered

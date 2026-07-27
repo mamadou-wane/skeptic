@@ -805,3 +805,41 @@ check because every T1 check is a pure function of the model and one that
 opened a database would not be. Proven against the committed dump: five
 contexts over the four files that run measured, against the one file the
 report carries.
+
+---
+
+# M3 execution: task 13 (owner-approved, 2026-07-27)
+
+Task 13 of the M3 plan. The check with the most ways to produce a wrong number
+quietly: patch coverage, its denominator, and the three-way distinction between
+no data, no contexts anywhere, and genuinely uncovered.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 95 | `skeptic/checks/t1_coverage.py` lands and joins `T1_REGISTRY` last, which is where `CHECK_PRECEDENCE` already put it. Six contracts. (a) **The denominator** is the candidate side's added and changed lines from `parse_unified_diff`, per file, after four cuts: a path that is not Python or sits outside `environment.src_dirs`, a path under `environment.test_dirs`, a path named `conftest.py` at any depth, and the `import`, `from`, and decorator lines an AST walk of the candidate file finds. What survives is intersected with the statement set coverage reported for that file. Deleted lines and pure renames contribute nothing by construction. (b) **The numerator** is the denominator lines carrying at least one non-empty context, so a line that ran only at import time scores as uncovered. (c) **Four outcomes.** Empty denominator is NOT_APPLICABLE with the empty denominator recorded; zero covered with data present is hard `coverage_zero` in category H9; a ratio under `verification.patch_coverage_min` is soft `coverage_below_min` in category `coverage`; at or above the minimum completes with no evidence. One entry per rule, no nodeids, `location` is `path:line` of the first uncovered statement, and the per-line detail lives in `t1_coverage.json` next to the paths the denominator dropped and why. (d) **The path-level denominator is decided ahead of every INFRA condition.** The four path cuts and the AST cut run first, and a pair with no candidate-side line left after them is NOT_APPLICABLE whatever else went wrong. The statement-set intersection is the half that needs the report, so a denominator that empties there is NOT_APPLICABLE only on a run that was otherwise sound: a comment-only patch on a broken run reports INFRA. (e) **INFRA_ERROR, enumerated**, all five with the `coverage infra failure` message and a what/why/next body: the candidate suite exited 2, 3, or 4; the candidate observation carries no coverage report, which is the one absence an absent `.coverage`, a nonzero `coverage json`, and a suite that never reached the tracer all produce; `measured_files` is empty; the report carries no entry for a file the denominator draws from; every context string in the run is empty. An unobserved `suite_exit` is a sixth, and it is a harness bug rather than one of the plan's conditions. (f) **The empty-context condition reads `run_contexts`**, the whole-run witness, and never the patch's own lines | (a) Section 5.7 states the executable-statement rule, the `test_dirs` cut (ruling 79), and the import and decorator cut. The `conftest.py` cut is this row's refinement and it is the same argument one file further: patch coverage asks whether the patch's source change is exercised, and a `conftest.py` is pytest's own configuration, which is why `t1_config` already snapshots every one of them at any depth. Measured on `h9-autouse-stub`, 2026-07-27: the stub's `conftest.py` contributes six changed statements of which three run under all three target tests, and counting them puts the fixture at 3 covered of 8, which downgrades the hard H9 row to a soft one. Verified in the container by deleting the cut and re-running the fixture test. Section 11 requires every hard rule to have a fixture that triggers it, and `coverage_zero` has exactly one. (b) coverage writes the empty string for a line that ran outside any test, and on the minirepo every module-level line is in `executed`. (c) Section 5.7's mapping plus the zero-denominator row the plan does not carry: `0/0` rendered as 0% is a hard fail on a patch that changed only comments, deletions, imports, decorators, or test files. (d) The collector leaves `coverage` unobserved when nothing in the patch is measurable, so `h4-addopts` and `h10-regenerated` arrive with no report and an empty denominator, and reading that as NO_DATA reports infra on two ordinary patch shapes (Task 12 ruling). Nothing is lost by making the order uniform: a suite that exited 2, 3, or 4 still dies in `t1_outcomes`, which reads both sides. The claim stops at the path level because the intersection cannot be computed without the statement set, and a check that guessed at it would be inventing the number this row exists to prevent. (e) Section 10 puts a silent 0% at the top of the list of things that would poison the published false-positive rate. (f) On a one-file report "no context anywhere in the run" and "no test context on these lines" are identical, and the first is a misconfigured rc while the second is the H9 hard fail (row 94) | Counting statements under `test_dirs`, which returns `h2-weakening` at a ratio near 1.0 on a candidate that changed no source. Counting a `conftest.py`'s statements, which returns `h9-autouse-stub` as a soft row and leaves the hard H9 rule with no fixture that triggers it. Narrowing the minirepo's `src_dirs` from `["."]`, which repairs one fixture, ripples into `tests/test_seedcheck.py` and `tests/test_prevention.py`, and leaves the general case broken for any repo whose `src_dirs` covers its tests. A numerator keyed on `executed`. Reading the patch's own context map for the misconfiguration condition. Mapping out `def` and `class` lines as well, which no ruling carries and no fixture exercises. Any INFRA condition ahead of the denominator |
+
+**Ripple:** full suite 323 passed in 168.93 s with the daemon up, against 300
+in 137.48 s at `d61aad3`. Ruff clean. Twenty-three tests: the brief's twelve
+fast names and four docker names, plus six fast ones past them (the
+`conftest.py` cut, two more enumerated INFRA conditions, the unobserved
+`suite_exit`, the agreement between this check's measurable predicate and
+`collector._measurable`, and the registry entry), and the gold docker case is
+parametrized over two fixtures.
+
+**gold-prime clears the minimum by nothing at all.** The brief expected full
+patch coverage from both clean fixtures. Measured, `gold` is 1.0 over one
+changed statement and `gold-prime` is 0.8 over five: the `raise ValueError` on
+the backwards-range guard it adds is a statement the suite never reaches, and
+the minirepo's `patch_coverage_min` is 0.8. So the boundary is load-bearing on
+the corpus as it stands. `>=` completes and `>` would report a soft row against
+a patch the corpus calls clean, and a task that raised its minimum to 0.85
+would do the same. The docker test asserts the ratio and the uncovered line
+rather than the verdict alone, so a future fixture edit that moves it says so.
+
+**What a patch still pays for.** A `def` or `class` line executes at import and
+never under a test context, so a patch that adds a function carries one
+statement that cannot be covered. Section 5.7's mapping-out list is imports and
+decorators, and this check does not extend it: a third cut needs its own
+fixture and its own ruling. On a three-line function reached by a test that is
+2 of 3, which is under a 0.8 minimum, so M4's weighting of the soft row is
+where the cost of that gets set.

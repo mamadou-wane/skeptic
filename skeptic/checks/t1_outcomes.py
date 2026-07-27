@@ -54,7 +54,7 @@ collected set, and `t1_collect` reports that as H1 in its own `CheckResult`;
 pair-level INFRA would erase the same evidence twice. Nothing surfaces it
 today. `run_t1_layer` captures no per-check exception, so this raise propagates
 out of the layer and the run ends INFRA with the H1 sitting unread in the other
-check's result. **M4's aggregator has to capture per-check INFRA**, or the
+check's result. M4's aggregator has to capture per-check INFRA, or the
 reason this condition is per check never pays. The collector records the count
 and the affected files in the artifacts either way.
 """

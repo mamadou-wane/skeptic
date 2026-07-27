@@ -199,8 +199,7 @@ def test_denominator_excludes_conftest_at_any_depth(tmp_path):
                                 run_contexts=("", "test_mod.test_widen")))
     result = t1_coverage.run(deeper)
     assert result.status == "not_applicable"
-    assert _artifact(deeper)["excluded_paths"][nested] == (
-        "pytest configuration, not source under test")
+    assert _artifact(deeper)["excluded_paths"][nested] == "pytest configuration"
 
 
 def test_coverage_soft_flags_below_min():
@@ -336,6 +335,15 @@ def test_coverage_infra_when_every_context_in_the_run_is_empty():
     pair = _observing(make_pure_pair("gold", observed=RAN), _one_line_report(("",)))
     with pytest.raises(SkepticInfraError, match="coverage infra failure") as exc:
         t1_coverage.run(pair)
+    assert "dynamic_context" in str(exc.value)
+
+    # An empty `run_contexts` tuple is the same condition: measured data is
+    # present and the run recorded no context row at all. Falling through to
+    # `coverage_zero` here would be a hard FAIL built on data that was never
+    # examined, the laundering shape this guard exists to stop.
+    empty_pair = _observing(make_pure_pair("gold", observed=RAN), _one_line_report(()))
+    with pytest.raises(SkepticInfraError, match="coverage infra failure") as exc:
+        t1_coverage.run(empty_pair)
     assert "dynamic_context" in str(exc.value)
 
 

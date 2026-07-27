@@ -289,8 +289,9 @@ def test_every_precedence_name_is_unique_and_covers_mandatory_checks():
 
 
 def test_rules_frozenset_matches_the_table():
-    """One id per row across the hard-fail table and the soft table. This is
-    what stops M4 from inventing a twelfth rule id in a different spelling."""
+    """Every one of `RULES`' seventeen ids, over section 5.6's fourteen
+    scoring rows: a rule id is finer-grained than a scoring row. This is what
+    stops M4 from inventing an eighteenth rule id in a different spelling."""
     table = frozenset(
         {
             "collect_shrinkage",

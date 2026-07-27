@@ -361,7 +361,7 @@ def test_run_t1_layer_returns_annotated_results_including_the_attribution_entry(
         "h2-weakening", allowed_paths=["minirepo.py"],
         observed=BASELINE, candidate_observed=GREENED))
     scope = next(r for r in harness if r.check == "t1_scope")
-    # The annotate pass ran inside the layer, not just in this test's hands.
+    # The annotate pass ran automatically inside the layer, without this test calling it directly.
     assert scope.evidence[0].annotation is not None
     assert scope.evidence[0].category == "scope"
     assert next(r for r in harness if r.check == "t1_ast").evidence == ()

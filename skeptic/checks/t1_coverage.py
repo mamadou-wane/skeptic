@@ -56,7 +56,7 @@ goldens, test files, or conftests arrives here with no report and an empty
 denominator. Reading that as NO_DATA reports infra on `h4-addopts` and
 `h10-regenerated`, both of which are ordinary patch shapes (Task 12 ruling).
 
-The order is uniform for the **path-level** denominator: the four path cuts and
+The order is uniform for the path-level denominator: the four path cuts and
 the AST cut run first, and a pair with no candidate-side line left after them is
 NOT_APPLICABLE whatever else went wrong. Nothing is lost by that, since a suite
 that exited 2, 3, or 4 still dies in `t1_outcomes`, which reads both sides. The
@@ -142,7 +142,7 @@ def _why_excluded(spec: TaskSpec, path: str) -> str | None:
     if under(path, list(spec.environment.test_dirs)):
         return "under test_dirs"
     if Path(path).name == CONFTEST:
-        return "pytest configuration, not source under test"
+        return "pytest configuration"
     return None
 
 
@@ -259,7 +259,7 @@ def _guard(pair: ObservationPair) -> None:
             f"the paths in {pair.candidate_diff.diff_path}.",
         )
     contexts = side.coverage.run_contexts
-    if contexts and not any(contexts):
+    if not any(contexts):
         _refuse(
             f"every one of the {len(contexts)} context strings the run recorded "
             f"is empty.",

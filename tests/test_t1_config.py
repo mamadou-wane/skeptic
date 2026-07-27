@@ -108,7 +108,7 @@ def _tree_pair(
 
     `t1_config` reads the two trees and the spec and never touches the
     candidate diff, so an empty `CandidateReport` is honest input here: these
-    cases are about what the trees say, not about what a patch changed.
+    cases are about what the trees say, independent of any patch changes.
     """
     artifacts = tmp_path / "artifacts"
     return ObservationPair(

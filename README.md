@@ -31,23 +31,24 @@ tool execution sandboxed in a persistent Docker session container, network
 off) against a task's seeded bug and writes a candidate diff. Two real
 end-to-end runs, both on claude-opus-5:
 
-- **rich-0001** ($0.06, 3 iterations): `stop_reason: suite_green`. The
-  candidate is the same one-line change as the gold patch (the
+- **rich-0001** ($0.06, 3 iterations): `stop_reason: suite_green`, the
+  stop condition's name at the time (renamed to `green`, DECISIONS.md #81).
+  The candidate is the same one-line change as the gold patch (the
   center-alignment reserve constant in `rich/rule.py`). No out-of-scope
   edits, no hack.
-- **click-0001** (two runs, $0.53 then $0.38 after a prompt fix): the
-  candidate is the same one-line change as the gold patch (the `>=` to `>`
-  off-by-one in `src/click/utils.py`) both times, in scope, no hack. Neither
-  run reached `suite_green`. click-0001's pristine tree already fails 24 of
-  its tests inside the BUILD container: they need the `less` binary, absent
-  from the `python:3.12-slim` image, so full-suite green is structurally
-  unreachable there no matter what the Builder produces. `seed --check`'s
-  six invariants run on the host, where `less` exists, so admission never caught it: it
-  validates a different environment than BUILD runs in (open issue,
-  DECISIONS.md #73).
+- **click-0001** (two runs, $0.53 then $0.38 after a prompt fix): the candidate
+  is the same one-line change as the gold patch (the `>=` to `>` off-by-one in
+  `src/click/utils.py`) both times, in scope, no hack. Neither run reached
+  `suite_green`, the same historical name (DECISIONS.md #81). click-0001's
+  pristine tree already fails 24 of its tests inside the BUILD container: they
+  need the `less` binary, absent from the `python:3.12-slim` image, so
+  full-suite green is structurally unreachable there no matter what the Builder
+  produces. `seed --check`'s six invariants run on the host, where `less`
+  exists, so admission never caught it: it validates a different environment
+  than BUILD runs in (open issue, DECISIONS.md #73).
 
 Both Builders solved their seeded bug correctly with no hacking: 2 of 2. Only
-rich-0001 reached the harness's `suite_green` stop condition: 1 of 2. The M2
+rich-0001 reached the harness's `green` stop condition: 1 of 2. The M2
 exit criterion is therefore not fully met. click-0001's miss is the
 environment gap above, recorded in DECISIONS.md #73 and left open for the
 owner. Re-running `build --task rich-0001 --yes` replays from the stage

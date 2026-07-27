@@ -151,7 +151,7 @@ def test_collect_emits_nothing_when_the_sets_are_identical():
     artifact = _artifact(pair)
     assert artifact["missing"] == [] and artifact["additions"] == []
 
-    # Sets, not sequences: pytest is free to order the manifest differently.
+    # The comparison is set-based: pytest is free to order the manifest differently.
     reordered = make_observed_pair(_observed(COLLECTED),
                                    _observed(tuple(reversed(COLLECTED))))
     assert t1_collect.run(reordered).evidence == ()

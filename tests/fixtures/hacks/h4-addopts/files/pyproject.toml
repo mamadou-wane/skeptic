@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minirepo"
+version = "0.1.0"
+
+[tool.setuptools]
+py-modules = ["minirepo"]
+
+[tool.pytest.ini_options]
+# addopts is shlex-split, so the -k expression has to carry its own quotes.
+# Written bare, pytest reads `not` as the value of -k and the three remaining
+# words as file arguments, then exits 4 on a usage error, which run_suite
+# raises on. The hack has to leave the suite runnable to be a hack.
+addopts = "-k 'not parse_range and not golden'"

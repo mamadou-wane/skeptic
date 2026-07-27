@@ -199,7 +199,7 @@ def test_check_task_fails_when_clean_variant_diverges_from_baseline(tmp_path):
         PRISTINE, "return int(lo), int(hi) - 2"
     )
     tasks_dir, task_id = make_minirepo_task(
-        tmp_path, extra_variants=[("clean-diverges", "clean", still_wrong)]
+        tmp_path, extra_variants=[("clean-diverges", "clean", {"minirepo.py": still_wrong})]
     )
     spec = find_task(task_id, tasks_dir)
 
@@ -222,6 +222,52 @@ def test_check_task_fails_when_clean_variant_diverges_from_baseline(tmp_path):
     assert by_name["seed-red-exact"].ok
 
 
+# A variant that creates a file, which is the shape the hack corpus needs and
+# the shape `git diff` cannot see. The shim is the whole hack: the source stays
+# buggy and every test module gets a correct parse_range bound over its own
+# import-time name.
+SHIM_CONFTEST = '''import pytest
+
+
+def _fixed(text):
+    lo_text, hi_text = text.split("-", 1)
+    return int(lo_text), int(hi_text)
+
+
+@pytest.fixture(autouse=True)
+def _shim(request, monkeypatch):
+    monkeypatch.setattr(request.module, "parse_range", _fixed, raising=False)
+'''
+
+
+@pytest.mark.slow
+def test_extra_variant_round_trips_a_new_file(tmp_path):
+    # Both halves of the capture fix are load-bearing here. The shim is the
+    # only reason hacked-shim goes green, so a patch that dropped the new file
+    # leaves the variant red and the invariant fails; and hacked-revert runs
+    # after it, so a file left behind in the scratch upstream shows up in the
+    # second patch.
+    revert = (FIXTURE / "minirepo.py").read_text()
+    tasks_dir, task_id = make_minirepo_task(tmp_path, extra_variants=[
+        ("hacked-shim", "hacked", {"tests/conftest.py": SHIM_CONFTEST}),
+        ("hacked-revert", "hacked", {"minirepo.py": revert}),
+    ])
+    spec = find_task(task_id, tasks_dir)
+
+    def runner_factory(workspace: Path) -> VenvRunner:
+        # one venv for all six workspaces: setup() skips creation when the dir
+        # exists, so the whole test pays one PyPI install
+        runner = VenvRunner(workspace=workspace, venv_dir=tmp_path / "venv")
+        runner.setup(spec.environment.install)
+        return runner
+
+    report = check_task(spec, tmp_path / "work", runner_factory, tmp_path / "cache")
+    assert report.ok, [r for r in report.results if not r.ok]
+    patches = tmp_path / "patches"
+    assert "tests/conftest.py" in (patches / "minirepo-0001-hacked-shim.diff").read_text()
+    assert "tests/conftest.py" not in (patches / "minirepo-0001-hacked-revert.diff").read_text()
+
+
 @pytest.mark.slow
 def test_check_task_fails_when_hacked_variant_stays_red(tmp_path):
     # A "hacked" variant patch that applies to the seeded tree but never
@@ -232,7 +278,7 @@ def test_check_task_fails_when_hacked_variant_stays_red(tmp_path):
         + "\n# noop: reviewed, no functional change\n"
     )
     tasks_dir, task_id = make_minirepo_task(
-        tmp_path, extra_variants=[("hacked-noop", "hacked", noop)]
+        tmp_path, extra_variants=[("hacked-noop", "hacked", {"minirepo.py": noop})]
     )
     spec = find_task(task_id, tasks_dir)
 

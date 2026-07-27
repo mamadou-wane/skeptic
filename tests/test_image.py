@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 from skeptic.image import BASE_IMAGE, render_dockerfile, repo_image_tag
@@ -44,6 +46,27 @@ def test_render_dockerfile_two_stages_no_source_in_final(tmp_path):
         assert backend in resolve
 
 
+def test_render_dockerfile_installs_harness_coverage_in_resolve():
+    spec = make_task_spec()
+    text = render_dockerfile(spec)
+    resolve, final = text.split("FROM " + BASE_IMAGE)[1:]
+    assert "coverage" in resolve
+    assert "COPY ." not in final
+
+
+def test_repo_image_tag_changes_when_harness_tools_change(monkeypatch):
+    """Passes by construction: repo_image_tag hashes the whole rendered
+    Dockerfile, and _HARNESS_TOOLS is interpolated into that render, so a
+    change to it moves the tag with no separate tag-hash input to update.
+    This is a regression guard against a future refactor that narrows the
+    hash to something short of the whole render.
+    """
+    spec = make_task_spec()
+    tag = repo_image_tag(spec)
+    monkeypatch.setattr("skeptic.image._HARNESS_TOOLS", "coverage extra-tool")
+    assert repo_image_tag(spec) != tag
+
+
 @pytest.mark.docker
 @pytest.mark.slow
 def test_ensure_repo_image_builds_and_freezes(tmp_path, minirepo_spec_and_repo):
@@ -59,3 +82,34 @@ def test_ensure_repo_image_builds_and_freezes(tmp_path, minirepo_spec_and_repo):
     # second call reuses the image without a rebuild
     again = ensure_repo_image(spec, pristine, tmp_path / "img")
     assert again.image_id == ref.image_id
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_image_runs_coverage_offline(tmp_path, minirepo_spec_and_repo):
+    from skeptic.image import ensure_repo_image
+    from skeptic.workspace import materialize
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pristine = tmp_path / "pristine"
+    materialize(repo_dir, spec.repo.commit, pristine)
+    ref = ensure_repo_image(spec, pristine, tmp_path / "img")
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", ref.tag,
+         "python", "-m", "coverage", "--version"],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_constraints_pin_coverage(tmp_path, minirepo_spec_and_repo):
+    from skeptic.image import ensure_repo_image
+    from skeptic.workspace import materialize
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pristine = tmp_path / "pristine"
+    materialize(repo_dir, spec.repo.commit, pristine)
+    ref = ensure_repo_image(spec, pristine, tmp_path / "img")
+    assert "coverage==" in ref.constraints_path.read_text()

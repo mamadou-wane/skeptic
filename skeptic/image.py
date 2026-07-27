@@ -19,6 +19,15 @@ BASE_IMAGE = "python@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd0
 # setuptools/wheel cover the long tail.
 _BUILD_BACKENDS = "flit_core poetry-core setuptools hatchling wheel"
 
+# Harness measurement tooling: t1_coverage needs `coverage` inside the
+# VERIFY container, and that container runs with --network none, so it
+# cannot be installed after the image is built. It belongs in the image
+# template rather than a task's environment.install, since the repo under
+# test has no opinion about it. Installed unpinned in the resolve stage,
+# before the freeze, so `pip freeze` pins the resolved version into
+# constraints.txt alongside the repo's own dependencies (DECISIONS.md #82).
+_HARNESS_TOOLS = "coverage"
+
 
 @dataclass(frozen=True)
 class ImageRef:
@@ -50,6 +59,7 @@ WORKDIR /src
 COPY . /src
 {install_lines}
 RUN pip install -q {_BUILD_BACKENDS}
+RUN pip install -q {_HARNESS_TOOLS}
 RUN pip freeze --exclude-editable > /constraints.txt
 
 # Stage 2 is the runtime image: base interpreter plus the frozen closure,

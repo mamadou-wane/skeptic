@@ -446,3 +446,22 @@ Builder's own test runs; the baseline gives it a second consumer.
 **Free side benefit:** the baseline runs after the cost confirmation and
 before the first API call, so a broken environment now fails for zero dollars.
 Row 73's actual outcome was two paid runs and a two-hour diagnosis.
+
+---
+
+# M3 execution: task 2 (owner-approved, 2026-07-26)
+
+Task 2 of the M3 plan. `t1_coverage` cannot run at all until the per-repo
+image ships `coverage`, and it cannot be repaired at runtime because VERIFY
+containers run `--network none`. Neither corpus task's `environment.install`
+line pulls it, confirmed against both frozen constraints files, and gold
+would never reach PASS while the check returns NO_DATA on every run.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 82 | `image._HARNESS_TOOLS = "coverage"` installs unpinned in the resolve stage, before `pip freeze --exclude-editable`, so the freeze pins whatever version resolves into `constraints.txt` alongside the repo's own dependencies. This amends row 71's "deps-only" description: stage 2's closure now carries the harness's own measurement tooling alongside whatever the repo's `environment.install` names. Row 71's tag-hash description ("a hash of `environment.install` and the build-backend list") is also stale and is superseded here: `repo_image_tag` (`image.py:47`) already hashes the whole rendered Dockerfile, per the 2026-07-26 review finding recorded in that comment, so interpolating `_HARNESS_TOOLS` into the render moves the tag with no second hash input added. Coverage contexts stay at `dynamic_context = test_function` granularity: dotted `module.func`, parametrizations collapsed into one | Coverage belongs in the image template rather than each task's `environment.install`, because the repo under test has no opinion about the harness's own measurement tooling and a per-task install line lets a corpus author forget it. Measured: `docker run --rm --network none skeptic-repo-minirepo-upstream:eacf5e590c7b-533af5b9 sh -c 'grep -i coverage /opt/constraints.txt'` resolves `coverage==7.15.2` on the minirepo image built 2026-07-26. Per-nodeid contexts would need pytest-cov's `--cov-context=test`, which adds a pytest plugin to the suite's own environment, including under click's `filterwarnings = ["error"]`, for a granularity M4 does not need today: per-mutant selection over the coarser context map selects a safe superset (the whole parametrized family), which is correct and only slightly slower | Pinning an exact version in `_HARNESS_TOOLS` (e.g. `"coverage==7.15.2"`): it would move version control outside `constraints.txt`, the file that already governs every other dependency's version, and needs its own manual bump path. Leaving coverage in each corpus task's `environment.install`: it fixes the two known tasks and leaves the harness's own tooling as something the next corpus author has to remember, the exact gap this task closes. Pytest-cov for per-nodeid granularity: no consumer needs it yet, and it adds a plugin surface under click's strict warnings filter for nothing |
+
+**Blast radius:** both corpus images rebuild once, since `_HARNESS_TOOLS`
+changes the whole-render hash `repo_image_tag` keys on, and both BUILD cache
+keys move with them. A re-run of `skeptic build` on either corpus task after
+this change re-spends rather than serving a cached result.

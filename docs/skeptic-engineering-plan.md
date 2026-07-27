@@ -45,7 +45,7 @@ Primary audience: **agent-evals / AI-infra reviewers** landing from a resume or 
 
 **NOT in scope:** GitHub App / PR-bot service (roadmap: "run the CLI in CI" — now concretely true via the Action); second language (honestly: an analyzer rewrite, not a port); live issue mining; RL/training; semantic equivalence proving; perf/concurrency/security oracles; web service.
 
-**Complexity guardrail:** every check independently removable; evidence schema frozen at M1.
+**Complexity guardrail:** every check independently removable; evidence schema frozen at M3 (`skeptic/checks/evidence.py`).
 
 ## 5. Architecture
 
@@ -239,7 +239,7 @@ skeptic/
 
 | M | Dates | Build | Exit criteria |
 |---|---|---|---|
-| M1 | Jul 24–26 | Repo admission + contexts spike; images prebuilt; FSM, spec loader, tracing; **evidence schema frozen** | `seed --check` passes on 2 tasks; spike verdict written; digest-pinned images |
+| M1 | Jul 24–26 | Repo admission + contexts spike; images prebuilt; FSM, spec loader, tracing; **evidence schema (moved to M3)** | `seed --check` passes on 2 tasks; spike verdict written; digest-pinned images |
 | M2 | Jul 27–28 | Builder loop host-side + tool-exec container + prevention mounts; **corpus authoring starts as a daily thread** | 2 seeded bugs fixed E2E; attempted-violation tests pass (read-only tests, no-.git reach check) |
 | M3 | Jul 29–31 | T1 checks + fixture mini-repo + per-check self-tests | H1–H4/H9/H10 fixtures produce expected evidence; gold fixtures don't |
 | M4 | Aug 1–3 | T2 checks, probe, judge baseline, aggregator + golden-verdict tests | H5–H7 fixtures flagged; gold + gold-prime PASS on 2 real tasks |
@@ -247,7 +247,7 @@ skeptic/
 | M6 | Aug 8–11 | Blind holdout (frozen weights); pressure arms (6-task subset); `verify --diff` + GitHub Action on one real public agent PR | holdout row in table; per-arm incidence; Action demo recorded |
 | M7 | Aug 12–14 | Report polish; committed manifest + traces; timed fresh-clone acceptance; README final + GIF/PNG | stranger <10 min, measured; DoD met |
 
-**Worktree lanes** (parallelizable): A orchestrator/sandbox/CLI · B T1 checks (pure functions over fixtures) · C corpus (daily from M2, needs A's `seed --check`) · D T2+aggregator (needs A, B's frozen schema) · E evalkit/report (needs trace schema). Freeze `verdict.json`/evidence dataclasses at M1 — B and D share them.
+**Worktree lanes** (parallelizable): A orchestrator/sandbox/CLI · B T1 checks (pure functions over fixtures) · C corpus (daily from M2, needs A's `seed --check`) · D T2+aggregator (needs A, B's frozen schema) · E evalkit/report (needs trace schema). The `verdict.json` evidence schema is frozen at M3 in `skeptic/checks/evidence.py` (Pydantic models, `extra="forbid"` throughout; `Evidence` and `CheckResult` frozen, `Verdict` validated on assignment) · B and D share it.
 
 ## 15. Risks, cut lines, open questions
 

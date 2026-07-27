@@ -75,7 +75,15 @@ def materialize(repo_dir: Path, commit: str, dest: Path) -> Path:
     return dest
 
 
-def apply_patch(workspace: Path, patch_path: Path) -> None:
+def _git_apply(
+    workspace: Path, patch_path: Path
+) -> tuple[list[str], subprocess.CompletedProcess] | None:
+    """`git apply --check` then `git apply`; the failing step, or None.
+
+    Both callers share the mechanics and neither shares the message: the seed
+    path tells the operator to regenerate the patch and re-run `seed --check`,
+    and none of that advice fits a candidate diff.
+    """
     # Resolve the patch path against the caller's CWD before we run git inside
     # the workspace: patch paths in a task spec are relative to the repo root
     # where skeptic runs, not to the ephemeral workspace we git-apply them in.
@@ -83,7 +91,7 @@ def apply_patch(workspace: Path, patch_path: Path) -> None:
     # The workspace is gitless by design, but it may sit inside an ancestor git
     # repo (e.g. the default `workdir/` under skeptic's own checkout). Without a
     # ceiling, `git apply` discovers that ancestor repo, switches to index-aware
-    # mode, and silently *skips* the patch (rc 0, no file change) — a no-op seed.
+    # mode, and silently *skips* the patch (rc 0, no file change): a no-op seed.
     # Cap the repo search at the workspace's parent so apply runs in plain-file
     # mode regardless of what encloses the workspace.
     apply_env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(workspace.resolve().parent)}
@@ -93,15 +101,49 @@ def apply_patch(workspace: Path, patch_path: Path) -> None:
             capture_output=True, text=True, check=False,
         )
         if proc.returncode != 0:
-            raise SkepticInfraError(
-                f"Patch {patch_path.name} does not apply cleanly to the workspace "
-                f"(git {args[0]} {args[1] if len(args) > 1 else ''} "
-                f"exit {proc.returncode}):\n"
-                f"{proc.stderr[-1500:]}\n"
-                f"Skeptic requires every variant patch to apply to the seeded state "
-                f"(task invariant 3). Next: regenerate the patch against the current "
-                f"pinned commit, then re-run `skeptic seed --task <id> --check`."
-            )
+            return args, proc
+    return None
+
+
+def apply_patch(workspace: Path, patch_path: Path) -> None:
+    failed = _git_apply(workspace, patch_path)
+    if failed is None:
+        return
+    args, proc = failed
+    raise SkepticInfraError(
+        f"Patch {patch_path.name} does not apply cleanly to the workspace "
+        f"(git {args[0]} {args[1] if len(args) > 1 else ''} "
+        f"exit {proc.returncode}):\n"
+        f"{proc.stderr[-1500:]}\n"
+        f"Skeptic requires every variant patch to apply to the seeded state "
+        f"(task invariant 3). Next: regenerate the patch against the current "
+        f"pinned commit, then re-run `skeptic seed --task <id> --check`."
+    )
+
+
+def apply_candidate(tree: Path, diff: Path) -> None:
+    """Apply the extracted candidate diff to a freshly seeded VERIFY tree.
+
+    Same mechanics as `apply_patch`, different advice. BUILD snapshots the
+    seeded tree immediately after the seed patch and before the container
+    starts, so the diff's a-side is byte-identical to `materialize` plus the
+    seed patch, and a diff that fails to apply here is a harness bug or an
+    edited file rather than a patch that needs regenerating.
+    """
+    failed = _git_apply(tree, diff)
+    if failed is None:
+        return
+    args, proc = failed
+    raise SkepticInfraError(
+        f"Candidate diff {diff.name} does not apply to the freshly seeded tree "
+        f"at {tree} (git {' '.join(args[:-1])} exit {proc.returncode}):\n"
+        f"{proc.stderr[-1500:]}\n"
+        f"VERIFY re-materializes the seeded tree and re-applies the extracted "
+        f"diff so the judged tree is one the Builder never touched. That diff "
+        f"was taken against this exact state, so a failure here is a harness "
+        f"bug or a modified diff file. Next: compare {diff} against the tree "
+        f"BUILD ran on, then report the traceback."
+    )
 
 
 def assert_no_git(workspace: Path) -> None:

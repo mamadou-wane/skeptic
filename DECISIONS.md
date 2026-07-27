@@ -633,3 +633,35 @@ count drop rather than which one went once identical assertions are matched off;
 and a comparison decomposed through a local, where `parse_range("10-250")[0] ==
 10` fires the narrowing arm and `lo, hi = parse_range("10-250")` followed by
 `assert lo == 10` is silent. All three measured.
+
+---
+
+# M3 execution: task 9 (owner-approved, 2026-07-27)
+
+Task 9 of the M3 plan. The container VERIFY observes through, and the
+near-miss it replaces.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 91 | `skeptic/sandbox.py` gains `RunContainer`, one fresh `docker run --rm` per VERIFY observation unit, and loses `DockerRunner`. Four contracts land with it. (a) **One install string, one base env.** `overlay_install_cmd(venv_dir)` and `base_env(venv_bin)` are module functions; `SessionContainer` calls them with `/workspace/.sv` and `RunContainer` with `/tmp/sv`, and `SessionContainer._INSTALL` and `._BASE_ENV` become those calls. (b) **The overlay venv leaves the judged tree.** `RunContainer` builds it at `/tmp/sv`. (c) **`env` and `extra_mounts` move into `docker_run_args`.** Env pairs splice in ahead of the image; an extra mount is `(host: Path, container: str, mode)` and is rejected three ways, when the host source is missing, when the container target is relative, and when the target is `/workspace` or under it. (d) **A missing `ro_subpaths` entry is side-specific.** `missing_ro="raise"` is the default and reaches `docker_run_args`, which raises; `missing_ro="drop"` filters the missing entries, passes the rest, and records the dropped ones in `dropped_ro_subpaths`, sorted, trailing slash stripped, computed at construction. Task 10 sets `"drop"` on the candidate side alone and threads the list onto `VariantObservations`, where `t1_collect` turns it into `ro_subpath_deleted` (Task 11) | (a) The two strings have to stay identical or install policy forks, and a fork inside a seam neither class tests is where a silent divergence lives. This edits working M2 code and is the arguable choice in the task. `SessionContainer`'s argv is unchanged: `base_env("/workspace/.sv/bin")` and `overlay_install_cmd("/workspace/.sv")` return its former literals byte for byte, which `test_session_container_start_args_are_detached_and_hardened` and the end-to-end docker test both still pin. (b) BUILD can afford `/workspace/.sv` because `candidate.EXCLUDE_NAMES` strips it from the diff. In VERIFY the workspace is the thing being measured, so a venv inside it is one more directory coverage, collection, and M4's mutation scanner each have to be told to ignore. Setuptools still writes `*.egg-info` into the tree, which `EXCLUDE_GLOBS` covers. (c) `DockerRunner.exec` was the only splice site and it is being deleted, so the splice moves into the function and both container classes get it; Task 12 needs `COVERAGE_RCFILE` there. The host-source check mirrors the `ro_subpaths` check: Docker creates a missing bind-mount source as an empty directory on both sides, so the container would read an empty file where the harness meant to hand it one. The `/workspace` rejection is the same argument as (b) at a different altitude. (d) Raising is right on the baseline, where the tree is `git archive` plus the seed patch and every declared path exists, so an absent one is an authoring or infra fault that should stop the run loudly. On the candidate side the absent path is the hack: a deleted `test_dirs` entry is the maximal H1, and dying with INFRA_ERROR there trades a whole verdict for a mount that had nothing left to protect. The strict behavior stays the default so BUILD and the baseline get it without asking. The dropped list leaves by a typed attribute because only a typed field can become evidence; an artifacts file alone would weaken a prevention guarantee and collect nothing back (row 80). The trailing slash comes off so `test_dirs: tests` and `test_dirs: tests/` cannot produce two spellings of one piece of evidence | `DockerRunner` kept for reference: it has the right shape and the wrong content, no overlay install, so a suite run through it imports the frozen closure rather than the candidate source, and an unwired near-miss next to the real thing is how the next reader picks the wrong one. A persistence exception for VERIFY: measured overhead is 1.38 s of container start, venv creation, offline install, and import against click's 5.48 s instrumented suite, roughly 25%, which does not buy a second exception to row 72. Two copies of the install string with a comment asking the next author to keep them in sync. Leaving `env` splicing at the call sites. Dropping missing mounts symmetrically, which hides an authoring fault in the seeded tree behind a check result. Keeping the unconditional raise, which turns the maximal H1 into an INFRA_ERROR. Recording the dropped paths as declared, trailing slash included, which puts the spec's formatting into an evidence `location` |
+
+**Ripple:** full suite 242 passed in 78.22 s with the daemon up, against 230
+before. Ruff clean. `grep -rn DockerRunner skeptic tests` returns nothing.
+
+One finding against the brief, and it changed the docker-marked test. The brief
+says `python -c "import minirepo"` without the overlay install returns
+`ModuleNotFoundError`, which is the fact the class exists for. It does not:
+Python prepends the current directory to `sys.path` for `-c`, and the container
+runs with `-w /workspace`, so the import resolves off the bind mount whether or
+not anything is installed. Measured against the built minirepo image on
+2026-07-27: `python -c "import minirepo; print(minirepo.__file__)"` with no
+overlay prints `/workspace/minirepo.py` and exits 0, and the same probe under
+`python -P`, which drops that path entry, raises `ModuleNotFoundError` and exits
+1. `test_run_container_imports_the_workspace_source` therefore probes with
+`python -P` on both halves and asserts the resolved `__file__` is
+`/workspace/minirepo.py`, so it fails if the overlay install stops working
+rather than passing on the cwd fallback.
+
+`VenvRunner.exec`'s local `base_env` dict is renamed `venv_env`. It would
+otherwise shadow the new module function of that name inside the one method a
+reader goes to when comparing the host environment against the container's.

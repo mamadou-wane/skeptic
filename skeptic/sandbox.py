@@ -6,7 +6,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import ClassVar, Literal, Self
 
 from skeptic.errors import SkepticInfraError, VenvBuildRefused
 
@@ -53,7 +53,48 @@ def docker_available() -> bool:
         return False
 
 
-def docker_run_args(image: str, workspace: Path, ro_subpaths: tuple[str, ...] = ()) -> list[str]:
+def overlay_install_cmd(venv_dir: str) -> str:
+    """The offline editable install that puts the live tree on sys.path.
+
+    One string with one caller-chosen venv directory: BUILD overlays at
+    /workspace/.sv, VERIFY at /tmp/sv. A change to install policy has to
+    land in one place, so both containers call this rather than carrying a
+    copy that has to stay identical.
+    """
+    return (
+        f"python -m venv --system-site-packages {venv_dir} && "
+        f"{venv_dir}/bin/pip install -q --no-deps --no-index "
+        f"--no-build-isolation -e /workspace"
+    )
+
+
+def base_env(venv_bin: str) -> dict[str, str]:
+    """The environment every container command runs under.
+
+    Locale and timezone are pinned because they change program output with
+    no test opting in. COLUMNS is deliberately absent (DECISIONS.md #68).
+    """
+    return {
+        "PATH": f"{venv_bin}:/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/workspace",
+        "TERM": "dumb",
+        "NO_COLOR": "1",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "TZ": "UTC",
+    }
+
+
+ExtraMount = tuple[Path, str, Literal["ro", "rw"]]
+
+
+def docker_run_args(
+    image: str,
+    workspace: Path,
+    ro_subpaths: tuple[str, ...] = (),
+    extra_mounts: tuple[ExtraMount, ...] = (),
+    env: dict[str, str] | None = None,
+) -> list[str]:
     # The container user is the host UID:GID so files written through the
     # bind mount stay owned by the invoking user (M1 review deferral). That
     # user has no /etc/passwd entry in the image, so HOME is pointed at the
@@ -79,9 +120,42 @@ def docker_run_args(image: str, workspace: Path, ro_subpaths: tuple[str, ...] = 
                 f"silently create it as a directory on both sides, turning a "
                 f"prevention mount into a hole. Next: fix test_dirs, "
                 f"config_files, or golden_dirs in the task spec so every "
-                f"entry names a real path."
+                f"entry names a real path, or check whether the tree changed "
+                f"between observation setup and this run, which is the likely "
+                f"cause on a candidate tree."
             )
         args += ["-v", f"{host}:/workspace/{clean}:ro"]
+    # Helper mounts (a coverage rc, an artifacts directory) live outside the
+    # judged tree: anything mounted inside /workspace changes the thing
+    # VERIFY measures.
+    for src, target, mode in extra_mounts:
+        if not src.exists():
+            raise SkepticInfraError(
+                f"extra mount source {src} does not exist. Docker would "
+                f"silently create it as a directory on both sides, so the "
+                f"container would read an empty file where the harness meant "
+                f"to hand it one. Next: this is a harness bug; the caller "
+                f"writes the path before it mounts it."
+            )
+        if not target.startswith("/"):
+            raise SkepticInfraError(
+                f"extra mount target {target!r} is not an absolute path. "
+                f"Skeptic mounts helper files at fixed absolute locations so "
+                f"the script it runs can name them. Next: this is a harness "
+                f"bug; give an absolute container path."
+            )
+        if target == "/workspace" or target.startswith("/workspace/"):
+            raise SkepticInfraError(
+                f"extra mount target {target!r} is inside /workspace. The "
+                f"judged tree is what VERIFY measures, and a harness file "
+                f"mounted into it is one more thing the candidate diff, "
+                f"coverage, and collection have to be told to ignore. Next: "
+                f"this is a harness bug; mount outside /workspace and point "
+                f"the tool at it through the environment."
+            )
+        args += ["-v", f"{src}:{target}:{mode}"]
+    for key, value in (env or {}).items():
+        args += ["-e", f"{key}={value}"]
     args += ["-w", "/workspace", image]
     return args
 
@@ -151,7 +225,9 @@ class VenvRunner:
         #
         # Locale and timezone ARE pinned, because those change program output
         # without any test opting in.
-        base_env = {
+        # venv_env keeps this distinct from the module-level base_env(),
+        # which builds the container environment. This one is the host venv's.
+        venv_env = {
             "PATH": f"{venv_bin}:/usr/bin:/bin",
             "VIRTUAL_ENV": str(self.venv_dir),
             "HOME": str(self.workspace),
@@ -162,13 +238,13 @@ class VenvRunner:
             "TZ": "UTC",
         }
         if env:
-            base_env.update(env)
-        # sh -c on purpose, matching DockerRunner: the same command string
-        # must mean the same thing on every runner (M1 review deferral,
-        # DECISIONS.md #70). Commands here are spec-authored trusted input.
-        # A missing binary is exit 127 from sh; callers convert nonzero
-        # exits into SkepticInfraError with the stderr tail.
-        return _run(["sh", "-c", cmd], cwd=self.workspace, timeout_s=timeout_s, env=base_env)
+            venv_env.update(env)
+        # sh -c on purpose, matching the container runners: the same command
+        # string must mean the same thing on every runner (M1 review
+        # deferral, DECISIONS.md #70). Commands here are spec-authored
+        # trusted input. A missing binary is exit 127 from sh; callers
+        # convert nonzero exits into SkepticInfraError with the stderr tail.
+        return _run(["sh", "-c", cmd], cwd=self.workspace, timeout_s=timeout_s, env=venv_env)
 
     def build_stage_guard(self) -> None:
         raise VenvBuildRefused(
@@ -178,35 +254,73 @@ class VenvRunner:
         )
 
 
-class DockerRunner:
-    def __init__(self, image: str, workspace: Path) -> None:
+class RunContainer:
+    """One fresh `docker run --rm` per VERIFY observation unit.
+
+    A unit is one (tree state, image) pair. Row 72 scoped the persistent
+    container to BUILD, where the Builder issues many tool calls against one
+    tree state; VERIFY compares two tree states, so a container that outlived
+    one of them is contamination. Several commands inside one `sh -c` are
+    fine and intended, and the container is gone when `run` returns.
+
+    The overlay venv sits at /tmp/sv, outside the judged tree. BUILD can
+    afford /workspace/.sv because `candidate.EXCLUDE_NAMES` strips it from
+    the diff; in VERIFY the workspace is the thing being measured.
+
+    Scripts are harness-composed and spec-authored, which is what makes the
+    shell safe here. No candidate-supplied text reaches this string.
+    """
+
+    _VENV: ClassVar[str] = "/tmp/sv"
+
+    def __init__(self, image: str, workspace: Path,
+                 ro_subpaths: tuple[str, ...] = (),
+                 extra_mounts: tuple[ExtraMount, ...] = (),
+                 missing_ro: Literal["raise", "drop"] = "raise") -> None:
         self.image = image
         self.workspace = workspace
+        self.extra_mounts = tuple(extra_mounts)
+        # The tree state is fixed once the instance exists, so the split is
+        # decided here rather than per run. "raise" is the default and the
+        # baseline side keeps it: the seeded tree is git archive plus the
+        # seed patch, so a declared path missing there is an authoring or
+        # infra fault that should stop the run (docker_run_args raises).
+        # The candidate side asks for "drop", where an absent path is the
+        # hack itself: reporting INFRA_ERROR would trade a whole verdict for
+        # a mount that had nothing left to protect. The dropped paths become
+        # `ro_subpath_deleted` evidence (DECISIONS.md #80).
+        dropped: list[str] = []
+        kept: list[str] = []
+        for sub in ro_subpaths:
+            clean = sub.rstrip("/")
+            if missing_ro == "drop" and not (workspace / clean).exists():
+                dropped.append(clean)
+            else:
+                kept.append(sub)
+        self.ro_subpaths = tuple(kept)
+        self.dropped_ro_subpaths: tuple[str, ...] = tuple(sorted(dropped))
 
     @property
     def isolation(self) -> str:
-        return "docker"
+        return "docker-run"
 
-    @classmethod
-    def build_image(cls, tag: str, context_dir: Path, dockerfile: Path) -> None:
-        proc = subprocess.run(
-            ["docker", "build", "-t", tag, "-f", str(dockerfile), str(context_dir)],
-            capture_output=True, text=True, check=False,
-        )
-        if proc.returncode != 0:
-            raise SkepticInfraError(
-                f"docker build failed for {tag} (exit {proc.returncode}).\n"
-                f"stderr tail:\n{proc.stderr[-2000:]}\n"
-                f"Skeptic builds one image per repo so task runs pay zero installs. "
-                f"Next: check the Dockerfile, or run `skeptic doctor`."
-            )
-
-    def exec(self, cmd: str, timeout_s: int, env: dict[str, str] | None = None) -> ExecResult:
-        args = docker_run_args(self.image, self.workspace)
-        env_args: list[str] = []
-        for key, value in (env or {}).items():
-            env_args += ["-e", f"{key}={value}"]
-        full = args[:-1] + env_args + [args[-1], "sh", "-c", cmd]
+    def run(self, script: str, timeout_s: int,
+            env: dict[str, str] | None = None) -> ExecResult:
+        """Install the overlay venv and run `script`, in one container."""
+        # HOME=/workspace is set twice on purpose: once in docker_run_args'
+        # base flags and once here through base_env. Same value, last one
+        # wins, and base_env has to carry it for SessionContainer's
+        # `docker exec` path, which never sees the base flags.
+        merged = {**base_env(f"{self._VENV}/bin"), **(env or {})}
+        args = docker_run_args(self.image, self.workspace, self.ro_subpaths,
+                               self.extra_mounts, merged)
+        # The script goes in a brace group so `&&` guards all of it. A failed
+        # install must reach the caller as its own exit code with nothing run
+        # after it: an unguarded `install && a; b` runs b against the system
+        # python, which would launder a frozen-closure suite into a candidate
+        # observation. The newline before the closing brace is sh syntax.
+        guarded = f"{overlay_install_cmd(self._VENV)} && {{ {script}\n}}"
+        full = args + ["sh", "-c", guarded]
         return _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
 
 
@@ -219,20 +333,9 @@ class SessionContainer:
     rw with tests/configs/goldens shadowed read-only (prevention tier).
     """
 
-    _BASE_ENV: ClassVar[dict[str, str]] = {
-        "PATH": "/workspace/.sv/bin:/usr/local/bin:/usr/bin:/bin",
-        "HOME": "/workspace",
-        "TERM": "dumb",
-        "NO_COLOR": "1",
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "TZ": "UTC",
-    }
-    _INSTALL = (
-        "python -m venv --system-site-packages /workspace/.sv && "
-        "/workspace/.sv/bin/pip install -q --no-deps --no-index "
-        "--no-build-isolation -e /workspace"
-    )
+    _VENV: ClassVar[str] = "/workspace/.sv"
+    _BASE_ENV: ClassVar[dict[str, str]] = base_env(f"{_VENV}/bin")
+    _INSTALL: ClassVar[str] = overlay_install_cmd(_VENV)
 
     def __init__(self, image: str, workspace: Path,
                  ro_subpaths: tuple[str, ...] = ()) -> None:

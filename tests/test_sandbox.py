@@ -164,6 +164,196 @@ def test_session_exec_argv_never_wraps_in_shell(tmp_path, monkeypatch):
     assert "sh" not in calls[0]
 
 
+from skeptic.sandbox import RunContainer, base_env, overlay_install_cmd
+
+
+def _record_run(monkeypatch, stdout=""):
+    """Capture every argv `_run` is handed and answer a clean ExecResult."""
+    calls = []
+    monkeypatch.setattr(
+        "skeptic.sandbox._run",
+        lambda cmd, cwd, timeout_s, env: (calls.append(cmd),
+                                          ExecResult(0, stdout, "", 1))[1],
+    )
+    return calls
+
+
+def test_run_container_runs_once_and_removes_itself(tmp_path, monkeypatch):
+    calls = _record_run(monkeypatch)
+    RunContainer("img", tmp_path).run("pytest -q", timeout_s=60)
+    assert len(calls) == 1
+    argv = calls[0]
+    assert argv[:3] == ["docker", "run", "--rm"]
+    assert "-d" not in argv
+    assert argv[-3:-1] == ["sh", "-c"]
+    assert "pytest -q" in argv[-1]
+
+
+def test_run_container_prepends_the_overlay_install(tmp_path, monkeypatch):
+    calls = _record_run(monkeypatch)
+    RunContainer("img", tmp_path).run("pytest -q; echo tail", timeout_s=60)
+    script = calls[0][-1]
+    assert script.startswith(overlay_install_cmd("/tmp/sv"))
+    assert "--system-site-packages" in script
+    assert "--no-index" in script and "--no-build-isolation" in script
+    # the whole script sits in a brace group, so a failed install runs none
+    # of it: `install && a; b` would run b against the system python
+    assert script == f"{overlay_install_cmd('/tmp/sv')} && {{ pytest -q; echo tail\n}}"
+
+
+def test_run_container_venv_is_outside_the_workspace(tmp_path, monkeypatch):
+    """The judged tree carries no venv.
+
+    A venv inside /workspace is one more directory coverage, collection, and
+    M4's mutation scanner each have to be told to ignore.
+    """
+    calls = _record_run(monkeypatch)
+    RunContainer("img", tmp_path).run("pytest -q", timeout_s=60)
+    argv = calls[0]
+    assert "/workspace/.sv" not in " ".join(argv)
+    assert "/tmp/sv" in argv[-1]
+    path = next(a for a in argv if a.startswith("PATH="))
+    assert path.startswith("PATH=/tmp/sv/bin:")
+
+
+def test_docker_run_args_place_env_before_the_image(tmp_path):
+    args = docker_run_args("img", tmp_path, env={"COVERAGE_RCFILE": "/opt/skeptic/rc"})
+    pair = args.index("COVERAGE_RCFILE=/opt/skeptic/rc")
+    assert args[pair - 1] == "-e"
+    assert args[-1] == "img"
+    assert pair < args.index("img")
+
+
+def test_docker_run_args_accept_extra_mounts(tmp_path, monkeypatch):
+    rc = tmp_path / "rc"
+    rc.write_text("[run]\n")
+    out = tmp_path / "out"
+    out.mkdir()
+    mounts = ((rc, "/opt/skeptic/rc", "ro"), (out, "/out", "rw"))
+    args = docker_run_args("img", tmp_path, extra_mounts=mounts)
+    joined = " ".join(args)
+    assert f"-v {rc}:/opt/skeptic/rc:ro" in joined
+    assert f"-v {out}:/out:rw" in joined
+    assert joined.index(f"-v {tmp_path}:/workspace ") < joined.index("/opt/skeptic/rc")
+
+    # RunContainer.run passes ro_subpaths, extra_mounts, and env positionally,
+    # so an argument-order slip there would first surface inside a container
+    calls = _record_run(monkeypatch)
+    (tmp_path / "tests").mkdir()
+    RunContainer("img", tmp_path, ro_subpaths=("tests/",), extra_mounts=mounts).run(
+        "pytest -q", timeout_s=60, env={"COVERAGE_RCFILE": "/opt/skeptic/rc"}
+    )
+    threaded = " ".join(calls[0])
+    assert f"-v {tmp_path}/tests:/workspace/tests:ro" in threaded
+    assert f"-v {rc}:/opt/skeptic/rc:ro" in threaded
+    assert f"-v {out}:/out:rw" in threaded
+    assert "-e COVERAGE_RCFILE=/opt/skeptic/rc" in threaded
+    assert calls[0][-4] == "img"
+
+
+def test_docker_run_args_reject_extra_mount_inside_the_workspace(tmp_path):
+    rc = tmp_path / "rc"
+    rc.write_text("[run]\n")
+    with pytest.raises(SkepticInfraError, match="inside /workspace"):
+        docker_run_args("img", tmp_path, extra_mounts=((rc, "/workspace/rc", "ro"),))
+    with pytest.raises(SkepticInfraError, match="inside /workspace"):
+        docker_run_args("img", tmp_path, extra_mounts=((rc, "/workspace", "ro"),))
+    with pytest.raises(SkepticInfraError, match="absolute"):
+        docker_run_args("img", tmp_path, extra_mounts=((rc, "opt/rc", "ro"),))
+
+
+def test_docker_run_args_reject_missing_extra_mount_source(tmp_path):
+    with pytest.raises(SkepticInfraError, match="does not exist"):
+        docker_run_args("img", tmp_path,
+                        extra_mounts=((tmp_path / "gone", "/opt/skeptic/rc", "ro"),))
+
+
+def test_run_container_raises_on_a_missing_ro_subpath_by_default(tmp_path, monkeypatch):
+    """The strict default: the baseline side and every BUILD caller get this."""
+    calls = _record_run(monkeypatch)
+    (tmp_path / "pyproject.toml").write_text("[tool.x]\n")
+    rc = RunContainer("img", tmp_path, ro_subpaths=("tests/", "pyproject.toml"))
+    assert rc.dropped_ro_subpaths == ()
+    with pytest.raises(SkepticInfraError, match="does not exist"):
+        rc.run("pytest -q", timeout_s=60)
+    assert calls == []
+
+
+def test_run_container_drops_a_missing_ro_subpath_when_asked_and_records_it(
+    tmp_path, monkeypatch
+):
+    calls = _record_run(monkeypatch)
+    (tmp_path / "pyproject.toml").write_text("[tool.x]\n")
+    rc = RunContainer("img", tmp_path, ro_subpaths=("tests/", "pyproject.toml"),
+                      missing_ro="drop")
+    assert rc.dropped_ro_subpaths == ("tests",)
+    result = rc.run("pytest -q", timeout_s=60)
+    assert result.exit_code == 0
+    joined = " ".join(calls[0])
+    assert "/workspace/tests:ro" not in joined
+    assert f"-v {tmp_path}/pyproject.toml:/workspace/pyproject.toml:ro" in joined
+
+
+def test_run_container_dropped_ro_subpaths_is_empty_when_every_path_exists(
+    tmp_path, monkeypatch
+):
+    """The negative half: a healthy tree must not feed the check a false positive."""
+    calls = _record_run(monkeypatch)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pyproject.toml").write_text("[tool.x]\n")
+    rc = RunContainer("img", tmp_path, ro_subpaths=("tests/", "pyproject.toml"),
+                      missing_ro="drop")
+    rc.run("pytest -q", timeout_s=60)
+    assert rc.dropped_ro_subpaths == ()
+    joined = " ".join(calls[0])
+    assert f"-v {tmp_path}/tests:/workspace/tests:ro" in joined
+    assert f"-v {tmp_path}/pyproject.toml:/workspace/pyproject.toml:ro" in joined
+
+
+def test_session_container_and_run_container_share_one_install_string(tmp_path, monkeypatch):
+    calls = _record_run(monkeypatch, stdout="cid\n")
+    SessionContainer("img", tmp_path).start()
+    RunContainer("img", tmp_path).run("pytest -q", timeout_s=60)
+    session_install = calls[1][-1]
+    run_script = calls[2][-1]
+    assert session_install == overlay_install_cmd("/workspace/.sv")
+    assert run_script.startswith(overlay_install_cmd("/tmp/sv"))
+    assert session_install.replace("/workspace/.sv", "/tmp/sv") == overlay_install_cmd("/tmp/sv")
+    # the base env comes from the same function, with the other venv path
+    assert f"PATH={base_env('/workspace/.sv/bin')['PATH']}" in calls[1]
+    assert f"PATH={base_env('/tmp/sv/bin')['PATH']}" in calls[2]
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_run_container_imports_the_workspace_source(tmp_path, minirepo_spec_and_repo):
+    """The overlay install is what makes the tree importable.
+
+    The image carries the frozen dependency closure and no repo source, so
+    the same probe run without the install cannot find the module.
+    """
+    from skeptic.image import ensure_repo_image
+    from skeptic.sandbox import _run
+    from skeptic.workspace import materialize
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pristine = tmp_path / "pristine"
+    materialize(repo_dir, spec.repo.commit, pristine)
+    ref = ensure_repo_image(spec, pristine, tmp_path / "img")
+    ws = tmp_path / "ws"
+    materialize(repo_dir, spec.repo.commit, ws)
+
+    probe = 'python -P -c "import minirepo; print(minirepo.__file__)"'
+    imported = RunContainer(ref.tag, ws).run(probe, timeout_s=300)
+    assert imported.exit_code == 0, imported.stderr[-800:]
+    assert "/workspace/minirepo.py" in imported.stdout
+
+    bare = _run(docker_run_args(ref.tag, ws) + ["sh", "-c", probe],
+                cwd=ws, timeout_s=120, env=None)
+    assert bare.exit_code != 0
+    assert "ModuleNotFoundError" in bare.stderr
+
+
 @pytest.mark.docker
 @pytest.mark.slow
 def test_session_container_end_to_end(tmp_path, minirepo_spec_and_repo):

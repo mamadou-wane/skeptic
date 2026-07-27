@@ -234,3 +234,14 @@ def test_click_gold_patch_produces_no_evidence_from_either_check(tmp_path):
     assert t1_collect.run(pair).evidence == ()
     assert t1_outcomes.run(pair).evidence == ()
     assert _artifact(pair, "t1_outcomes")["fix_verified"] is True
+
+    # The pinned rc against a repo that ships its own. click's pyproject asks
+    # for branch coverage over `click` and `tests`; the report is statement
+    # data over the one file the patch touched, which is the harness's rc and
+    # not click's.
+    coverage = pair.candidate.coverage
+    assert coverage.measured_files == ("src/click/utils.py",)
+    assert json.loads((pair.candidate.artifacts / "coverage.json").read_text())[
+        "meta"]["branch_coverage"] is False
+    assert any(ctx for line in coverage.contexts["src/click/utils.py"].values()
+               for ctx in line)

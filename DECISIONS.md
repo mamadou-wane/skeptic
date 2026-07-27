@@ -749,3 +749,59 @@ the reason the arm names, a module-level `pytest.skip(allow_module_level=True)`
 or a collection-time `skipif`, so the collected set shrinks under a real skip
 instead of a supplied one. That is a new fixture directory and sat outside this
 task's file list.
+
+---
+
+# M3 execution: task 12 (owner-approved, 2026-07-27)
+
+Task 12 of the M3 plan. The collector's suite runs under coverage, and
+`CoverageReport` stops being an empty shape.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 94 | `skeptic/collector.py` gains `coverage_test_cmd`, `render_coverage_rc`, and `read_coverage`, `observe_variant` takes the candidate's `changed_files`, and the plain suite step becomes an instrumented one. Five contracts. (a) **One rc, one mechanism.** The harness renders its own coverage config to `<artifacts>/coveragerc` and points the container at it with `COVERAGE_RCFILE`. The artifacts mount is already rw and already outside the judged tree, so the pin needs no new mount and mutates nothing under measurement. No `--rcfile` is passed anywhere, which is what makes the same pin govern the post-run `coverage json` as well as the run. The rc writes `source` from `spec.environment.src_dirs`, `branch = false`, `dynamic_context = test_function`, a `data_file` under /artifacts, and `relative_files = true`, so the report's file keys are the diff's paths. (b) **The rewrite is guarded.** `shlex.split(test_cmd)[:3]` must equal `["python", "-m", "pytest"]` or the run stops with a what/why/next; only the leading `python -m` becomes `python -m coverage run -m`, so pytest's `-m` marker selector stays a pytest argument. `python` is the overlay venv and `coverage` reaches it from the base interpreter through `--system-site-packages`, so `python -m coverage` resolves where `/tmp/sv/bin/coverage` does not exist. (c) **One run per variant.** The junit report and the coverage data come out of the same command. Collection stays uninstrumented, and a third step writes the report. (d) **The derivation is scoped to the patch.** `coverage json --show-contexts --include=<the patch's measurable files>`, read back by `read_coverage` and scoped again to `changed_files`. Measurable is Python and under `src_dirs`, which is exactly what the rc's `source` measures, so a patch with nothing measurable in it gets no report step and leaves `coverage` unobserved: an absent report means one thing rather than two. Unscoped contexts are a per-line by per-test cross product, measured at 1.3 GB on click's suite in the M1 spike, so no run may dump them. (f) **`CoverageReport` carries the run's context list.** `run_contexts` is every distinct context string the run recorded, sorted, empty string included, read from the `context` table of `<artifacts>/.coverage` with one sqlite3 query. It is the one whole-run field on an otherwise per-patch model, and `t1_coverage` needs it to tell a `dynamic_context` that was never honored (INFRA) from a patch that ran at import time only (H9, hard). (e) **Both variants are instrumented.** M3 reads the candidate's data only, so the baseline's report buys nothing and costs about half the overhead. It is kept for argv symmetry: `t1_collect` and `t1_outcomes` difference the two sides, and instrumenting one alone would let the tracer explain an outcome difference | (a) click's `pyproject.toml` sets `[tool.coverage.run] branch = true, source = ["click", "tests"]` and rich ships a root `.coveragerc` with an omit list; coverage.py discovers both, so an unpinned run measures the repo's chosen scope and calls it T1's. (b) Both corpus tasks and the minirepo run `python -m pytest`, and a guessed rewrite for anything else produces a coverage number where a refusal belongs. (c) Two runs of one tree are two observations that nothing makes agree. (d) The 1.3 GB figure is the constraint; scoping to the patch is what makes contexts affordable, and reading the JSON rather than the `.coverage` SQLite is what supplies the statement set, which the data file does not carry. (e) Argv symmetry is a correctness property and the baseline's coverage is a convenience; a future measurement can revisit the trade with the numbers in this row. (f) The alternative was `t1_coverage` opening the data file itself, which would put IO and a schema dependency inside a check that is otherwise a pure function of the model | An unscoped `coverage json --show-contexts` (1.3 GB on click). `--rcfile` on `coverage run` (would leave the report reading the repo's config). An rc inside the tree (mutates what VERIFY measures). A second, uninstrumented suite run for the junit. Instrumenting the candidate alone (saves about half the overhead, breaks the differential). A check that opens `<artifacts>/.coverage` for the whole-run contexts (checks read the model, not the disk). Contexts for every measured file, which is the 1.3 GB shape again |
+
+**Ripple:** full suite 300 passed in 137.48 s with the daemon up, against 290
+in 116.54 s at `e73e12d`. Two earlier runs of the same tree measured 139.75 s
+and 142.69 s; the 137.48 s run is the one this commit was gated on. Ruff clean.
+Ten tests: the brief's six fast names and two docker names, plus two fast ones
+past them, one for the wiring between the three functions and one for the patch
+with nothing measurable in it, which `h4-addopts` and `h10-regenerated` both
+are. `CoverageReport` gained two fields' worth of docstring and one field, so
+`tests/test_t1_scope.py`'s frozen-model check constructs it with `run_contexts`
+now.
+
+**Re-measured overhead, 2026-07-27.** click's suite in one container on the
+same tree, plain against instrumented: 2.65 s to 7.43 s wall, 2.29 s to 6.97 s
+by pytest's own count, `24 failed, 1916 passed, 24 skipped, 1 xfailed` both
+ways. That is 2.80x, against the 2.83x (1.94 s to 5.48 s) the plan carried from
+admission, so the ratio holds and the absolute numbers are this host's. Two
+variants per verify puts click at about 15 s of suite time per task before
+mutation. The docker tests that pay it: the click gold negative 23.92 to
+24.45 s wall (12.78 to 13.89 s before), the five-fixture table 20.14 s for all
+five (19.11 s before), the minirepo collect pair 4.21 s (4.18 s before). The
+minirepo barely moves because its suite is four tests; click is where
+instrumentation is visible.
+
+**What the docker tests prove about the override, exactly.** The minirepo
+carries no coverage config, so those runs prove the pin is what coverage read
+(`branch_coverage: false`, contexts present on the lines the tests execute)
+rather than proving it beat a competing file. The click gold test is where the
+override is measured: click's `pyproject.toml` asks for branch coverage over
+`click` and `tests`, and the report that run produces is statement data over
+`src/click/utils.py` alone, with non-empty contexts. rich's omit list is still
+the M1 spike's claim, since no M3 fixture runs rich.
+
+**The whole-run witness, and why it is a field.** `read_coverage` returns
+per-line contexts for the patch's files only, so a report scoped that way
+cannot distinguish a `dynamic_context` that was never honored (no context
+anywhere in the run) from a patch that ran at import time only (no context on
+these lines). Task 13 calls the first INFRA and the second a hard H9, so the
+distinction has to be readable. Two ways to supply it: carry contexts for every
+measured file, which is the 1.3 GB shape, or carry the run's distinct context
+names, which is one sqlite3 query against the data file the run already wrote.
+The second is `run_contexts`, and it stays in the collector rather than in the
+check because every T1 check is a pure function of the model and one that
+opened a database would not be. Proven against the committed dump: five
+contexts over the four files that run measured, against the one file the
+report carries.

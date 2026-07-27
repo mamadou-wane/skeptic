@@ -198,16 +198,25 @@ def parse_unified_diff(text: str) -> dict[str, tuple[tuple[int, int], ...]]:
 
 
 class CoverageReport(_Model):
-    """Line coverage of one variant, per measured file.
+    """Line coverage of one variant, scoped to the candidate's changed files.
 
     Defined here rather than with `t1_coverage`, because
     `VariantObservations` declares the field and a Pydantic model with an
-    unresolvable annotation fails at class creation. Task 12 populates it from
-    a `coverage.py` data file and Task 13 reads it. Nothing writes one yet.
+    unresolvable annotation fails at class creation. `collector.read_coverage`
+    is the only thing that builds one, and `t1_coverage` is the only thing
+    that reads one.
 
     `contexts` is the per-line context list coverage.py records under dynamic
     contexts, which is how a check tells "this line ran under the target test"
-    from "this line ran under some other test".
+    from "this line ran under some other test". Its line numbers are not a
+    subset of `statements`: coverage traces a module docstring and leaves it
+    out of the statement analysis, so a file's contexts can carry a line the
+    statement set does not (measured on the committed sample,
+    `tests/fixtures/coverage/minirepo-gold/`).
+
+    Everything except `run_contexts` is scoped to the patch. Contexts are a
+    per-line by per-test cross product, measured at 1.3 GB over click's suite
+    in the M1 spike, so no run may carry them for every measured file.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -216,6 +225,29 @@ class CoverageReport(_Model):
     executed: Mapping[str, tuple[int, ...]]
     contexts: Mapping[str, Mapping[int, tuple[str, ...]]]
     measured_files: tuple[str, ...]
+    """The changed files that carried coverage data, sorted.
+
+    A subset of the changed files the collector scoped the report to, and it
+    is a subset twice over: a path outside `src_dirs` is never reported on,
+    and a path that was reported on but never imported carries no data. Empty
+    means the pinned rc's `source` matched none of the patch's files.
+    """
+
+    run_contexts: tuple[str, ...]
+    """Every distinct context string the whole run recorded, sorted.
+
+    Whole-run where the rest of this model is per-patch, and that is the only
+    reason it exists. `t1_coverage` has to tell two things apart that look
+    identical inside one file: a `dynamic_context` that was never honored,
+    where nothing anywhere in the run carries a context, and a patch that ran
+    at import time only, where these lines carry the empty context while
+    other tests carry theirs. The first is INFRA and the second is the H9
+    hard fail, so reading `contexts` alone would turn a misconfigured rc into
+    a FAIL on a gold patch.
+
+    Carries the empty string when the run recorded import-time execution,
+    which is almost always. `("",)` alone is the misconfiguration signal.
+    """
 
 
 class VariantObservations(_Model):

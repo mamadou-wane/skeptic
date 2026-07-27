@@ -216,7 +216,8 @@ def test_registry_runs_each_check_standalone_and_pins_the_pair_models():
             assert (pair.artifacts_dir / entry.artifact).is_file()
 
     assert isinstance(pair.candidate.outcomes, dict)
-    coverage = CoverageReport(statements={}, executed={}, contexts={}, measured_files=())
+    coverage = CoverageReport(statements={}, executed={}, contexts={},
+                              measured_files=(), run_contexts=())
     for model, field, value in ((pair, "artifacts_dir", Path("/x")),
                                 (pair.candidate, "side", "baseline"),
                                 (coverage, "measured_files", ("a.py",))):

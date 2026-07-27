@@ -22,21 +22,29 @@ No flake reruns at M3. The plan's rerun-before-flag belongs in this module
 rather than in a check, because a rerun inside a check would stop the check
 being pure. It lands with the quarantine work.
 
-The scripts here are harness-composed. The only outside text in them is
-`spec.environment.test_cmd`, which spec validation already restricts to a
-plain argv with no shell metacharacters, and the artifact filenames are the
-constants below. No candidate-supplied text reaches a shell: the candidate
+The scripts here are harness-composed, and two kinds of outside text reach
+them. `spec.environment.test_cmd` is spec-authored, and validation already
+restricts it to a plain argv with no shell metacharacters. The coverage
+report step names the candidate's changed files, which the candidate chose:
+every step is built as an argv and joined with `shlex.join`, so a path
+carrying a space or a quote becomes one quoted word instead of shell syntax.
+The artifact filenames are the constants below, and the candidate itself
 arrives as a diff that `git apply` reads as a file.
 """
 from __future__ import annotations
 
+import json
 import re
 import shlex
 import shutil
+import sqlite3
+from collections.abc import Iterable, Sequence
+from contextlib import closing
 from pathlib import Path
 
 from skeptic.candidate import CandidateReport
 from skeptic.checks.observations import (
+    CoverageReport,
     ObservationPair,
     Side,
     VariantObservations,
@@ -56,6 +64,9 @@ ARTIFACTS = "/artifacts"
 _INSTALL_OK = "install.ok"
 _JUNIT = "junit.xml"
 _DROPPED = "dropped-ro-subpaths.txt"
+_RC = "coveragerc"
+_COVERAGE_DATA = ".coverage"
+_COVERAGE_JSON = "coverage.json"
 
 # `-q`, `-qq`, `-v`, `-vv`: pytest counts these, so they compose.
 _VERBOSITY = re.compile(r"^-[qv]+$")
@@ -91,40 +102,231 @@ def _collect_argv(test_cmd: str) -> list[str]:
     return argv + ["--collect-only", "-q", "--continue-on-collection-errors"]
 
 
+def coverage_test_cmd(test_cmd: str) -> list[str]:
+    """`python -m pytest ...` rewritten to run under coverage.
+
+    Only the leading `python -m` moves. A `-m` further along is pytest's
+    marker selector and stays a pytest argument, since rewriting it would
+    hand coverage a module name it cannot import.
+
+    `python` is the overlay venv's interpreter at /tmp/sv/bin/python and
+    `coverage` comes from the image's frozen closure, which that venv reaches
+    through `--system-site-packages`. There is no /tmp/sv/bin/coverage, so
+    `python -m coverage` is the spelling that resolves.
+
+    Anything else refuses. `spec.py` already guarantees `test_cmd` is a plain
+    argv with no shell metacharacters, so what is left open is which runner it
+    names, and Skeptic knows one instrumented spelling.
+    """
+    argv = shlex.split(test_cmd)
+    if argv[:3] != ["python", "-m", "pytest"]:
+        raise SkepticInfraError(
+            f"environment.test_cmd {test_cmd!r} does not start with "
+            f"`python -m pytest`, so Skeptic cannot say what its "
+            f"coverage-instrumented form is. T1's patch-coverage evidence "
+            f"comes from running the suite under `python -m coverage run`, "
+            f"and a guessed rewrite produces a coverage number instead of a "
+            f"refusal. This is an infra failure, never evidence. Next: write "
+            f"the task's test_cmd as `python -m pytest ...`, or teach "
+            f"`collector.coverage_test_cmd` this runner's instrumented form."
+        )
+    return ["python", "-m", "coverage", "run", "-m", "pytest", *argv[3:]]
+
+
+def render_coverage_rc(spec: TaskSpec, data_file: str) -> str:
+    """The one coverage configuration an instrumented run is allowed to read.
+
+    coverage.py discovers config from the tree it is measuring, and both
+    corpus repos carry one: click's `pyproject.toml` sets
+    `[tool.coverage.run] branch = true` with `source = ["click", "tests"]`,
+    and rich ships a root `.coveragerc` whose omit list drops four modules.
+    Either would silently redefine what T1 measures. This file overrides both
+    through `COVERAGE_RCFILE`, which is the only mechanism in play: no
+    `--rcfile` is passed anywhere, so one pin governs the run and the report
+    that reads its data back.
+
+    Every setting is written rather than defaulted. `source` comes from
+    `spec.environment.src_dirs`, `branch` is off because M3 scores statements,
+    `dynamic_context = test_function` is what lets Task 13 tell a line that
+    ran under a test from one that ran at import time, and `data_file` is the
+    caller's, which puts it outside the judged tree.
+
+    `relative_files` makes the report's file keys the diff's paths: the
+    container works in /workspace, so the JSON says `minirepo.py` where
+    `parse_unified_diff` says `minirepo.py`. Relative `source` entries
+    resolve against the working directory rather than against this file's
+    directory (measured with coverage 7.15.2, 2026-07-27), which is why an rc
+    that lives on the artifacts mount can name `.` and mean the tree.
+    """
+    sources = "".join(f"    {src.rstrip('/')}\n" for src in spec.environment.src_dirs)
+    return (
+        "[run]\n"
+        f"data_file = {data_file}\n"
+        f"source =\n{sources}"
+        "branch = false\n"
+        "dynamic_context = test_function\n"
+        "relative_files = true\n"
+    )
+
+
 def _suite_argv(spec: TaskSpec) -> list[str]:
-    """The suite invocation, with junit written outside the judged tree.
+    """The instrumented suite, with junit written outside the judged tree.
 
     `builder_tools._suite_argv` is BUILD's and stays BUILD's: it writes junit
-    into the workspace, which is right there and wrong here, and Task 12 makes
-    this one coverage-instrumented while BUILD's stays plain. The flag both
-    have to carry is `--continue-on-collection-errors` (DECISIONS row 78), so
-    a candidate that broke one import is still observed instead of erasing
-    the run.
+    into the workspace, which is right there and wrong here, and it stays
+    plain while this one runs under coverage. The flag both have to carry is
+    `--continue-on-collection-errors` (DECISIONS row 78), so a candidate that
+    broke one import is still observed instead of erasing the run.
+
+    One run produces both readings. The junit report and the coverage data
+    come out of the same command, so nothing has to make two observations of
+    one tree agree.
     """
-    return [*shlex.split(spec.environment.test_cmd),
+    return [*coverage_test_cmd(spec.environment.test_cmd),
             "--continue-on-collection-errors",
             f"--junitxml={ARTIFACTS}/{_JUNIT}", "-o", "junit_family=xunit1"]
 
 
-def _unit_script(spec: TaskSpec) -> str:
-    """One script per unit: collect-only, then the suite.
+def _report_argv(changed_py: list[str]) -> list[str]:
+    """The scoped context report, written next to the data file.
 
-    Each step's exit code, stdout, and stderr land in separate files under the
-    artifacts mount, so the host recovers both steps independently and a
-    failure in one is never read as a failure in the other. `install.ok` is
+    `--include` is the whole cost control. Contexts are a per-line by per-test
+    cross product, and the M1 spike measured `coverage json --show-contexts`
+    over click's full suite at 1.3 GB, so the patch's own files are the only
+    scope this is ever run at.
+
+    coverage splits the pattern list on commas, so a candidate that renamed a
+    file to one containing a comma gets two patterns that match nothing and no
+    entry in the report. That reaches Task 13 as a changed file with no
+    coverage data, which is one of its enumerated INFRA conditions rather than
+    a number that is quietly wrong.
+    """
+    return ["python", "-m", "coverage", "json", "--show-contexts",
+            f"--include={','.join(changed_py)}",
+            "-o", f"{ARTIFACTS}/{_COVERAGE_JSON}"]
+
+
+def _measurable(spec: TaskSpec, changed_files: Sequence[str]) -> list[str]:
+    """The changed files coverage could measure: Python, under `src_dirs`.
+
+    Both halves of that are the rc's. `source` is `spec.environment.src_dirs`,
+    so a changed file outside those directories is never in the data however
+    thoroughly the suite ran it, and coverage measures Python.
+
+    The filter is what makes an absent report mean one thing. Without it a
+    patch that touched only `tests/` on a repo whose `src_dirs` is `src/click`
+    would ask for a report, get "No data to report", and leave `t1_coverage`
+    unable to tell "nothing here is measurable" from "the run went wrong".
+
+    The minirepo's `src_dirs` is `["."]`, so nothing is ever dropped there and
+    no M3 fixture exercises the filter. click's is `["src/click/"]`, which is
+    where it has teeth: `.` matches everything by construction and a real
+    source directory does not.
+    """
+    roots = [src.rstrip("/") for src in spec.environment.src_dirs]
+    return [path for path in changed_files
+            if path.endswith(".py")
+            and any(root == "." or path == root or path.startswith(f"{root}/")
+                    for root in roots)]
+
+
+def _unit_steps(spec: TaskSpec,
+                changed_files: Sequence[str]) -> list[tuple[str, list[str]]]:
+    """The unit's steps in order: collect-only, the suite, the report.
+
+    Collection stays uninstrumented. It imports the test modules and runs no
+    test, so measuring it would add tracer time to a step whose only product
+    is a list of nodeids.
+
+    The report step is dropped when nothing in the patch is measurable.
+    `coverage json` over an `--include` list that matches nothing exits 1 with
+    "No data to report" (measured with coverage 7.15.2, 2026-07-27), and a
+    patch that changed only a golden or a config file has no statements to
+    score either way. `h4-addopts` and `h10-regenerated` are both that shape.
+    """
+    changed_py = _measurable(spec, changed_files)
+    steps = [("collect", _collect_argv(spec.environment.test_cmd)),
+             ("suite", _suite_argv(spec))]
+    if changed_py:
+        steps.append(("coverage", _report_argv(changed_py)))
+    return steps
+
+
+def _unit_script(spec: TaskSpec, changed_files: Sequence[str]) -> str:
+    """One script per unit, one file per step's exit code, stdout, and stderr.
+
+    The separate files are what let the host recover each step independently,
+    so a failure in one is never read as a failure in another. `install.ok` is
     written first, inside the brace group `RunContainer.run` guards with the
     overlay install, so its absence after a nonzero run means the install
-    failed rather than either pytest step. Neither step stops the other: a
-    candidate whose collect exits 5 still runs the suite, and both empties
-    become the same observation.
+    failed rather than any step. No step stops the next: a candidate whose
+    collect exits 5 still runs the suite, both empties become the same
+    observation, and a report step that finds no data leaves the coverage
+    field unobserved instead of failing the unit.
     """
     lines = [f"echo ok > {ARTIFACTS}/{_INSTALL_OK}"]
-    for step, argv in (("collect", _collect_argv(spec.environment.test_cmd)),
-                       ("suite", _suite_argv(spec))):
+    for step, argv in _unit_steps(spec, changed_files):
         lines.append(f"{shlex.join(argv)} > {ARTIFACTS}/{step}.out "
                      f"2> {ARTIFACTS}/{step}.err")
         lines.append(f"echo $? > {ARTIFACTS}/{step}.exit")
     return "\n".join(lines)
+
+
+def read_coverage(artifacts: Path, changed_files: Iterable[str]) -> CoverageReport:
+    """One variant's report: the scoped JSON, plus the run's context list.
+
+    Two routes lead to the per-file half and the size of the unscoped answer
+    picks one. The M1 spike measured `coverage json --show-contexts` over
+    click's full suite at 1.3 GB, so no run may dump contexts unscoped. The
+    unit therefore reports with `--include` set to the patch's measurable
+    files, which bounds the cross product by the patch, and this function
+    reads that JSON rather than the `.coverage` SQLite next to it. The
+    database would serve the executed lines and the contexts equally well and
+    would not serve the statement set: the data file records what ran, and
+    what could have run comes from parsing the source, which lives in the
+    container.
+
+    `run_contexts` is the one thing the JSON cannot answer, because answering
+    it there means reporting every measured file's contexts, which is the
+    1.3 GB shape. `select context from context` on the data file is the whole
+    query: one row per distinct context name in the run, no source tree, no
+    numbits decoding, stdlib sqlite3. `t1_coverage` reads it to tell a
+    `dynamic_context` that was never honored from a patch that ran only at
+    import time, and the alternative was a check reaching past the model into
+    the artifacts directory.
+
+    `changed_files` scopes the per-file half a second time. The include list
+    is identical on both sides, so the baseline's report is measured against
+    the candidate's paths, and a caller asking for a subset gets a subset.
+    The include list is already the narrower bound: it drops paths outside
+    `src_dirs`, which this function has no spec to check.
+
+    Empty context strings survive. coverage writes `""` for a line that ran
+    outside any test, which is Task 13's import-time signal, and a read that
+    dropped the empty string would score an import-time-only patch as covered.
+    The context line numbers are not a subset of the statement set either: a
+    module docstring is traced and is not a statement, so line 1 of the
+    committed sample carries a context and appears in no statement list.
+    """
+    wanted = set(changed_files)
+    data = json.loads((artifacts / _COVERAGE_JSON).read_text())
+    statements: dict[str, tuple[int, ...]] = {}
+    executed: dict[str, tuple[int, ...]] = {}
+    contexts: dict[str, dict[int, tuple[str, ...]]] = {}
+    for path, entry in sorted(data["files"].items()):
+        if path not in wanted:
+            continue
+        ran = tuple(sorted(entry["executed_lines"]))
+        statements[path] = tuple(sorted(set(ran) | set(entry["missing_lines"])))
+        executed[path] = ran
+        contexts[path] = {int(line): tuple(names)
+                          for line, names in sorted(entry.get("contexts", {}).items(),
+                                                    key=lambda item: int(item[0]))}
+    with closing(sqlite3.connect(artifacts / _COVERAGE_DATA)) as data_file:
+        recorded = data_file.execute("select context from context").fetchall()
+    return CoverageReport(statements=statements, executed=executed,
+                          contexts=contexts, measured_files=tuple(statements),
+                          run_contexts=tuple(sorted({row[0] for row in recorded})))
 
 
 def _read_exit(artifacts: Path, step: str) -> int:
@@ -209,7 +411,7 @@ def _cross_check(side: Side, collected: tuple[str, ...],
 
 
 def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
-                    side: Side) -> VariantObservations:
+                    side: Side, changed_files: Sequence[str]) -> VariantObservations:
     """Run one tree in one throwaway container and read back what it produced.
 
     The missing-mount policy is set here and it is side-specific. The baseline
@@ -219,7 +421,16 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
     path is the hack, and the dropped list leaves on the observation as well as
     in the artifacts: the file is what a human reads, and only the field can
     become `ro_subpath_deleted` evidence (DECISIONS row 91).
+
+    `changed_files` is the candidate's, on both sides. It scopes the coverage
+    report and nothing else, and the two sides run the same command either
+    way (`_suite_argv` reads the spec), so the argv symmetry the differential
+    checks stand on holds. It is read three times (the script, the timeout
+    diagnosis, and the report), so it is materialized on entry: a generator
+    would build a script naming files that the diagnosis then says nothing
+    about.
     """
+    changed_files = tuple(changed_files)
     # Same reuse policy as the two trees in `collect_pair`: this directory is
     # rebuilt, never topped up. A workdir reused across runs would otherwise
     # keep the previous run's `install.ok`, exit files, and junit report, and
@@ -240,31 +451,43 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
     # dies partway.
     (artifacts / _DROPPED).write_text(
         "".join(f"{path}\n" for path in container.dropped_ro_subpaths))
+    # The pin sits on the artifacts mount, which is already rw and already
+    # outside the judged tree, so it needs no mount of its own and changes
+    # nothing under measurement.
+    (artifacts / _RC).write_text(
+        render_coverage_rc(spec, f"{ARTIFACTS}/{_COVERAGE_DATA}"))
+    steps = [step for step, _ in _unit_steps(spec, changed_files)]
     # One budget for the whole unit: the overlay install, the collect-only
-    # pass, and the suite. A timeout is infra on both sides.
-    result = container.run(_unit_script(spec), timeout_s=spec.environment.timeout_s)
+    # pass, the instrumented suite, and the report. A timeout is infra on
+    # both sides.
+    result = container.run(_unit_script(spec, changed_files),
+                           timeout_s=spec.environment.timeout_s,
+                           env={"COVERAGE_RCFILE": f"{ARTIFACTS}/{_RC}"})
     if result.exit_code == -1:
         # Which exit files exist says where the budget went. The stderr tail
         # does not: on this path it is the harness's own timeout sentence.
-        done = [step for step in ("collect", "suite")
-                if (artifacts / f"{step}.exit").is_file()]
+        done = [step for step in steps if (artifacts / f"{step}.exit").is_file()]
         if not done:
             where = ("No step recorded an exit code, so the time went to the "
                      "overlay install or the collect-only pass.")
-        elif done == ["collect"]:
+        elif "suite" not in done:
             where = ("The collect step recorded an exit code and the suite did "
                      "not, so the suite is what hung.")
+        elif done != steps:
+            where = ("The suite recorded an exit code and the coverage report "
+                     "did not, so writing the report is what hung.")
         else:
-            where = ("Both steps recorded exit codes, so the time went to "
-                     "something after the suite: container teardown, or a "
+            where = ("Every step recorded an exit code, so the time went to "
+                     "something after the last one: container teardown, or a "
                      "process the suite left behind.")
         raise SkepticInfraError(
             f"The {side} observation unit timed out after "
             f"{spec.environment.timeout_s}s. One unit is the overlay install, "
-            f"a collect-only pass, and the suite, and the budget for all three "
-            f"is environment.timeout_s. {where} A partial run says nothing "
-            f"about the candidate, so this is an infra failure, never "
-            f"evidence. Next: raise environment.timeout_s in the task spec, or "
+            f"a collect-only pass, and the instrumented suite, and the budget "
+            f"for all of it is environment.timeout_s. {where} A partial run "
+            f"says nothing about the candidate, so this is an infra failure, "
+            f"never evidence. Next: raise environment.timeout_s in the task "
+            f"spec, or "
             f"run `{spec.environment.test_cmd}` in {tree} by hand and time it."
         )
     if not (artifacts / _INSTALL_OK).is_file():
@@ -295,11 +518,20 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
         suite = parse_junit(artifacts / _JUNIT)
         outcomes, collection_errors = suite.outcomes, suite.collection_errors
     _cross_check(side, collected, outcomes, artifacts)
+    # No report, no reading. `coverage json` writes its file only when it had
+    # data, so an absent one means nothing in the patch was measurable, the
+    # suite never reached the tracer, or the report step failed; all three
+    # leave the field unobserved and Task 13 says what an unobserved one
+    # means. Both files are checked because `read_coverage` reads both, and
+    # sqlite3 would otherwise create the missing one as an empty database.
+    coverage = None
+    if all((artifacts / name).is_file() for name in (_COVERAGE_JSON, _COVERAGE_DATA)):
+        coverage = read_coverage(artifacts, changed_files)
     return VariantObservations(
         side=side, tree=tree, artifacts=artifacts, collected=collected,
         collect_exit=collect_exit, outcomes=outcomes,
         collection_errors=collection_errors, suite_exit=suite_exit,
-        coverage=None, dropped_ro_subpaths=container.dropped_ro_subpaths,
+        coverage=coverage, dropped_ro_subpaths=container.dropped_ro_subpaths,
     )
 
 
@@ -343,10 +575,14 @@ def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
     apply_candidate(candidate_tree, candidate.diff_path)
 
     artifacts = workdir / "artifacts"
+    # The candidate's changed files scope both reports. Task 13 reads the
+    # candidate's, M4's per-mutant selection reads the candidate's, and the
+    # baseline is measured against the same paths so the two are comparable.
+    changed = tuple(candidate.changed_files)
     baseline = observe_variant(spec, image.tag, baseline_tree,
-                               artifacts / "baseline", "baseline")
+                               artifacts / "baseline", "baseline", changed)
     observed_candidate = observe_variant(spec, image.tag, candidate_tree,
-                                         artifacts / "candidate", "candidate")
+                                         artifacts / "candidate", "candidate", changed)
     return ObservationPair(
         spec=spec, baseline=baseline, candidate=observed_candidate,
         candidate_diff=candidate, artifacts_dir=artifacts,

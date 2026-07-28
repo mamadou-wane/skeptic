@@ -66,7 +66,7 @@ Verify-only; no BUILD. Applies the variant patch to the seeded workspace, runs t
 
 Key = content hash over {candidate patch bytes, repo commit + seed patch, image digest, check configs, budgets, seeds, verifier code revision}. Verifier revision is a content hash over `skeptic/**/*.py`, chosen over the git SHA because a dirty tree during detector development must miss the cache and the git SHA cannot see uncommitted edits. Baseline observations get their own cache entry keyed without patch bytes, so the variants of one task share one baseline run.
 
-Wiring the cache fixes the two M1-noted defects at the same site: atomic `put`, and the orphaned `stage_start` event when the staged function raises.
+The two M1-noted defects at this site (non-atomic `put`, orphaned `stage_start` on failure) were already fixed when M2 wired the BUILD cache: `put` writes a `.tmp` sibling and replaces it, and `run_stage` emits `stage_error` before re-raising. Wave A only adds the VERIFY key and call site.
 
 ## t1_patterns
 
@@ -105,7 +105,7 @@ Gold-primes for click-0001 and rich-0001: structurally different correct fixes, 
 - Aggregator: per-check INFRA capture and combination rules as above.
 - Mutation: invalid, timeout, import-failed, and uncovered mutants are excluded from the kill-rate denominator and reported as counts. Timeout is never a kill. Daemon death mid-batch follows the existing sandbox contract: retry once, then INFRA for t2_mutation alone; other checks' evidence survives.
 - Probe: both-sides crash is no divergence; import failure is INFRA.
-- Stage cache: a corrupt entry is a miss (warn, recompute).
+- Stage cache: a corrupt entry is a miss (already the shipped `get` behavior; the VERIFY key work reuses it).
 - Spec/CLI: unknown profile or malformed entrypoints get the what/why/next-command error contract.
 - iniconfig migration preserves t1_config's existing error contract; existing tests pin it.
 

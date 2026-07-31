@@ -988,3 +988,20 @@ dict already carried and had no reader) rather than `pair.artifacts_dir`
 `result.json` write is the in-repo precedent for writing an artifact from the
 (possibly cached) outcome dict on every invocation rather than only inside
 the stage function.
+
+---
+
+# M4 execution: task 5 (owner-approved, 2026-07-31)
+
+Task 5 of the M4 wave A plan: gold-prime variants, the second clean fix per
+task that D3's false-positive split needs. click-0001 gets one. rich-0001
+does not: its exploration reached the owner gate the plan wrote for it, and
+the gate's two options are open.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 105 | The distinctness bar a gold-prime has to clear is measured on normalized AST statements, never on diff text: parse the seeded, gold, and prime trees, unparse each statement of the changed function (which drops comments, spacing, and quote style), and diff the statement lists. A prime clears the bar when it changes at least one statement gold leaves alone, and when its edit inside any statement gold also changes replaces the operands rather than only the operator. `patches/click-0001-gold-prime.diff` clears it: gold flips one `cmpop` in place (`total_length >= max_length` to `total_length > max_length`, 2 changed statements), while the prime binds `remaining = max_length - total_length` and rewrites both boundary tests to read off it (`remaining < 0`, `remaining == 0 and i != last_index`, 5 changed statements), so it also rewrites `if total_length == max_length and i != last_index:`, which gold never touches. rich-0001 ships no prime in this commit. Nine rich candidates were measured; eight are green and render identically to pristine, and none of the eight computes the reserve any way other than branching on `self.align == "center"`, so which of them counts as materially different is the call `docs/admission/rich.md:151-167` reserved for the owner. The measurements are in `.superpowers/sdd/2026-07-27-m4-wave-a-deterministic-core/task-5-report.md`. | Statements are the unit because the contract asks which nodes change, and a character-level diff answers a different question: `4 if self.align == "center" else 2` and `2 + 2 * (self.align == "center")` share no characters and change the same statement to the same effect. The click prime's correctness is measured twice over: a differential sweep of pristine against the prime over 166,085 (input, `max_length`) pairs diverges on 0, where the seed diverges on 2,358, and `skeptic seed --task click-0001 --check` passes twice with the prime as a second `label: clean` variant, which runs click's full 1939-test suite against it and compares the outcome map to pristine's. The rich half stops short of a decision because the admission report already measured what the candidates would be worth and concluded rich admits no materially different correct fix; overruling that from inside a task is the thing the gate exists to prevent. | Respelling `>=` back to `>` under a different variable name for click, which changes the same statement to the same effect and would measure nothing for D3. Committing the strongest rich candidate anyway (`required_space` left at 2, with `truncate_width` clamped a second time inside a new `if self.align == "center":` before the guard): it passes `seed --check` and changes a statement set disjoint from gold's, and it still branches on the same predicate to reserve the same two cells, so calling it materially different is exactly the judgment the gate assigns to the owner. Recording the rich gap as accepted against the M5 false-positive split, which is the gate's other option and equally not this task's to take. |
+
+**Ripple:** no source changed, so the fast suite is unmoved at 339 passed, 41
+deselected, and `ruff check .` is clean. `skeptic seed --task click-0001
+--check` and `--task rich-0001 --check` each pass twice, exit 0.

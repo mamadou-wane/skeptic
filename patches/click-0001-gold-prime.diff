@@ -1,0 +1,24 @@
+diff --git a/src/click/utils.py b/src/click/utils.py
+index b5e2477..aed1532 100644
+--- a/src/click/utils.py
++++ b/src/click/utils.py
+@@ -85,15 +85,16 @@ def _make_default_short_help(help: str, max_length: int = 45) -> str:
+ 
+     for i, word in enumerate(words):
+         total_length += len(word) + (i > 0)
++        remaining = max_length - total_length
+ 
+-        if total_length >= max_length:  # too long, truncate
++        if remaining < 0:  # past the limit, truncate
+             break
+ 
+         if word[-1] == ".":  # sentence end, truncate without "..."
+             return " ".join(words[: i + 1])
+ 
+-        if total_length == max_length and i != last_index:
+-            break  # not at sentence end, truncate with "..."
++        if remaining == 0 and i != last_index:
++            break  # fills the width exactly and more words follow
+     else:
+         return " ".join(words)  # no truncation needed
+ 

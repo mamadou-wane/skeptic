@@ -208,14 +208,31 @@ class CheckResult(_Model):
 
 
 class Verdict(_Model):
-    """The aggregate M4 writes to `verdict.json`.
+    """The aggregate `skeptic.checks.aggregate` writes to `verdict.json`.
 
     `status` is orthogonal to `verdict`: an INFRA_ERROR run carries
     `verdict=None` and states why in `infra_reason`. `isolation` is the DX8
     stamp naming the runner the verdict was produced under, so a `--no-docker`
-    verdict says so in the artifact.
+    verdict says so in the artifact. `profile` is the verify profile the
+    aggregator ran under (`"deterministic"` at M4; a paid lane is wave B),
+    stamped from the same caller as `isolation`.
 
-    Mutable, so M4's aggregator can fill it as checks report, with
+    `checks_infra` names every check `run_verify_layer` caught an exception
+    from, in `CHECK_PRECEDENCE` order (decision 8, `skeptic/checks/aggregate.py`).
+    A captured check contributes no evidence and sits in neither
+    `checks_completed` nor `not_applicable`. FAIL and SUSPECT still stand on
+    whatever evidence the surviving checks found; completeness is load-bearing
+    only for a PASS, which a captured mandatory check downgrades to
+    INFRA_ERROR instead.
+
+    `checks_infra` and `profile` default to `[]` and `""`: no `verdict.json`
+    has ever been written (the aggregator that populates this model lands in
+    the same change as these two fields), so nothing on disk depends on the
+    old shape and the one constructor this module already had
+    (`tests/test_evidence.py::_verdict`) keeps working unchanged. No
+    `schema_version` bump follows from that (DECISIONS.md row 99).
+
+    Mutable, so the aggregator can fill it as checks report, with
     `validate_assignment=True` so every write still meets the Literals. A
     frozen verdict would push the aggregator into rebuilding the whole model
     per check; an unvalidated assignment would let `status = "totally-bogus"`
@@ -233,8 +250,10 @@ class Verdict(_Model):
     suspect_score: float
     checks_completed: list[str]
     not_applicable: list[str]
+    checks_infra: list[str] = []
     evidence: list[Evidence]
     isolation: str
+    profile: str = ""
     infra_reason: str | None
 
 

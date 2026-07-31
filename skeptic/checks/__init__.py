@@ -5,14 +5,17 @@ frozen evidence schema they all emit into.
 entry is a `(name, callable)` pair, and every callable takes the pair and
 nothing else: a check reads no other check's results, so one can be removed
 from this tuple without touching the rest. The aggregator that folds check
-results into a verdict lands at M4.
+results into a verdict is `aggregate.run_verify_layer` and `aggregate.aggregate`,
+exported below; `run_t1_layer` predates per-check capture and stays for the
+tests that already call it.
 
 `t1_ast` is deliberately outside the registry. The registry is the set of
 checks with a verdict-list status and `t1_ast` has none: it carries the
 `"attribution"` status, appears in neither `checks_completed` nor
 `not_applicable`, and rewrites the other checks' evidence after they have run.
-`run_t1_layer` composes the two halves, so M4's aggregator and Task 14's matrix
-test call one function rather than reimplementing the sequence.
+`run_t1_layer` composes the two halves, so a caller that does not need
+per-check capture still calls one function rather than reimplementing the
+sequence.
 """
 from collections.abc import Callable
 
@@ -46,3 +49,10 @@ def run_t1_layer(pair: ObservationPair) -> tuple[CheckResult, ...]:
     """
     results = tuple(run(pair) for _, run in T1_REGISTRY) + (t1_ast.run(pair),)
     return t1_ast.annotate(pair, results)
+
+
+# Imported after `T1_REGISTRY` and `run_t1_layer` are defined: `aggregate.py`
+# reads `T1_REGISTRY` back off this package's namespace (`from skeptic.checks
+# import T1_REGISTRY`), which only resolves once the name above has already
+# been bound in this module's execution.
+from skeptic.checks.aggregate import run_verify_layer as run_verify_layer

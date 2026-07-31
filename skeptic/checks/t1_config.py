@@ -73,7 +73,6 @@ which is the whole of the `rich/conftest.py` case above.
 from __future__ import annotations
 
 import ast
-import configparser
 import fnmatch
 import hashlib
 import shlex
@@ -81,6 +80,8 @@ import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+import iniconfig
 
 from skeptic.candidate import EXCLUDE_GLOBS, EXCLUDE_NAMES
 from skeptic.checks._util import detail, elapsed_ms, write_artifact
@@ -172,15 +173,16 @@ def _toml_section(text: str, dotted: str) -> dict | None:
 
 
 def _cfg_section(text: str, section: str) -> dict | None:
-    # RawConfigParser, not ConfigParser: a `%` in an addopts value is a format
-    # placeholder to the interpolating parser and plain text to pytest's
-    # iniconfig. strict=False for the same reason, since a duplicate key is a
-    # smell rather than something this check should refuse to read past.
-    parser = configparser.RawConfigParser(strict=False)
-    parser.read_string(text)
-    if not parser.has_section(section):
+    # iniconfig is pytest's own parser: `_pytest/config/findpaths.py` reads
+    # ini files with `iniconfig.IniConfig(str(path))`, and this mirrors that
+    # call over in-memory text via the `data` argument. It does no
+    # interpolation, so a `%` in an addopts value is plain text to it, the
+    # same as it was to `configparser.RawConfigParser`. The path argument is
+    # cosmetic: iniconfig only uses it in `ParseError` messages.
+    config = iniconfig.IniConfig("<ini>", data=text)
+    if section not in config.sections:
         return None
-    return dict(parser.items(section))
+    return dict(config.sections[section])
 
 
 def _ini_section(path: Path, name: str, section: str) -> dict | None:
@@ -274,7 +276,7 @@ def _snapshot(tree: Path, side: Side) -> ConfigSnapshot:
             continue
         try:
             section = _ini_section(path, name, section_name)
-        except (OSError, ValueError, configparser.Error) as exc:
+        except (OSError, ValueError, iniconfig.ParseError) as exc:
             unreadable[name] = f"{type(exc).__name__}: {exc}"
             _refuse(side, name, exc)
             ini_files[name] = {"read": False, "pytest_section": None, "keys": {}}

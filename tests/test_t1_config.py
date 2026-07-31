@@ -331,6 +331,98 @@ def test_config_degrades_on_unparseable_candidate_config(tmp_path):
     assert artifact["candidate"]["ini_files"]["pyproject.toml"]["read"] is False
 
 
+def test_config_reads_percent_in_addopts_verbatim(tmp_path):
+    """A `%` in addopts is plain text to iniconfig, same as it was to RawConfigParser.
+
+    An interpolating parser treats `%` as a format placeholder; RawConfigParser
+    and iniconfig both do no interpolation, so this value reads the same on
+    either and the swap changes nothing here. The pin is what shows that.
+    """
+    ini = '[pytest]\naddopts = -k "not x%y"\n'
+    pair = _tree_pair(tmp_path, {"pytest.ini": ini}, {"pytest.ini": ini})
+    result = t1_config.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair)
+    assert artifact["candidate"]["selection"]["-k"] == ["not x%y"]
+
+
+def test_config_ignores_selection_keys_with_nonmatching_case(tmp_path):
+    """`AddOpts =` in `[pytest]` is not `addopts` to iniconfig, matching pytest.
+
+    configparser lowercases every key it reads, so the old parser would have
+    folded this line into the same key as a real `addopts` line. iniconfig
+    preserves case, and so does pytest's own reading, so the line is invisible
+    to selection: it neither becomes a key nor moves the winning file.
+    """
+    baseline_ini = "[pytest]\ntestpaths = tests\n"
+    candidate_ini = baseline_ini + 'AddOpts = -k "not x"\n'
+    pair = _tree_pair(tmp_path, {"pytest.ini": baseline_ini}, {"pytest.ini": candidate_ini})
+    result = t1_config.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair)
+    assert artifact["candidate"]["ini_files"]["pytest.ini"]["keys"] == {"testpaths": ["tests"]}
+    assert "addopts" not in artifact["candidate"]["selection"]
+    assert "-k" not in artifact["candidate"]["selection"]
+
+
+def test_config_degrades_on_unparseable_candidate_ini(tmp_path):
+    """A candidate `pytest.ini` iniconfig cannot parse degrades, not crashes.
+
+    A key line before any section header is unparseable to iniconfig
+    (`ParseError: no section header defined`), and the except tuple has to
+    name `iniconfig.ParseError` or this crashes the run instead of degrading
+    it, the same as `test_config_degrades_on_unparseable_candidate_config`
+    covers for the tomllib side.
+    """
+    broken = "addopts = -k foo\n[pytest]\ntestpaths = tests\n"
+    pair = _tree_pair(tmp_path, {}, {"pytest.ini": broken})
+    result = t1_config.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair)
+    assert "pytest.ini" in artifact["parse_failures"]
+    assert artifact["candidate"]["ini_files"]["pytest.ini"]["read"] is False
+    assert artifact["candidate"]["winning_file"] is None
+
+
+def test_config_infra_on_unparseable_baseline_ini(tmp_path):
+    """The same unparseable shape on the baseline side raises, naming the file.
+
+    Skeptic seeded that tree, so an ini file it cannot read leaves nothing to
+    compare against, the same rule `test_config_infra_error_on_unparseable_baseline_config`
+    already pins for a broken `pyproject.toml`.
+    """
+    broken = "addopts = -k foo\n[pytest]\ntestpaths = tests\n"
+    pair = _tree_pair(
+        tmp_path, {"pytest.ini": broken}, {"pytest.ini": "[pytest]\ntestpaths = tests\n"})
+    with pytest.raises(SkepticInfraError, match="pytest.ini"):
+        t1_config.run(pair)
+
+
+def test_config_pins_duplicate_key_handling(tmp_path):
+    """Two `addopts` lines in one section: iniconfig 2.3 raises, pinned here.
+
+    Measured directly against `iniconfig.IniConfig("<t>", data=text)`: it
+    raises `ParseError: duplicate name 'addopts'`. `configparser.RawConfigParser
+    (strict=False)` merges the two silently and keeps the last value.
+    iniconfig treats it as unparseable instead, a stricter behavior than the
+    parser this check used to run, so the file degrades like any other
+    candidate-side parse failure. The pin is here so a future iniconfig
+    release that stops raising on this shows up as a failing test instead of
+    a silent behavior change.
+    """
+    dup = '[pytest]\naddopts = -k "first"\naddopts = -k "second"\n'
+    pair = _tree_pair(tmp_path, {}, {"pytest.ini": dup})
+    result = t1_config.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair)
+    assert "duplicate" in artifact["parse_failures"]["pytest.ini"]
+    assert artifact["candidate"]["ini_files"]["pytest.ini"]["read"] is False
+
+
 def test_config_evidence_carries_the_covered_nodeids(tmp_path):
     """`--deselect` names nodeids, so the entry carries them.
 

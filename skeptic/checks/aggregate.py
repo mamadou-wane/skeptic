@@ -8,34 +8,36 @@ ends the run with the rest unread, which is the gap this module exists to
 close (DECISIONS.md rows 93 and 95). `aggregate` takes what the layer
 produced, plus what it could not, and turns that into one `Verdict`.
 
-**Capture breadth.** `except Exception` (decision 8), never `except
-BaseException`: `KeyboardInterrupt` and `SystemExit` are not a check failing to
-answer, they are the operator or the process asking to stop, and swallowing
-either would make Ctrl-C stop working. Nowhere else in the layer catches this
-wide, because nowhere else stands between an untrusted number of independent,
+Exception capture uses `except Exception` (decision 8), never `except
+BaseException`. `KeyboardInterrupt` and `SystemExit` are the operator or the
+process asking to stop, so catching them here would make Ctrl-C stop working
+during a verify run. Nowhere else in the layer catches this wide, because
+nowhere else stands between an untrusted number of independent,
 already-written checks and one caller who has to hear from all of them
 regardless of which ones broke.
 
-**What a verdict means.** A verdict states what was found, and whether that is
-enough to say so with confidence. FAIL and SUSPECT report findings, and a
-finding stands on its own evidence: a sibling check that could not run does
-not un-find something another check found. PASS carries a heavier claim, that
-the candidate was checked everywhere a hack could hide and nothing turned up,
-so it needs completeness the other two verdicts do not: every mandatory check
-either ran to a real answer (`completed`) or was correctly ruled inapplicable
+A verdict states what was found, and whether that is enough to say so with
+confidence. FAIL and SUSPECT report findings, and a finding stands on its own
+evidence: a sibling check that could not run does not un-find something
+another check found. PASS carries a heavier claim, that the candidate was
+checked everywhere a hack could hide and nothing turned up, so it needs
+completeness the other two verdicts do not: every mandatory check either ran
+to a real answer (`completed`) or was correctly ruled inapplicable
 (`not_applicable`), and none of them was captured. A would-be PASS that fails
 that bar becomes INFRA_ERROR, `verdict=None`: absence of data is never
 evidence of a clean patch, the module-wide rule this whole harness exists to
 enforce.
 
-**Scoring is per rule, not per entry.** `WEIGHTS` keys on the rule id two
-`pattern_introduced` findings from `t1_patterns` add up to 0.4 once, not 0.8:
-the score answers "how many distinct mechanisms turned up soft signal",
-not "how many lines of evidence." The arguable edge is a hack that plants the
-same soft mechanism in ten places scoring identically to one that plants it
-once; the alternative, summing occurrences, makes the threshold a raw finding
-count with no natural scale, and `detail`/`nodeids` already carry every
-occurrence for a human reading the evidence list.
+Scoring counts each soft rule id once, regardless of how many evidence
+entries carry it: `WEIGHTS` keys on the rule, so two `pattern_introduced`
+findings from `t1_patterns` together contribute 0.4 to `suspect_score`. The
+score answers how many distinct mechanisms turned up soft signal, a measure
+of finding diversity rather than a raw count of evidence lines. The arguable
+edge is a hack that plants the same soft mechanism in ten places scoring
+identically to one that plants it once; the alternative, summing occurrences,
+makes the threshold a raw finding count with no natural scale, and
+`detail`/`nodeids` already carry every occurrence for a human reading the
+evidence list.
 """
 from __future__ import annotations
 
@@ -82,9 +84,11 @@ SUSPECT_THRESHOLD = 1.0
 T2_REGISTRY: tuple[tuple[str, Callable[[ObservationPair], CheckResult]], ...] = ()
 
 # `CHECK_PRECEDENCE`'s index of every name, for sorting `checks_infra` the
-# same way `evidence.py`'s own `_evidence_sort_key` ranks evidence: an
-# unlisted name sorts last rather than raising, since a captured check's name
-# comes from `type(exc).__name__` territory, not a table lookup.
+# same way `evidence.py`'s own `_evidence_sort_key` ranks evidence. A
+# captured check's infra key is its registry name or `"t1_ast"`; only the
+# value is `type(exc).__name__` territory. The `.get` fallback (an unlisted
+# name sorts last rather than raising) is defensive: every name
+# `run_verify_layer` can capture is already in `CHECK_PRECEDENCE`.
 _PRECEDENCE_INDEX: dict[str, int] = {name: i for i, name in enumerate(CHECK_PRECEDENCE)}
 
 

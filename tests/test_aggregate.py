@@ -121,6 +121,13 @@ def test_below_threshold_with_complete_mandatory_is_pass():
     assert verdict.status == "ok"
     assert verdict.infra_reason is None
     assert aggregate.exit_code(verdict) == 0
+    # Population: the run-identity stamps reach the verdict unchanged. A
+    # dropped or misspelled `profile=profile` at the call site would leave
+    # every verdict's `profile` at its `""` default and no other assertion
+    # here would notice.
+    assert (verdict.schema_version, verdict.isolation, verdict.profile) == (
+        1, "docker", "deterministic",
+    )
 
 
 # --- INFRA-and-evidence coexistence: FAIL and SUSPECT stand -----------------
@@ -200,8 +207,9 @@ def test_empty_layer_is_infra_error_never_pass():
 
 
 def test_score_counts_each_rule_once():
-    """Two `pattern_introduced` entries score 0.4 once, not 0.8: the score is
-    over distinct soft rule ids present, not occurrences."""
+    """Two `pattern_introduced` entries score 0.4 total. The score counts each
+    distinct soft rule id present once, regardless of how many entries carry
+    it."""
     first = _ev("t1_patterns", "pattern_introduced", "H5", "soft", location="a.py:1")
     second = _ev("t1_patterns", "pattern_introduced", "H5", "soft", location="b.py:2")
     results = [_result("t1_patterns", "completed", evidence=(first, second))]

@@ -331,12 +331,16 @@ def _verify_cache_key(spec: TaskSpec, variant: VariantSpec) -> str:
     """VERIFY stage cache key.
 
     Every input that shapes an observation or a check belongs here: the
-    variant and seed patch bytes (so a byte-identical patch under a different
-    path collides, and one edited byte does not), `repo.commit` and
-    `environment` (which together determine the image tag, so the key needs
-    no `image_id` of its own), `builder_input` (`allowed_paths` shapes
-    `t1_scope`), `verification` (check configs, budgets, seeds), and
-    `verifier_revision()`.
+    variant patch bytes (so a byte-identical patch under a different path
+    collides, and one edited byte does not), the whole seed sub-spec
+    (`spec.seed.model_dump()`, with `bug_patch` swapped for its sha256 so the
+    same bytes-not-path rule applies there too) since `t1_outcomes` reads
+    `failing_tests`/`quarantine` directly for `fix_verified` and every
+    flip/regression rule and `t1_collect` reads `quarantine` as well,
+    `repo.commit` and `environment` (which together determine the image tag,
+    so the key needs no `image_id` of its own), `builder_input`
+    (`allowed_paths` shapes `t1_scope`), `verification` (check configs,
+    budgets, seeds), and `verifier_revision()`.
 
     This is the VERIFY half of the two-key design (decision 5); the other
     half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
@@ -353,7 +357,8 @@ def _verify_cache_key(spec: TaskSpec, variant: VariantSpec) -> str:
     seed_patch = hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest()
     return config_hash({
         "stage": "VERIFY", "task": spec.task_id, "variant": variant.id,
-        "variant_patch": variant_patch, "seed_patch": seed_patch,
+        "variant_patch": variant_patch,
+        "seed": {**spec.seed.model_dump(), "bug_patch": seed_patch},
         "commit": spec.repo.commit,
         "environment": spec.environment.model_dump(),
         "builder_input": spec.builder_input.model_dump(),
@@ -401,8 +406,8 @@ def verify(
                 f"Unknown runner {runner!r}: skeptic verify runs in docker "
                 f"only. VERIFY's read-only mounts and drop-on-missing "
                 f"policy (RunContainer) have no venv equivalent, so the "
-                f"venv fallback is not wired. Next: start Docker Desktop "
-                f"and re-run with `--runner docker`."
+                f"venv fallback is not wired. Next: re-run with "
+                f"`--runner docker`."
             )
             raise typer.Exit(EXIT_INFRA)
         if not _docker_available():
@@ -462,8 +467,6 @@ def verify(
                 layer, run_id=trace.run_id, task_id=spec.task_id,
                 variant=variant_spec.id, isolation="docker-run",
                 profile="deterministic")
-            (pair.artifacts_dir / "verdict.json").write_text(
-                json.dumps(verdict.model_dump(), indent=2, sort_keys=True) + "\n")
             return {
                 **verdict.model_dump(),
                 "fix_verified": compute_fix_verified(pair),
@@ -474,8 +477,18 @@ def verify(
         cache_hit = cache.get(cache_key) is not None
         outcome = run_stage(cache, "VERIFY", cache_key, do_verify, trace)
 
-        verdict = Verdict.model_validate(
-            {k: v for k, v in outcome.items() if k not in ("fix_verified", "artifacts_dir")})
+        # Written here, after run_stage, rather than inside do_verify: a
+        # cache hit never calls do_verify, and the artifacts directory it
+        # would have written into may not even exist on this run (it is
+        # scratch space, not part of the cache). This is build's
+        # unconditional result.json write, generalized to VERIFY's shape.
+        verdict_payload = {k: v for k, v in outcome.items()
+                           if k not in ("fix_verified", "artifacts_dir")}
+        verdict = Verdict.model_validate(verdict_payload)
+        artifacts_dir = Path(outcome["artifacts_dir"])
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        (artifacts_dir / "verdict.json").write_text(
+            json.dumps(verdict_payload, indent=2, sort_keys=True) + "\n")
         marker = " (cached)" if cache_hit else ""
         if verdict.status == "INFRA_ERROR":
             typer.echo(f"INFRA ERROR: {verdict.infra_reason}{marker}")

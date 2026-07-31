@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -185,11 +186,18 @@ def test_verify_cache_hit_skips_collection_and_replays_the_banner(tmp_path, monk
     assert first.exit_code == 0, first.output
     assert calls == [1]
 
+    verdict_path = pair.artifacts_dir / "verdict.json"
+    assert verdict_path.is_file()
+    # Simulate the artifacts directory having been cleaned up between runs: a
+    # cache-hit replay must still (re)write verdict.json, not only the banner.
+    shutil.rmtree(pair.artifacts_dir)
+
     second = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--workdir", str(workdir)])
     assert second.exit_code == 0, second.output
     assert calls == [1]          # collect_pair (the faked collector) not called again
     assert "(cached)" in second.output
+    assert verdict_path.is_file()
 
     events, _ = read_trace(workdir / "click-0001" / "verify" / "gold" / "trace.jsonl")
     assert "stage_cached" in [e["event"] for e in events]
@@ -217,6 +225,16 @@ def test_verify_cache_key_changes_with_patch_bytes_and_source_and_config(tmp_pat
             update={"patch_coverage_min": spec.verification.patch_coverage_min + 0.05}),
     })
     assert _verify_cache_key(edited_spec, variant) != base
+
+    # 4. the seed sub-spec changes: t1_outcomes reads failing_tests/quarantine
+    # directly, and t1_collect reads quarantine, so the key has to move even
+    # though the seed patch bytes themselves are untouched.
+    reseeded_spec = spec.model_copy(update={
+        "seed": spec.seed.model_copy(
+            update={"failing_tests": [*spec.seed.failing_tests,
+                                      "tests/test_extra.py::test_new"]}),
+    })
+    assert _verify_cache_key(reseeded_spec, variant) != base
 
 
 @pytest.mark.docker

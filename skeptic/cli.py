@@ -1,10 +1,11 @@
+import hashlib
 from pathlib import Path
 
 import typer
 
 import skeptic
 from skeptic.errors import SkepticInfraError
-from skeptic.spec import TaskSpec
+from skeptic.spec import TaskSpec, VariantSpec
 
 EXIT_OK = 0
 EXIT_SUSPECT = 1
@@ -321,6 +322,175 @@ def build(
     except VenvBuildRefused as exc:
         typer.echo(f"REFUSED: {exc}")
         raise typer.Exit(EXIT_INFRA) from exc
+    except SkepticInfraError as exc:
+        typer.echo(f"INFRA ERROR: {exc}")
+        raise typer.Exit(EXIT_INFRA) from exc
+
+
+def _verify_cache_key(spec: TaskSpec, variant: VariantSpec) -> str:
+    """VERIFY stage cache key.
+
+    Every input that shapes an observation or a check belongs here: the
+    variant and seed patch bytes (so a byte-identical patch under a different
+    path collides, and one edited byte does not), `repo.commit` and
+    `environment` (which together determine the image tag, so the key needs
+    no `image_id` of its own), `builder_input` (`allowed_paths` shapes
+    `t1_scope`), `verification` (check configs, budgets, seeds), and
+    `verifier_revision()`.
+
+    This is the VERIFY half of the two-key design (decision 5); the other
+    half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
+    `COLLECTOR_VERSION`. The two age differently on purpose: a detector edit
+    moves `verifier_revision()` and re-verdicts every cached pair with no
+    re-collection, while a collector behavior change never touches this key
+    and needs `COLLECTOR_VERSION` bumped by hand to invalidate a baseline
+    cached under the old behavior.
+    """
+    from skeptic.orchestrator import verifier_revision
+    from skeptic.trace import config_hash
+
+    variant_patch = hashlib.sha256(Path(variant.patch).read_bytes()).hexdigest()
+    seed_patch = hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest()
+    return config_hash({
+        "stage": "VERIFY", "task": spec.task_id, "variant": variant.id,
+        "variant_patch": variant_patch, "seed_patch": seed_patch,
+        "commit": spec.repo.commit,
+        "environment": spec.environment.model_dump(),
+        "builder_input": spec.builder_input.model_dump(),
+        "verification": spec.verification.model_dump(),
+        "verifier_revision": verifier_revision(),
+    })
+
+
+@app.command()
+def verify(
+    task: str = typer.Option(..., "--task"),
+    variant: str = typer.Option(..., "--variant", help="Variant id from evaluation.variants."),
+    profile: str = typer.Option("deterministic", "--profile"),
+    tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
+    workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
+    runner: str = typer.Option("docker", "--runner", help="docker; venv verify is not wired yet."),
+) -> None:
+    """Run the deterministic check layer against a task's variant."""
+    import json
+    import shutil
+
+    from skeptic.candidate import extract_candidate, snapshot
+    from skeptic.checks import run_verify_layer
+    from skeptic.checks.aggregate import aggregate, exit_code
+    from skeptic.checks.evidence import Verdict
+    from skeptic.checks.t1_outcomes import compute_fix_verified
+    from skeptic.collector import collect_pair
+    from skeptic.orchestrator import StageCache, run_stage
+    from skeptic.spec import find_task
+    from skeptic.trace import TraceWriter, config_hash
+    from skeptic.workspace import apply_patch, clone_pinned, materialize
+
+    try:
+        if profile != "deterministic":
+            typer.echo(
+                f"Unknown profile {profile!r}: skeptic verify only runs the "
+                f"deterministic lane (T1's structural and coverage checks, "
+                f"no paid calls). The mutation/adversarial-tests/judge "
+                f"profile is wave B work and is not built yet. Next: re-run "
+                f"with `--profile deterministic`."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        if runner != "docker":
+            typer.echo(
+                f"Unknown runner {runner!r}: skeptic verify runs in docker "
+                f"only. VERIFY's read-only mounts and drop-on-missing "
+                f"policy (RunContainer) have no venv equivalent, so the "
+                f"venv fallback is not wired. Next: start Docker Desktop "
+                f"and re-run with `--runner docker`."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        if not _docker_available():
+            typer.echo(
+                "Docker daemon unavailable. VERIFY observes both trees "
+                "inside throwaway containers; there is no reduced-isolation "
+                "fallback for VERIFY. Next: start Docker Desktop, then "
+                "re-run."
+            )
+            raise typer.Exit(EXIT_INFRA)
+
+        spec = find_task(task, tasks_dir)
+        workdir = workdir.resolve()
+        verify_dir = workdir / spec.task_id / "verify" / variant
+        trace = TraceWriter(
+            verify_dir / "trace.jsonl",
+            run_id=f"verify-{config_hash({'task': spec.task_id, 'variant': variant})}",
+            task_id=spec.task_id)
+        trace.event(stage="LOAD", actor="orchestrator", event="spec_loaded")
+
+        known = sorted(v.id for v in spec.evaluation.variants)
+        if variant not in known:
+            typer.echo(
+                f"No variant named {variant!r} in {spec.task_id}'s "
+                f"evaluation.variants (known: {known or 'none'}). Skeptic "
+                f"resolves --variant to one of the ids listed there. Next: "
+                f"pick one of the known ids, or add a new entry to "
+                f"evaluation.variants in the task spec."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
+
+        cache_key = _verify_cache_key(spec, variant_spec)
+
+        def do_verify() -> dict:
+            repo_dir = clone_pinned(spec.repo.url, spec.repo.commit,
+                                    workdir / spec.task_id / "repo-cache")
+            seeded = verify_dir / "seeded"
+            variant_tree = verify_dir / "variant-tree"
+            for stale in (seeded, variant_tree):
+                if stale.exists():
+                    shutil.rmtree(stale)
+            materialize(repo_dir, spec.repo.commit, seeded)
+            apply_patch(seeded, Path(spec.seed.bug_patch))
+            snapshot(seeded, variant_tree)
+            apply_patch(variant_tree, Path(variant_spec.patch))
+
+            report = extract_candidate(
+                seeded, variant_tree, verify_dir / "candidate.diff",
+                allowed_paths=spec.builder_input.allowed_paths)
+
+            pair = collect_pair(
+                spec, repo_dir, report, verify_dir / "collect",
+                baseline_cache=workdir / spec.task_id / "baseline-cache")
+            layer = run_verify_layer(pair)
+            verdict = aggregate(
+                layer, run_id=trace.run_id, task_id=spec.task_id,
+                variant=variant_spec.id, isolation="docker-run",
+                profile="deterministic")
+            (pair.artifacts_dir / "verdict.json").write_text(
+                json.dumps(verdict.model_dump(), indent=2, sort_keys=True) + "\n")
+            return {
+                **verdict.model_dump(),
+                "fix_verified": compute_fix_verified(pair),
+                "artifacts_dir": str(pair.artifacts_dir),
+            }
+
+        cache = StageCache(verify_dir / "cache")
+        cache_hit = cache.get(cache_key) is not None
+        outcome = run_stage(cache, "VERIFY", cache_key, do_verify, trace)
+
+        verdict = Verdict.model_validate(
+            {k: v for k, v in outcome.items() if k not in ("fix_verified", "artifacts_dir")})
+        marker = " (cached)" if cache_hit else ""
+        if verdict.status == "INFRA_ERROR":
+            typer.echo(f"INFRA ERROR: {verdict.infra_reason}{marker}")
+        else:
+            typer.echo(f"VERDICT {verdict.verdict}{marker}")
+        typer.echo(f"score {verdict.suspect_score:.2f}")
+        for e in verdict.evidence:
+            typer.echo(f"{e.check} · {e.rule} · {e.category} · {e.severity} · "
+                       f"{e.location or '-'} · {e.artifact}")
+        typer.echo(f"checks: {len(verdict.checks_completed)} completed · "
+                   f"{len(verdict.not_applicable)} n/a · "
+                   f"{len(verdict.checks_infra)} infra")
+        typer.echo(f"fix_verified: {outcome['fix_verified']}")
+        typer.echo(f"profile {verdict.profile} · isolation {verdict.isolation}")
+        raise typer.Exit(exit_code(verdict))
     except SkepticInfraError as exc:
         typer.echo(f"INFRA ERROR: {exc}")
         raise typer.Exit(EXIT_INFRA) from exc

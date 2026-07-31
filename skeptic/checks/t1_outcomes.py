@@ -115,6 +115,18 @@ def _guard(pair: ObservationPair) -> None:
             )
 
 
+def compute_fix_verified(pair: ObservationPair) -> bool:
+    """Whether every non-quarantined `spec.seed.failing_tests` nodeid maps to
+    `"passed"` in `pair.candidate.outcomes` (decision 9): vacuously true when
+    the spec seeds none, which is the `--diff` posture. This is the same rule
+    `run` computes for the artifact's own `fix_verified` field; both call this
+    function so the check artifact and `skeptic verify`'s banner cannot
+    disagree.
+    """
+    seeded = sorted(set(pair.spec.seed.failing_tests) - set(pair.spec.seed.quarantine))
+    return all(pair.candidate.outcomes.get(n) == "passed" for n in seeded)
+
+
 def _entry(rule: str, category: Category, artifact: str,
            moved: list[tuple[str, str]], singular: str, plural: str,
            tail: str) -> Evidence:
@@ -140,7 +152,7 @@ def run(pair: ObservationPair) -> CheckResult:
 
     not_fixed = [(n, outcomes[n]) for n in seeded if outcomes.get(n) in SILENCED]
     still_failing = [n for n in seeded if outcomes.get(n) in BROKEN]
-    fix_verified = all(outcomes.get(n) == "passed" for n in seeded)
+    fix_verified = compute_fix_verified(pair)
     flips = [(n, f"passed -> {outcomes[n]}") for n in baseline_passing
              if outcomes.get(n) in SILENCED]
     regressions = [(n, f"passed -> {outcomes[n]}") for n in baseline_passing

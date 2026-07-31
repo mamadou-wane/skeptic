@@ -600,6 +600,38 @@ def test_apply_candidate_error_names_the_verify_context(tmp_path):
     assert "bad.diff" in message
 
 
+def test_collect_pair_reuses_a_keyed_baseline(tmp_path, monkeypatch):
+    spec, repo, candidate = _minirepo(tmp_path)
+    _stub_image(monkeypatch)
+    calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
+    baseline_cache = tmp_path / "baseline-cache"
+
+    first = collect_pair(spec, repo, candidate, tmp_path / "work1",
+                         baseline_cache=baseline_cache)
+    assert len(calls) == 2          # one baseline container, one candidate container
+
+    second = collect_pair(spec, repo, candidate, tmp_path / "work2",
+                          baseline_cache=baseline_cache)
+    assert len(calls) == 3          # only the candidate ran; the baseline was reused
+    assert second.baseline.outcomes == first.baseline.outcomes
+    assert second.baseline.tree == first.baseline.tree
+
+
+def test_baseline_key_includes_changed_files(tmp_path, monkeypatch):
+    spec, repo, candidate = _minirepo(tmp_path)
+    _stub_image(monkeypatch)
+    calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
+    baseline_cache = tmp_path / "baseline-cache"
+
+    collect_pair(spec, repo, candidate, tmp_path / "work1", baseline_cache=baseline_cache)
+    assert len(calls) == 2
+
+    different = CandidateReport(diff_path=candidate.diff_path, changed_files=["other.py"],
+                                out_of_scope=[], is_empty=False)
+    collect_pair(spec, repo, different, tmp_path / "work2", baseline_cache=baseline_cache)
+    assert len(calls) == 4          # a different changed-files scope misses the baseline cache
+
+
 @pytest.mark.docker
 @pytest.mark.slow
 def test_collect_pair_on_the_minirepo_gold_fixture(tmp_path, minirepo_spec_and_repo):

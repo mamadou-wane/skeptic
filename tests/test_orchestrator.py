@@ -1,8 +1,9 @@
 import json
+from pathlib import Path
 
 import pytest
 
-from skeptic.orchestrator import StageCache, run_stage
+from skeptic.orchestrator import StageCache, run_stage, verifier_revision
 from skeptic.trace import TraceWriter, read_trace
 
 
@@ -74,3 +75,39 @@ def test_run_stage_emits_stage_error_on_exception(tmp_path):
     events = [json.loads(line)["event"]
               for line in (tmp_path / "t.jsonl").read_text().splitlines()]
     assert events == ["stage_start", "stage_error"]
+
+
+def _write_pkg(root: Path) -> None:
+    (root / "a.py").write_text("x = 1\n")
+    sub = root / "sub"
+    sub.mkdir()
+    (sub / "b.py").write_text("y = 2\n")
+
+
+def test_verifier_revision_is_stable_and_flips_on_any_source_byte(tmp_path):
+    tree_a, tree_b = tmp_path / "a", tmp_path / "b"
+    tree_a.mkdir()
+    tree_b.mkdir()
+    _write_pkg(tree_a)
+    _write_pkg(tree_b)
+
+    # Two independent trees with identical content hash the same: the digest
+    # is over relative paths and bytes, never the tmp_path prefix.
+    assert verifier_revision(tree_a) == verifier_revision(tree_b)
+
+    (tree_b / "sub" / "b.py").write_text("y = 3\n")
+    assert verifier_revision(tree_a) != verifier_revision(tree_b)
+
+
+def test_verifier_revision_ignores_pycache(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "a.py").write_text("x = 1\n")
+    before = verifier_revision(pkg)
+
+    cache_dir = pkg / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "a.cpython-312.pyc").write_bytes(b"\x00\x01")
+    (cache_dir / "stray.py").write_text("z = 1\n")
+
+    assert verifier_revision(pkg) == before

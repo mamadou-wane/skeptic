@@ -33,6 +33,7 @@ arrives as a diff that `git apply` reads as a file.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shlex
@@ -55,6 +56,7 @@ from skeptic.image import ensure_repo_image
 from skeptic.sandbox import RunContainer
 from skeptic.seedcheck import parse_junit
 from skeptic.spec import TaskSpec
+from skeptic.trace import config_hash
 from skeptic.workspace import apply_candidate, apply_patch, materialize
 
 # The artifacts directory mounts here, outside /workspace. Everything a unit
@@ -67,6 +69,17 @@ _DROPPED = "dropped-ro-subpaths.txt"
 _RC = "coveragerc"
 _COVERAGE_DATA = ".coverage"
 _COVERAGE_JSON = "coverage.json"
+
+# Bumped by hand when observe_variant's or read_variant's behavior changes in
+# a way that makes an old baseline observation wrong to reuse: a new field
+# read off the artifacts, a changed script, a changed exit-code contract.
+# This is the baseline-observation half of the two-key design
+# (`skeptic.orchestrator.verifier_revision` is the VERIFY-verdict half): a
+# detector edit never touches this constant and re-verdicts through
+# verifier_revision with no re-collection, while a collector behavior change
+# needs this bumped by hand to invalidate a baseline cached under the old
+# behavior. Precedent: `skeptic.builder.GREEN_RULE_VERSION`.
+COLLECTOR_VERSION = "1"
 
 # `-q`, `-qq`, `-v`, `-vv`: pytest counts these, so they compose.
 _VERBOSITY = re.compile(r"^-[qv]+$")
@@ -412,7 +425,7 @@ def _cross_check(side: Side, collected: tuple[str, ...],
 
 def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
                     side: Side, changed_files: Sequence[str]) -> VariantObservations:
-    """Run one tree in one throwaway container and read back what it produced.
+    """Run one tree in one throwaway container, then read back what it produced.
 
     The missing-mount policy is set here and it is side-specific. The baseline
     takes `RunContainer`'s strict default, because that tree is `git archive`
@@ -501,6 +514,21 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
             f"re-run the pair.\n"
             f"stderr tail:\n{result.stderr[-1500:]}"
         )
+    return read_variant(spec, tree, artifacts, side, changed_files)
+
+
+def read_variant(spec: TaskSpec, tree: Path, artifacts: Path, side: Side,
+                 changed_files: Sequence[str]) -> VariantObservations:
+    """The pure read-back half of `observe_variant`: no container, no run.
+
+    Parses an artifacts directory `observe_variant` already wrote (the exit
+    files, the collection manifest, the junit report, the coverage JSON and
+    data file, `dropped-ro-subpaths.txt`) into one `VariantObservations`.
+    This is what makes a baseline observation reusable: `collect_pair`'s
+    `baseline_cache` skips the container on a cache hit and calls this
+    directly against the previous run's artifacts instead.
+    """
+    changed_files = tuple(changed_files)
     collect_exit = _read_exit(artifacts, "collect")
     suite_exit = _read_exit(artifacts, "suite")
     _guard_exit(spec, side, "collect", collect_exit, tree, artifacts)
@@ -527,22 +555,95 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
     coverage = None
     if all((artifacts / name).is_file() for name in (_COVERAGE_JSON, _COVERAGE_DATA)):
         coverage = read_coverage(artifacts, changed_files)
+    # Written before the run (see observe_variant), one path per line, in the
+    # sorted order RunContainer already put them in; reading it back is what
+    # lets a rehydrated observation carry the same dropped-mount evidence a
+    # freshly run one would.
+    dropped_path = artifacts / _DROPPED
+    dropped: tuple[str, ...] = ()
+    if dropped_path.is_file():
+        dropped = tuple(line for line in dropped_path.read_text().splitlines() if line)
     return VariantObservations(
         side=side, tree=tree, artifacts=artifacts, collected=collected,
         collect_exit=collect_exit, outcomes=outcomes,
         collection_errors=collection_errors, suite_exit=suite_exit,
-        coverage=coverage, dropped_ro_subpaths=container.dropped_ro_subpaths,
+        coverage=coverage, dropped_ro_subpaths=dropped,
     )
 
 
+def _baseline_key(spec: TaskSpec, changed_files: Sequence[str]) -> str:
+    """The `OBSERVE_BASELINE` cache key: every input that shapes the
+    baseline's observation, `_build_cache_key`-style.
+
+    `changed_files` is in the key because both sides' coverage report is
+    scoped to the candidate's changed files (`observe_variant`'s docstring):
+    two candidates against the same seed with different footprints need two
+    baseline observations, even though the baseline tree itself is identical
+    either way. The gap that leaves: a baseline observed for one candidate's
+    changed-files scope is never reused for a different candidate against the
+    same seed, even when everything but the coverage report would be
+    identical, because scoping the whole observation on `changed_files`
+    trades that reuse for a key that can never serve a stale coverage report.
+    `COLLECTOR_VERSION` is the module docstring's constant: bumped by hand
+    when this function's caller's behavior changes underneath it.
+    """
+    seed_sha = hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest()
+    return config_hash({
+        "stage": "OBSERVE_BASELINE",
+        "task": spec.task_id,
+        "commit": spec.repo.commit,
+        "seed": seed_sha,
+        "environment": spec.environment.model_dump(),
+        "changed_files": sorted(changed_files),
+        "collector_version": COLLECTOR_VERSION,
+    })
+
+
+def _observe_baseline(spec: TaskSpec, repo_dir: Path, image_tag: str,
+                      changed_files: Sequence[str], workdir: Path,
+                      baseline_cache: Path | None) -> VariantObservations:
+    """The baseline side of `collect_pair`, with or without reuse.
+
+    Without `baseline_cache` this is `collect_pair`'s original behavior: a
+    fresh tree and a fresh container under `workdir`, every call. With it,
+    the tree and artifacts live under a directory named by `_baseline_key`
+    instead of under `workdir`, and a second call at the same key skips the
+    container entirely, rehydrating the observation from the first call's
+    artifacts through `read_variant`.
+    """
+    if baseline_cache is None:
+        tree = workdir / "baseline"
+        artifacts = workdir / "artifacts" / "baseline"
+        if tree.exists():
+            shutil.rmtree(tree)
+        materialize(repo_dir, spec.repo.commit, tree)
+        apply_patch(tree, Path(spec.seed.bug_patch))
+        return observe_variant(spec, image_tag, tree, artifacts, "baseline", changed_files)
+
+    entry = baseline_cache / _baseline_key(spec, changed_files)
+    tree, artifacts, marker = entry / "tree", entry / "artifacts", entry / "observed.ok"
+    if marker.is_file():
+        return read_variant(spec, tree, artifacts, "baseline", changed_files)
+    if tree.exists():
+        shutil.rmtree(tree)
+    materialize(repo_dir, spec.repo.commit, tree)
+    apply_patch(tree, Path(spec.seed.bug_patch))
+    observed = observe_variant(spec, image_tag, tree, artifacts, "baseline", changed_files)
+    marker.write_text("")
+    return observed
+
+
 def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
-                 workdir: Path) -> ObservationPair:
+                 workdir: Path, baseline_cache: Path | None = None) -> ObservationPair:
     """Materialize both trees, observe each once, and pair the results.
 
-    Two trees and two containers per pair, which is two overlay installs. The
-    alternative is one container reused across both tree states, and row 72
-    scoped that to BUILD: a container that outlived one of the two states is
-    contamination in the one place Skeptic is comparing them.
+    Two trees and two containers per pair by default, which is two overlay
+    installs. The alternative is one container reused across both tree
+    states, and row 72 scoped that to BUILD: a container that outlived one of
+    the two states is contamination in the one place Skeptic is comparing
+    them. `baseline_cache` trades one of those two containers for disk when
+    the baseline has already been observed at the same key; see
+    `_observe_baseline`.
     """
     if candidate.is_empty:
         raise SkepticInfraError(
@@ -566,21 +667,20 @@ def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
     image = ensure_repo_image(spec, pristine, workdir / "image")
     shutil.rmtree(pristine)
 
-    baseline_tree, candidate_tree = workdir / "baseline", workdir / "candidate"
-    for tree in (baseline_tree, candidate_tree):
-        if tree.exists():
-            shutil.rmtree(tree)
-        materialize(repo_dir, spec.repo.commit, tree)
-        apply_patch(tree, Path(spec.seed.bug_patch))
-    apply_candidate(candidate_tree, candidate.diff_path)
-
-    artifacts = workdir / "artifacts"
     # The candidate's changed files scope both reports. Task 13 reads the
     # candidate's, M4's per-mutant selection reads the candidate's, and the
     # baseline is measured against the same paths so the two are comparable.
     changed = tuple(candidate.changed_files)
-    baseline = observe_variant(spec, image.tag, baseline_tree,
-                               artifacts / "baseline", "baseline", changed)
+    baseline = _observe_baseline(spec, repo_dir, image.tag, changed, workdir, baseline_cache)
+
+    candidate_tree = workdir / "candidate"
+    if candidate_tree.exists():
+        shutil.rmtree(candidate_tree)
+    materialize(repo_dir, spec.repo.commit, candidate_tree)
+    apply_patch(candidate_tree, Path(spec.seed.bug_patch))
+    apply_candidate(candidate_tree, candidate.diff_path)
+
+    artifacts = workdir / "artifacts"
     observed_candidate = observe_variant(spec, image.tag, candidate_tree,
                                          artifacts / "candidate", "candidate", changed)
     return ObservationPair(

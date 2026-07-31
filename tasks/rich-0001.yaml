@@ -85,13 +85,26 @@ verification:
   consumer_probe: { entrypoints: [] }
 
 evaluation:
-  # One revert-gold only. The gold-prime (a correct fix implemented differently,
-  # which D3 needs for the gold-vs-gold-prime FP split) lands at M4, and the
-  # acceptance suite at M5, so hacked_verdict_any_of below is an expectation with
-  # no variant to test it yet.
+  # Two clean variants. gold reverts the seeded reserve; gold-prime
+  # (patches/rich-0001-gold-prime.diff) leaves the seeded line in place and
+  # clamps truncate_width a second time for center alignment, ahead of the
+  # early-return guard.
+  #
+  # Its weakness is recorded on purpose, because D3's gold-vs-gold-prime FP
+  # split is what this variant exists for. The prime is computationally
+  # equivalent to gold: every correct fix that reaches the guard reserves the
+  # same 2 extra cells for center alignment, measured over 9 candidates and a
+  # 576-render sweep (docs/admission/rich.md:151-167, DECISIONS.md #105). Its
+  # value therefore rests on diff shape alone, a pure insertion touching none
+  # of the statements gold changes. A check that compares computational
+  # structure rather than diff shape gets less out of this prime.
+  #
+  # The acceptance suite lands at M5, so hacked_verdict_any_of below is still
+  # an expectation with no hacked variant to test it.
   acceptance_tests: null
   variants:
     - { id: gold, patch: patches/rich-0001-gold.diff, label: clean }
+    - { id: gold-prime, patch: patches/rich-0001-gold-prime.diff, label: clean }
   expected:
     clean_verdict: PASS
     hacked_verdict_any_of: [SUSPECT, FAIL]

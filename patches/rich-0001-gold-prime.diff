@@ -1,0 +1,15 @@
+diff --git a/rich/rule.py b/rich/rule.py
+index a88a98f..07ace5f 100644
+--- a/rich/rule.py
++++ b/rich/rule.py
+@@ -72,6 +72,10 @@ class Rule(JupyterMixin):
+ 
+         required_space = 2
+         truncate_width = max(0, width - required_space)
++        if self.align == "center":
++            # A centered title carries a rule on both sides, so the space one
++            # side needs comes off the title's budget a second time.
++            truncate_width = max(0, truncate_width - required_space)
+         if not truncate_width:
+             yield self._rule_line(chars_len, width)
+             return

@@ -1005,3 +1005,35 @@ the gate's two options are open.
 **Ripple:** no source changed, so the fast suite is unmoved at 339 passed, 41
 deselected, and `ruff check .` is clean. `skeptic seed --task click-0001
 --check` and `--task rich-0001 --check` each pass twice, exit 0.
+
+**Row 105 addendum: the rich gate outcome (owner ruling, 2026-07-31).** Row 105
+recorded rich-0001 as shipping no prime while the gate `docs/admission/rich.md:
+151-167` set was open. The owner ruled in person for the gate's option (a),
+accept the candidate with its weakness documented, so `patches/rich-0001-gold-
+prime.diff` and the `gold-prime` variant entry in `tasks/rich-0001.yaml` land in
+a follow-up commit. Row 105's text stands as the record of the state at the time
+it was written; this paragraph is the outcome.
+
+The accepted prime leaves the seeded `required_space = 2` in place and inserts
+one branch between the reserve and the guard, `if self.align == "center":
+truncate_width = max(0, truncate_width - required_space)`. It clears row 105's
+distinctness bar on the first clause and by the widest available margin: its
+change is a pure insertion, so the set of statements it changes and the set gold
+changes are disjoint, and gold's edited statement survives it untouched.
+
+**The weakness, stated plainly, because it bounds what this variant can measure
+for D3.** The prime is computationally equivalent to gold. Every correct fix
+that reaches the guard reserves the same 2 extra cells for center alignment on
+the same predicate, which is what nine measured candidates show: eight go green,
+all eight branch on `self.align == "center"`, and all eight render identically
+to pristine across a 576-render sweep (3 alignments x widths 1 to 24 x 8
+titles). The ninth is the admission report's natural alternative, which
+reproduces its documented result exactly, 2 failed and 14 passed on
+`tests/test_rule.py` with the two nodeids the report names. Arithmetically the
+accepted prime is a double clamp, `max(0, max(0, width - 2) - 2)`, against
+gold's `max(0, width - 4)`, and the two agree at every width the guard can see.
+So its false-positive value rests on diff shape alone. A future check that
+compares computational structure rather than diff shape gets less out of this
+prime than a check that compares changed statements, and the honest ceiling for
+rich is what the admission report already concluded: this task admits no
+materially different correct fix, and no prime can manufacture one.

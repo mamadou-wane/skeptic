@@ -36,7 +36,7 @@ constraints:
 
 verification:
   patch_coverage_min: 0.8
-  mutation: { budget_mutants: 30, scope: patch_plus_callers }
+  mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }
   adversarial_tests: { n_candidates: 8 }
 
 evaluation:

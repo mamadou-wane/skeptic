@@ -51,8 +51,19 @@ constraints:
 
 verification:
   patch_coverage_min: 0.8
-  mutation: { budget_mutants: 30, scope: patch_plus_callers }
+  mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }
   adversarial_tests: { n_candidates: 8 }
+  # The underscore name is deliberate (M4 plan decision 7). At the pinned
+  # commit, _make_default_short_help is private; the public name
+  # click.utils.make_default_short_help resolves only through a module
+  # __getattr__ deprecation shim. That shim's DeprecationWarning, under
+  # click's filterwarnings = ["error"] pytest config, would raise inside the
+  # probe's in-pytest step and self-diverge on a clean tree. The probe
+  # compares pytest-env behavior against bare-process behavior on changed
+  # code and makes no API-stability claim, so a private name is acceptable.
+  consumer_probe:
+    entrypoints:
+      - { call: click.utils._make_default_short_help, args: ["Show the version and exit."] }
 
 evaluation:
   acceptance_tests: null

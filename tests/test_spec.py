@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from skeptic.errors import SkepticInfraError
-from skeptic.spec import TaskSpec, find_task, load_task
+from skeptic.spec import MutationSpec, TaskSpec, find_task, load_task
 
 FIXTURES = Path(__file__).parent / "fixtures" / "specs"
 
@@ -154,3 +154,69 @@ def test_seed_quarantine_accepts_nodeids(tmp_path):
         "tests/test_termui.py::test_flaky_pager",
         "tests/test_utils.py::test_timing_sensitive",
     ]
+
+
+# M4 wave A (DECISIONS.md #98): mutation.seed makes a mutation run
+# reproducible, and consumer_probe.entrypoints names the callables the probe
+# drives. Both are defaulted so schema_version stays 1 and every existing
+# task YAML loads unchanged.
+
+
+def test_spec_defaults_probe_and_seed_when_absent():
+    spec = load_task(FIXTURES / "valid-task.yaml")
+    assert spec.verification.mutation.seed == 1337
+    assert spec.verification.consumer_probe.entrypoints == []
+
+
+def test_spec_accepts_a_probe_entrypoint_with_args_and_kwargs(tmp_path):
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        'mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }',
+        'mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }\n'
+        '  consumer_probe:\n'
+        '    entrypoints:\n'
+        '      - { call: "click.utils._make_default_short_help", '
+        'args: ["Show the version and exit."], kwargs: { max_length: 45 } }',
+    )
+    p = tmp_path / "probed.yaml"
+    p.write_text(text)
+    entrypoints = load_task(p).verification.consumer_probe.entrypoints
+    assert len(entrypoints) == 1
+    assert entrypoints[0].call == "click.utils._make_default_short_help"
+    assert entrypoints[0].args == ["Show the version and exit."]
+    assert entrypoints[0].kwargs == {"max_length": 45}
+
+
+@pytest.mark.parametrize("bad_call", ["os.system('x')", "a", "a..b"])
+def test_spec_rejects_a_probe_call_that_is_not_a_dotted_identifier(tmp_path, bad_call):
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        'mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }',
+        'mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }\n'
+        '  consumer_probe:\n'
+        '    entrypoints:\n'
+        f'      - {{ call: "{bad_call}" }}',
+    )
+    p = tmp_path / "bad.yaml"
+    p.write_text(text)
+    with pytest.raises(SkepticInfraError, match="dotted path"):
+        load_task(p)
+
+
+def test_spec_rejects_unknown_probe_keys(tmp_path):
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        'mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }',
+        'mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }\n'
+        '  consumer_probe:\n'
+        '    entrypoints:\n'
+        '      - { call: "click.utils._make_default_short_help", surprise_field: 1 }',
+    )
+    p = tmp_path / "bad.yaml"
+    p.write_text(text)
+    with pytest.raises(SkepticInfraError, match="surprise_field"):
+        load_task(p)
+
+
+def test_spec_mutation_seed_round_trips_model_dump():
+    spec = load_task(FIXTURES / "valid-task.yaml")
+    dumped = spec.verification.mutation.model_dump()
+    assert dumped["seed"] == 1337
+    assert MutationSpec.model_validate(dumped) == spec.verification.mutation

@@ -114,16 +114,46 @@ class ConstraintsSpec(_Model):
 class MutationSpec(_Model):
     budget_mutants: int
     scope: Literal["patch_only", "patch_plus_callers"]
+    # Stratified sampling over (function x operator) strata is seeded, so a
+    # mutation run repeats byte-for-byte; the VERIFY stage cache key consumes
+    # this via model_dump.
+    seed: int = 1337
 
 
 class AdversarialSpec(_Model):
     n_candidates: int
 
 
+class ProbeEntrypoint(_Model):
+    call: str                       # dotted path to an importable callable
+    args: list = []                 # YAML scalars only; reaches the driver as JSON
+    kwargs: dict = {}
+
+    @model_validator(mode="after")
+    def _call_is_a_dotted_identifier_path(self) -> ProbeEntrypoint:
+        parts = self.call.split(".")
+        if len(parts) < 2 or not all(part.isidentifier() for part in parts):
+            raise ValueError(
+                f"consumer_probe entrypoint call {self.call!r} is not a "
+                f"dotted path with at least two identifier parts. Skeptic's "
+                f"probe driver builds `import a.b; a.b.c(...)` from this "
+                f"string verbatim, so anything else would be code injection "
+                f"into the driver. Next: write call as "
+                f"`module.path.to_callable`, e.g. "
+                f"`click.utils._make_default_short_help`."
+            )
+        return self
+
+
+class ConsumerProbeSpec(_Model):
+    entrypoints: list[ProbeEntrypoint] = []
+
+
 class VerificationSpec(_Model):
     patch_coverage_min: float
     mutation: MutationSpec
     adversarial_tests: AdversarialSpec
+    consumer_probe: ConsumerProbeSpec = ConsumerProbeSpec()
 
 
 class VariantSpec(_Model):

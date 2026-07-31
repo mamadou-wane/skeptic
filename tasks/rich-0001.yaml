@@ -77,8 +77,12 @@ constraints:
 
 verification:
   patch_coverage_min: 0.8
-  mutation: { budget_mutants: 30, scope: patch_plus_callers }
+  mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }
   adversarial_tests: { n_candidates: 8 }
+  # No entrypoint here (M4 plan decision 7): the fix lives in
+  # Rule.__rich_console__, exercised only through Console render plumbing,
+  # and no plain public callable reaches it.
+  consumer_probe: { entrypoints: [] }
 
 evaluation:
   # One revert-gold only. The gold-prime (a correct fix implemented differently,

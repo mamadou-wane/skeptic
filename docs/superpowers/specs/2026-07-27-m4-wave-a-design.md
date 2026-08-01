@@ -103,7 +103,7 @@ Gold-primes for click-0001 and rich-0001: structurally different correct fixes, 
 ## Error handling
 
 - Aggregator: per-check INFRA capture and combination rules as above.
-- Mutation: invalid, timeout, import-failed, and uncovered mutants are excluded from the kill-rate denominator and reported as counts. Timeout is never a kill. Daemon death mid-batch follows the existing sandbox contract: retry once, then INFRA for t2_mutation alone; other checks' evidence survives.
+- Mutation: invalid, timeout, import-failed, and uncovered mutants are excluded from the kill-rate denominator and reported as counts. Timeout is never a kill. Daemon death mid-batch is INFRA for t2_mutation alone; other checks' evidence survives (the enrichment isolation, DECISIONS row 115). A retry-once layer is deferred: the sandbox has no retry contract today, and row 115 records the correction candidate.
 - Probe: both-sides crash is no divergence; import failure is INFRA.
 - Stage cache: a corrupt entry is a miss (already the shipped `get` behavior; the VERIFY key work reuses it).
 - Spec/CLI: unknown profile or malformed entrypoints get the what/why/next-command error contract.

@@ -1162,3 +1162,69 @@ the invalid-mutant test, the late-line test, and two extra narrow-reading
 pins for the off-by-one/unary-minus and arithmetic-swap/power calls above).
 No docker-marked test added (Task 8 needs no daemon), so the docker-deselected
 count is unchanged from Task 7 at 45. `ruff check .` is clean.
+
+**Review round 1 fix (2026-08-01).** Four findings from the task 8 review,
+all ruled by the controller.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 110 | `Mutant` gains `function: str` (the enclosing function's qualified dotted name, `""` at module level, built by a dedicated recursive walk since `ast.walk`'s breadth-first order carries no parent information), and `sample_mutants`'s stratum key reverts to `(0 if changed else 1, path, function, operator)`. This corrects row 109(c), which had substituted the mutant's own `line` for "enclosing function" on the reasoning that `Mutant`'s brief-fixed shape carried no function-identity field. | The review measured 109(c)'s substitution directly rather than reasoning about it abstractly: a compact two-line function sitting beside a many-line one received zero mutants through budget 8 under the `line` key, because the sprawling function's many single-mutant `line` strata dominate every round-robin pass, while the function key gives the compact function both of its own two mutants by budget 2. 109(c)'s own worry, that a real function-identity field would somehow forfeit a pinned sampling property, never materialized: every sampling test (determinism, seed-sensitivity, the budget cap, changed-before-caller) holds unchanged once its fixtures vary `function` instead of `line` to form distinct strata. | Keeping the `line` substitution and treating the starvation as an acceptable tradeoff: the review's own probe, a short function beside a long one, is exactly the corpus shape mutation testing exists to cover evenly, and starving the short function of coverage is the more damaging failure mode of the two 109(c) weighed. A hybrid key such as `(path, line // N, operator)` for some bucket size N, approximating function grouping without a new field: rejected as an invented heuristic with no textual basis, when the real span-to-name machinery (`_changed_function_names`) already existed in this module, making a proper enclosing-function map a direct fix rather than an invented one. |
+
+**Second fix in the same round: mutant_id collisions across populations.**
+`caller_function_spans`'s own exclusion (a caller candidate whose span
+exactly equals one of `changed`'s entries is dropped) only catches a
+function reported as a caller in its own right. It misses a caller function
+nested inside an already-changed enclosing function, and misses a changed
+function nested inside an already-caller-eligible enclosing function, since
+neither nested function's own span is the one excluded. The review's probe:
+an `outer` function with a nested `inner` that calls an unrelated changed
+function `helper`, with only one line of `outer` (not `inner`) diffed, so
+`outer`'s whole span reads as "changed" while `inner` independently
+qualifies as a caller. Before the fix this produced 12 mutants with only 9
+unique ids: `inner`'s body was mutated once under "changed" (via `outer`'s
+span) and once under "caller" (via `inner`'s own span), and since
+`_mutant_id` hashes `(path, line, operator, occurrence)` with a per-call
+occurrence counter, the two collided. Fixed in `generate_mutants`, not
+`caller_function_spans`: when building caller-population mutants for a
+path, any node whose line falls inside that same path's changed spans is
+now skipped, regardless of which caller function span nominally contains
+it. Fixing it at this node level rather than the span level is what makes
+it symmetric across both nesting directions (inner-changed/outer-caller and
+outer-changed/inner-caller), the second of which is the review's own probe
+shape. `_mutant_id`'s definition is unchanged. Pinned by
+`test_caller_pass_excludes_nodes_already_covered_by_a_changed_span`, which
+asserts every id in the pair's full `generate_mutants` output is unique and
+that the overlapping line is mutated only under "changed".
+
+**Third fix in the same round: unguarded `ast.parse`.** All four call
+sites (changed-span computation, caller-name recovery, the caller scan,
+and mutant generation) called `ast.parse` directly, so an unparseable file
+anywhere in the tree raised a bare `SyntaxError` out of a pure module
+instead of the harness's own infra-failure shape, and looked, from the
+caller's side, indistinguishable from an ordinary Python exception bubbling
+out of a bug. All four now go through `_parse_file`, which raises
+`SkepticInfraError` in the what/why/next form the rest of the codebase
+uses (`skeptic/checks/observations.py`'s pattern), naming the offending
+file. Pinned by `test_an_unparseable_changed_file_raises_skepticinfraerror`
+and `test_an_unparseable_src_dirs_file_in_the_caller_scan_raises_skepticinfraerror`.
+
+**Fourth fix in the same round: the per-pass round-robin reading, pinned.**
+No code changed here: the existing round-robin already visits every
+stratum once per pass in sorted order before revisiting any of them, which
+is what makes a tight budget spend across every changed stratum once
+before returning to one a second time. The review asked for a test that
+would fail under a plausible alternative reading (exhaust one population's
+strata completely before touching the other's) so the semantics cannot
+drift silently later. `test_sampling_round_robins_per_pass_rather_than_exhausting_one_population_first`
+gives two changed strata and two caller strata, three mutants each, at
+budget 4, and pins the exact population sequence a per-pass round-robin
+produces (`changed, changed, caller, caller`) against the sequence an
+exhaust-first reading would have produced instead (`changed, changed,
+changed, changed`).
+
+**Ripple:** fast suite (`-m "not docker"`) goes from 378 to 382 passed (four
+new `test_mutation.py` cases: the nested caller/changed collision pin, the
+two parse-guard pins, and the per-pass-versus-exhaust-first pin), plus three
+existing sampling tests updated in place to vary `function` instead of
+`line` so they still form the distinct strata their assertions depend on.
+No docker-marked test added. `ruff check .` is clean.

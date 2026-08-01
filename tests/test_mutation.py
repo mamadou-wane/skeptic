@@ -18,6 +18,7 @@ import pytest
 from skeptic import mutation
 from skeptic.candidate import CandidateReport
 from skeptic.checks.observations import ObservationPair, VariantObservations
+from skeptic.errors import SkepticInfraError
 from skeptic.spec import TaskSpec
 
 
@@ -110,12 +111,12 @@ def _pair(
 
 def _mutant(
     *, path: str = "src/a.py", line: int = 1, operator: str = "off_by_one",
-    population: str = "changed", suffix: str = "0",
+    function: str = "f", population: str = "changed", suffix: str = "0",
 ) -> mutation.Mutant:
     key = f"{path}:{line}:{operator}:{population}:{suffix}"
     return mutation.Mutant(
         mutant_id=hashlib.sha256(key.encode()).hexdigest()[:12],
-        path=path, line=line, operator=operator, population=population,
+        path=path, line=line, operator=operator, function=function, population=population,
         mutated_source="x = 1\n", valid=True,
     )
 
@@ -252,8 +253,61 @@ def test_patch_only_scope_yields_no_caller_mutants(tmp_path):
     assert all(m.population == "changed" for m in mutants)
 
 
+NESTED_CALLER_SOURCE = """\
+def outer(a, b):
+    if a < b:
+        total = a + b
+    else:
+        total = a - b
+    def inner(x):
+        return helper(x)
+    return inner(a) + total
+"""
+
+
+def test_caller_pass_excludes_nodes_already_covered_by_a_changed_span(tmp_path):
+    """`inner` is nested inside `outer`; only line 2 of `outer` is diffed, so
+    `outer`'s whole span (lines 1-8) is "changed" while `inner`'s own span
+    (lines 6-7) never independently qualifies. `inner` calls `helper`, an
+    unrelated changed function in another file, so it is also caller-
+    eligible: before this fix, line 7 (`return helper(x)`) was mutated once
+    under "changed" (via outer's span) and once under "caller" (via
+    inner's span), and since `_mutant_id` hashes `(path, line, operator,
+    occurrence)` with a per-call occurrence counter, the two collided on
+    one id.
+    """
+    pair = _pair(tmp_path, {
+        "src/m.py": NESTED_CALLER_SOURCE,
+        "src/lib.py": LIB_SOURCE,
+    }, {"src/m.py": {2}, "src/lib.py": None}, scope="patch_plus_callers")
+    mutants = mutation.generate_mutants(pair)
+    ids = [m.mutant_id for m in mutants]
+    assert len(ids) == len(set(ids)), "duplicate mutant ids across populations"
+    overlap = [m for m in mutants if m.path == "src/m.py" and m.line == 7]
+    assert overlap
+    assert all(m.population == "changed" for m in overlap)
+
+
+BROKEN_SOURCE = "def broken(:\n    pass\n"
+
+
+def test_an_unparseable_changed_file_raises_skepticinfraerror(tmp_path):
+    pair = _pair(tmp_path, {"src/broken.py": BROKEN_SOURCE}, {"src/broken.py": None})
+    with pytest.raises(SkepticInfraError, match="src/broken.py"):
+        mutation.generate_mutants(pair)
+
+
+def test_an_unparseable_src_dirs_file_in_the_caller_scan_raises_skepticinfraerror(tmp_path):
+    pair = _pair(tmp_path, {
+        "src/lib.py": LIB_SOURCE,
+        "src/broken.py": BROKEN_SOURCE,
+    }, {"src/lib.py": None}, scope="patch_plus_callers")
+    with pytest.raises(SkepticInfraError, match="src/broken.py"):
+        mutation.generate_mutants(pair)
+
+
 def test_sampling_is_deterministic_for_a_seed():
-    mutants = [_mutant(line=n, operator=op, suffix=str(i))
+    mutants = [_mutant(function=f"fn{n}", operator=op, suffix=str(i))
                for n in (1, 2, 3) for op in ("off_by_one", "arithmetic_swap") for i in range(2)]
     first = mutation.sample_mutants(mutants, budget=5, seed=7)
     second = mutation.sample_mutants(mutants, budget=5, seed=7)
@@ -269,7 +323,7 @@ def test_sampling_differs_across_seeds():
 
 
 def test_sampling_respects_the_budget():
-    mutants = [_mutant(line=n, suffix=str(n)) for n in range(1, 11)]
+    mutants = [_mutant(function=f"fn{n}", suffix=str(n)) for n in range(1, 11)]
     capped = mutation.sample_mutants(mutants, budget=4, seed=3)
     assert len(capped) == 4
     exhausted = mutation.sample_mutants(mutants, budget=999, seed=3)
@@ -277,13 +331,32 @@ def test_sampling_respects_the_budget():
 
 
 def test_sampling_prefers_changed_strata_under_a_tight_budget():
-    changed = [_mutant(path="src/a.py", line=n, population="changed", suffix=f"c{n}")
+    changed = [_mutant(path="src/a.py", function=f"fn{n}", population="changed", suffix=f"c{n}")
                for n in range(1, 4)]
-    caller = [_mutant(path="src/b.py", line=n, population="caller", suffix=f"k{n}")
+    caller = [_mutant(path="src/b.py", function=f"fn{n}", population="caller", suffix=f"k{n}")
               for n in range(1, 4)]
     result = mutation.sample_mutants(changed + caller, budget=3, seed=5)
     assert len(result) == 3
     assert all(m.population == "changed" for m in result)
+
+
+def test_sampling_round_robins_per_pass_rather_than_exhausting_one_population_first():
+    """Distinguishes the per-pass reading from an exhaust-first one.
+
+    Two changed strata (three mutants each) and two caller strata (three
+    mutants each), budget 4. Per-pass round-robin visits every stratum once
+    (in sorted, changed-before-caller order) before revisiting any of them,
+    so budget 4 lands on both changed strata and both caller strata:
+    changed, changed, caller, caller. An exhaust-first reading would instead
+    drain the changed strata across two passes before ever touching a
+    caller stratum: changed, changed, changed, changed.
+    """
+    changed = [_mutant(path="src/a.py", function=f"fn{n}", population="changed", suffix=f"c{n}-{i}")
+               for n in range(2) for i in range(3)]
+    caller = [_mutant(path="src/b.py", function=f"fn{n}", population="caller", suffix=f"k{n}-{i}")
+              for n in range(2) for i in range(3)]
+    result = mutation.sample_mutants(changed + caller, budget=4, seed=9)
+    assert [m.population for m in result] == ["changed", "changed", "caller", "caller"]
 
 
 SOLE_CALL_SOURCE = """\

@@ -69,27 +69,58 @@ callers matter to mutation testing. A function that is itself a changed
 function is never also counted as its own caller, which matters for direct
 recursion.
 
-**Sampling and "enclosing function."** The sampling contract's stratum key
-is `(path, enclosing function, operator)`, but `Mutant` (the brief's exact
-shape) carries no function-identity field, and `sample_mutants` receives
-only a `Sequence[Mutant]`, no spans and no tree: it cannot look up which
-function a `line` sits inside after the fact. The narrowest reading that is
-actually implementable from the given shape: the stratum key uses the
-mutant's own `line` in place of "enclosing function". This is finer-grained
-than true function-level grouping (a function mutated at two different
-lines becomes two strata instead of one), and every pinned property holds
-under it regardless: two calls with the same seed still agree exactly, two
-different seeds still diverge, the budget is still a hard cap, and changed
-population still sorts ahead of caller population in the round-robin
-(`population` is folded into the sort key's leading element, `changed`
-before `caller`, so a tight budget exhausts on changed strata first).
+**Sampling and "enclosing function."** `Mutant` carries `function`, the
+enclosing function's qualified dotted name (`""` at module level), built by
+`_enclosing_function_map`: a dedicated recursive walk, since `ast.walk`'s
+breadth-first order carries no parent information. `sample_mutants`'s
+stratum key is `(path, function, operator)`, matching the sampling contract
+exactly. An earlier version of this module keyed strata on the mutant's own
+`line` instead, reasoning that `Mutant`'s brief-fixed shape carried no
+function-identity field; a review measured that substitution directly and
+found it starves compact functions (DECISIONS row 109(c), corrected by row
+110): a two-line function sitting beside a many-line one received zero
+mutants through budget 8 under the line key, because the sprawling
+function's many single-mutant line-strata dominate every round-robin pass,
+while the function key gives the compact function both of its mutants by
+budget 2. `function` is now a real field for exactly that reason.
+
+**The caller pass excludes nodes a changed span already covers.**
+`caller_function_spans`'s own exclusion (a caller candidate whose span
+exactly equals one of `changed`'s entries is dropped) only catches a
+function reported as a caller in its own right; it misses a caller
+function nested inside an already-changed enclosing function, and misses a
+changed function nested inside an already-caller-eligible enclosing
+function, since neither nested function's own span is the one excluded.
+`generate_mutants` closes both shapes at the mutation-generation step
+instead of the span-computation step: when building caller-population
+mutants for a path, every node whose line falls inside that same path's
+changed spans is skipped, regardless of which caller function span
+nominally contains it. Skipping there rather than resolving it in
+`caller_function_spans` keeps the fix node-level, which is what makes it
+symmetric across both nesting directions. Without it, the same
+`(path, line, operator)` triple could be generated once under each
+population, and since `_mutant_id` hashes exactly that triple plus a
+per-call occurrence counter, the two mutants collide on one id (DECISIONS
+row 110).
+
+**Unparseable source is an infra failure.** All four
+`ast.parse` call sites (changed-span computation, caller-name recovery, the
+caller scan itself, and mutant generation) go through `_parse_file`, which
+raises `SkepticInfraError` naming the file on `SyntaxError` or `ValueError`.
+A file this module cannot parse and a file with no mutable code in it would
+otherwise both silently produce zero mutants, and the two mean very
+different things about whether Skeptic can stand behind the resulting
+kill rate.
 
 **Determinism.** `sample_mutants` groups by `(0 if changed else 1, path,
-line, operator)`, shuffles each group once with a `random.Random(seed)`
+function, operator)`, shuffles each group once with a `random.Random(seed)`
 advanced in sorted-key order (so the sequence of shuffle calls never
 depends on the input list's own order), then round-robins across the
 sorted keys taking one mutant per stratum per pass until `budget` is
-reached or every stratum is empty.
+reached or every stratum is empty. The per-pass shape matters: it is what
+makes a tight budget spend across every changed stratum once before
+returning to any of them a second time, rather than exhausting one
+stratum's whole pool before moving to the next.
 """
 from __future__ import annotations
 
@@ -103,6 +134,7 @@ from pathlib import Path
 from typing import Literal
 
 from skeptic.checks.observations import ObservationPair, parse_unified_diff
+from skeptic.errors import SkepticInfraError
 
 OPERATORS: tuple[str, ...] = (
     "conditional_boundary",    # < <-> <=, > <-> >=
@@ -122,6 +154,7 @@ class Mutant:
     path: str
     line: int                            # ORIGINAL candidate-tree line, the coverage lookup key
     operator: str
+    function: str                        # enclosing function's qualified name; "" at module level
     population: Literal["changed", "caller"]
     mutated_source: str                  # full post-mutation file text (ast.unparse), or "" when invalid
     valid: bool                          # compile() succeeded at generation time
@@ -139,6 +172,57 @@ def _under(path: str, prefixes: list[str]) -> bool:
 def _line_overlaps(span: tuple[int, int], ranges: tuple[tuple[int, int], ...]) -> bool:
     start, end = span
     return any(start <= r_end and r_start <= end for r_start, r_end in ranges)
+
+
+def _parse_file(tree: Path, rel: str) -> ast.Module:
+    """Parse `rel` out of `tree`, or raise loudly.
+
+    Every `ast.parse` call in this module goes through here, so an
+    unparseable file fails the same way regardless of which of the four call
+    sites (changed spans, caller-name recovery, the caller scan, mutant
+    generation) reached it, instead of quietly returning zero mutants, which
+    looks identical to a file with no mutable code in it.
+    """
+    path = tree / rel
+    try:
+        return ast.parse(path.read_text())
+    except (SyntaxError, ValueError) as exc:
+        raise SkepticInfraError(
+            f"Cannot parse {rel} ({type(exc).__name__}: {exc}). Mutation "
+            f"generation reads the candidate's own source to find operator "
+            f"application sites and enclosing functions, so a file it cannot "
+            f"parse leaves nothing to mutate, and reading that silently as "
+            f"zero mutants would look identical to a file with no mutable "
+            f"code in it. This is an infra failure, never evidence. Next: "
+            f"open {path} and run `python -m py_compile {path}` to see what "
+            f"the parser rejects."
+        ) from exc
+
+
+def _enclosing_function_map(module: ast.Module) -> dict[int, str]:
+    """`id(node) -> qualified enclosing function name`, `""` at module level.
+
+    A dedicated recursive walk, since `ast.walk`'s breadth-first order
+    carries no parent information. A class contributes a name segment (so a
+    method's nodes map to `"Class.method"`) without itself counting as a
+    function; only entering a `FunctionDef`/`AsyncFunctionDef` changes which
+    function a node's descendants belong to.
+    """
+    mapping: dict[int, str] = {}
+
+    def walk(node: ast.AST, prefix: str, enclosing: str) -> None:
+        mapping[id(node)] = enclosing
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualified = f"{prefix}{child.name}"
+                walk(child, f"{qualified}.", qualified)
+            elif isinstance(child, ast.ClassDef):
+                walk(child, f"{prefix}{child.name}.", enclosing)
+            else:
+                walk(child, prefix, enclosing)
+
+    walk(module, "", "")
+    return mapping
 
 
 def _function_spans(module: ast.Module) -> list[tuple[int, int]]:
@@ -165,7 +249,7 @@ def changed_function_spans(pair: ObservationPair) -> dict[str, tuple[tuple[int, 
             continue
         if _under(path, test_dirs) or Path(path).name == CONFTEST:
             continue
-        module = ast.parse((pair.candidate.tree / path).read_text())
+        module = _parse_file(pair.candidate.tree, path)
         spans = tuple(sorted(
             span for span in _function_spans(module) if _line_overlaps(span, ranges)
         ))
@@ -185,7 +269,7 @@ def _changed_function_names(
     """
     names: set[str] = set()
     for path, spans in changed.items():
-        module = ast.parse((pair.candidate.tree / path).read_text())
+        module = _parse_file(pair.candidate.tree, path)
         wanted = set(spans)
         for node in ast.walk(module):
             if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -240,7 +324,7 @@ def caller_function_spans(
     for path in sorted(_src_py_files(pair.candidate.tree, src_dirs)):
         if _under(path, test_dirs) or Path(path).name == CONFTEST:
             continue
-        module = ast.parse((pair.candidate.tree / path).read_text())
+        module = _parse_file(pair.candidate.tree, path)
         own_changed = set(changed.get(path, ()))
         spans = tuple(sorted(
             (node.lineno, node.end_lineno or node.lineno)
@@ -353,7 +437,7 @@ def _mutant_id(path: str, line: int, operator: str, occurrence: int) -> str:
 
 
 def _finish(
-    path: str, line: int, operator: str, occurrence: int,
+    path: str, line: int, operator: str, occurrence: int, function: str,
     population: Literal["changed", "caller"], mutated_module: ast.Module,
 ) -> Mutant:
     mutant_id = _mutant_id(path, line, operator, occurrence)
@@ -362,16 +446,24 @@ def _finish(
         compile(source, path, "exec")
     except (SyntaxError, ValueError):
         return Mutant(mutant_id=mutant_id, path=path, line=line, operator=operator,
-                      population=population, mutated_source="", valid=False)
+                      function=function, population=population, mutated_source="", valid=False)
     return Mutant(mutant_id=mutant_id, path=path, line=line, operator=operator,
-                  population=population, mutated_source=source, valid=True)
+                  function=function, population=population, mutated_source=source, valid=True)
 
 
 def _mutants_for_file(
     path: str, module: ast.Module, spans: tuple[tuple[int, int], ...],
     population: Literal["changed", "caller"],
+    exclude: tuple[tuple[int, int], ...] = (),
 ) -> list[Mutant]:
+    """Every operator application inside `spans`, skipping any line in `exclude`.
+
+    `exclude` is the caller pass's guard against a node a changed span
+    already covers (see the module docstring): the changed pass always
+    calls this with `exclude=()`.
+    """
     nodes = list(ast.walk(module))
+    enclosing = _enclosing_function_map(module)
     occurrence: dict[tuple[int, str], int] = {}
 
     def _next_occurrence(line: int, operator: str) -> int:
@@ -384,23 +476,30 @@ def _mutants_for_file(
     for operator in OPERATORS:
         if operator == "call_removal":
             for parent_idx, attr, pos, line in _call_removal_sites(nodes, spans):
+                if _line_overlaps((line, line), exclude):
+                    continue
                 occ = _next_occurrence(line, operator)
+                function = enclosing[id(getattr(nodes[parent_idx], attr)[pos])]
                 mutated = copy.deepcopy(module)
                 parent = list(ast.walk(mutated))[parent_idx]
                 del getattr(parent, attr)[pos]
-                results.append(_finish(path, line, operator, occ, population, mutated))
+                results.append(_finish(path, line, operator, occ, function, population, mutated))
             continue
         matcher, applier = _OPERATOR_TABLE[operator]
         for node_idx, node in enumerate(nodes):
             lineno = getattr(node, "lineno", None)
             if lineno is None or not _line_overlaps((lineno, lineno), spans):
                 continue
+            if _line_overlaps((lineno, lineno), exclude):
+                continue
             for slot in matcher(node):
                 occ = _next_occurrence(lineno, operator)
+                function = enclosing[id(node)]
                 mutated = copy.deepcopy(module)
                 target = list(ast.walk(mutated))[node_idx]
                 applier(target, slot)
-                results.append(_finish(path, lineno, operator, occ, population, mutated))
+                results.append(
+                    _finish(path, lineno, operator, occ, function, population, mutated))
     return results
 
 
@@ -419,9 +518,15 @@ def generate_mutants(pair: ObservationPair) -> tuple[Mutant, ...]:
     callers = caller_function_spans(pair, changed)
     results: list[Mutant] = []
     for population, spans_by_path in (("changed", changed), ("caller", callers)):
+        # The caller pass excludes any node a changed span for the same path
+        # already covers, so a function nested either way across the two
+        # populations is never mutated twice under one `(path, line,
+        # operator)` triple. See the module docstring.
         for path in sorted(spans_by_path):
-            module = ast.parse((pair.candidate.tree / path).read_text())
-            results.extend(_mutants_for_file(path, module, spans_by_path[path], population))
+            module = _parse_file(pair.candidate.tree, path)
+            exclude = changed.get(path, ()) if population == "caller" else ()
+            results.extend(
+                _mutants_for_file(path, module, spans_by_path[path], population, exclude))
     return tuple(results)
 
 
@@ -429,15 +534,15 @@ def sample_mutants(mutants: Sequence[Mutant], budget: int, seed: int) -> tuple[M
     """Stratified, seeded, budget-capped sample. See the module docstring's
     "Sampling and enclosing function" and "Determinism" sections for the
     stratum key and the round-robin's exact order."""
-    grouped: dict[tuple[int, str, int, str], list[Mutant]] = {}
+    grouped: dict[tuple[int, str, str, str], list[Mutant]] = {}
     for mutant in mutants:
         rank = 0 if mutant.population == "changed" else 1
-        key = (rank, mutant.path, mutant.line, mutant.operator)
+        key = (rank, mutant.path, mutant.function, mutant.operator)
         grouped.setdefault(key, []).append(mutant)
 
     rng = random.Random(seed)
     ordered_keys = sorted(grouped)
-    pools: dict[tuple[int, str, int, str], list[Mutant]] = {}
+    pools: dict[tuple[int, str, str, str], list[Mutant]] = {}
     for key in ordered_keys:
         pool = list(grouped[key])
         rng.shuffle(pool)

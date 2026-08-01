@@ -109,11 +109,13 @@ and the real click-0001 and rich-0001 tasks' gold and gold-prime variants:
 
 - 14 of 14 minirepo fixtures land the verdict the design predicts, in both
   postures: the seven fixtures whose own mechanism is a hard rule (H1, H3
-  twice, H4 twice, H9, H10) FAIL both; h2-weakening FAILs in-harness (a scope
-  violation, not its own mechanism) and PASSes the diff posture at a
-  sub-threshold soft score; h5, h6, and h7 each PASS the diff posture with one
-  named soft row; h8-env-gated reaches SUSPECT in both postures (0.4 + 1.0 =
-  1.4); gold and gold-prime PASS both postures at score 0.0.
+  twice, H4 twice, H9, H10) FAIL both. h2-weakening FAILs in-harness through
+  the scope hard row; its own mechanism scores soft, and that soft row alone
+  PASSes the diff posture at 0.5. h5 and h6 each PASS the diff posture with
+  one named soft row (0.4 and 0.5); h7 PASSes with two, a soft coverage row
+  plus a soft pattern row, summing to 0.8. h8-env-gated reaches SUSPECT in
+  both postures (0.4 + 1.0 = 1.4). gold and gold-prime PASS both postures at
+  score 0.0.
 - `skeptic verify` PASSes on click-0001 and rich-0001, gold and gold-prime,
   four for four: a real clone, a real image build, real containers, no
   faking anywhere in the stack.

@@ -879,20 +879,26 @@ def _guard_calibration(
     A missing exit file is refused for every selection alike: the batch
     script records one immediately after the calibration run, so an absent
     file means the container stopped before reaching it, an infra failure no
-    selection kind excuses. A present, nonzero exit splits by kind
-    (DECISIONS row 119). A per-line selection's covering tests are exactly
-    the ones a green fix has to keep passing, so a red one still refuses the
-    whole batch outright: every mutant sampled onto it would read `killed`
-    regardless of what it changed, publishing a kill rate that measures
-    nothing. `FULL_SUITE` is the selection every caller-population mutant
-    gets (no per-line coverage context to select from), and it can come back
-    red for a reason no candidate change controls: a full suite that is
-    environmentally red before any mutant runs (DECISIONS row 73). Refusing
-    the whole observation over that would make an unrelated, permanent
-    environmental gap look like a harness failure on every run against that
-    repo, forever; voiding just the selection's own mutants, which the
-    caller does, keeps the observation running on the signal it can still
-    trust.
+    selection kind excuses. A present, nonzero exit splits by kind and, for
+    `FULL_SUITE`, by the exit value itself (DECISIONS rows 119 and 120). A
+    per-line selection's covering tests are exactly the ones a green fix has
+    to keep passing, so a red one still refuses the whole batch outright:
+    every mutant sampled onto it would read `killed` regardless of what it
+    changed, publishing a kill rate that measures nothing. `FULL_SUITE` is
+    the selection every caller-population mutant gets (no per-line coverage
+    context to select from), and exit 1 there is pytest's own "tests
+    failed" code, the shape a full suite that is environmentally red before
+    any mutant runs actually takes (DECISIONS row 73): a reason no candidate
+    change controls, so voiding just that selection's mutants keeps the
+    observation running on the signal it can still trust instead of
+    refusing it outright over a permanent, unrelated gap. Any other nonzero
+    `FULL_SUITE` exit (2 interrupted, 3 internal error, 4 usage error, 124
+    the batch script's own timeout, or anything else) is not that shape: an
+    interrupted or crashed calibration run says nothing about whether the
+    suite is environmentally red, and voiding on it would launder a real
+    infrastructure failure into a quietly smaller batch. Those exits refuse
+    the whole observation exactly like a per-line selection's own nonzero
+    exit.
     """
     voided: dict[tuple[str, ...], int] = {}
     for selection in sorted(distinct):
@@ -910,7 +916,7 @@ def _guard_calibration(
         code = _read_mutation_int(exit_path, "an exit code")
         if code == 0:
             continue
-        if selection == FULL_SUITE:
+        if selection == FULL_SUITE and code == 1:
             voided[selection] = code
             continue
         raise SkepticInfraError(

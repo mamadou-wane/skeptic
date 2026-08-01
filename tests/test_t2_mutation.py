@@ -353,6 +353,30 @@ def test_full_suite_calibration_exit_voids_the_caller_population_not_infra(
     assert "killed" in void.reason
 
 
+@pytest.mark.parametrize("exit_code", [2, 3, 4, 124])
+def test_full_suite_calibration_exit_other_than_one_still_infras(
+    tmp_path, monkeypatch, exit_code
+):
+    """DECISIONS row 120: the void is narrow, exit 1 only (pytest's own
+    "tests failed" code, the shape DECISIONS row 73's environmental reds
+    actually take). An interrupted (2), crashed (3, 4), or timed-out (124)
+    calibration run says nothing about whether the suite is environmentally
+    red, so `FULL_SUITE` refuses the whole observation on any of these
+    exactly like a per-line selection's own nonzero exit, never voiding."""
+    tree = _tree(tmp_path)
+    changed = _mutant("c1", population="changed")
+    caller = _mutant("k1", population="caller")
+    selections = {"c1": ("tests/test_a.py::test_x",), "k1": mutation.FULL_SUITE}
+    fake_mutation_run(
+        monkeypatch, {"c1": 1, "k1": 0}, selections,
+        calibration_exits={mutation.FULL_SUITE: exit_code})
+
+    with pytest.raises(SkepticInfraError, match=re.escape(str(mutation.FULL_SUITE))) as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [changed, caller], selections)
+    assert "infra failure" in str(exc.value)
+
+
 def test_per_line_calibration_exit_still_infras_even_with_a_voided_full_suite(
     tmp_path, monkeypatch
 ):

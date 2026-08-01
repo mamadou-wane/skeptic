@@ -90,6 +90,64 @@ def test_select_tests_raises_on_an_unmatched_context():
     assert "infra failure, never evidence" in str(exc.value)
 
 
+def test_select_tests_resolves_a_nested_package_context():
+    """click's own shape: `tests/` carries no `__init__.py` (contributes no
+    package prefix) but `tests/test_utils/` does, so a test under it imports
+    as `test_utils.<file>`, two dotted segments before the qualname. Measured
+    on the real corpus (Task 11): the context on `src/click/utils.py:112` is
+    `test_utils.test_make_default_short_help.test_make_default_short_help`,
+    against a nodeid under `tests/test_utils/`."""
+    coverage = _coverage(
+        {"m.py": {6: ("test_utils.test_x.test_fn",)}})
+    collected = ("tests/test_utils/test_x.py::test_fn",
+                "tests/test_other.py::test_fn")
+
+    result = mutation.select_tests(coverage, collected, "m.py", 6)
+
+    assert result == ("tests/test_utils/test_x.py::test_fn",)
+
+
+def test_select_tests_resolves_a_package_root_context():
+    """rich's own shape: `tests/__init__.py` exists, so `tests/` itself is a
+    package and every context in the suite carries a leading `tests.`
+    segment. Measured on the real corpus (Task 11): the context on
+    `rich/rule.py:83` is `tests.test_columns.test_render`, against a nodeid
+    under `tests/` with no further subpackage."""
+    coverage = _coverage({"m.py": {6: ("tests.test_y.test_fn",)}})
+    collected = ("tests/test_y.py::test_fn", "tests/test_x.py::test_fn")
+
+    result = mutation.select_tests(coverage, collected, "m.py", 6)
+
+    assert result == ("tests/test_y.py::test_fn",)
+
+
+def test_select_tests_still_resolves_a_flat_context():
+    """No regression on the shape every other bridge test already covers
+    (`tests/` is not a package at all): a bare one-segment module still wins
+    at `k=1`, the shortest length `_resolve_module` tries."""
+    coverage = _coverage({"minirepo.py": {6: ("test_minirepo.test_parse_range_basic",)}})
+    collected = ("tests/test_minirepo.py::test_parse_range_basic",)
+
+    result = mutation.select_tests(coverage, collected, "minirepo.py", 6)
+
+    assert result == ("tests/test_minirepo.py::test_parse_range_basic",)
+
+
+def test_select_tests_raises_on_an_ambiguous_module_prefix():
+    """Two collected files whose paths both end in `test_x` at the depth
+    that would otherwise resolve: the bridge refuses to guess which one a
+    bare `test_x.test_fn` context means, rather than silently merging both
+    files' `test_fn` into one family the way a plain stem comparison would
+    have (the shape the pre-fix bridge used everywhere, not only here)."""
+    coverage = _coverage({"m.py": {5: ("test_x.test_fn",)}})
+    collected = ("a/test_x.py::test_fn", "b/test_x.py::test_fn")
+
+    with pytest.raises(SkepticInfraError, match="matches more than one collected file") as exc:
+        mutation.select_tests(coverage, collected, "m.py", 5)
+    assert "infra failure, never evidence" in str(exc.value)
+    assert "a/test_x.py" in str(exc.value) and "b/test_x.py" in str(exc.value)
+
+
 # --- execution: collector.observe_mutation, subprocess boundary faked ------
 
 

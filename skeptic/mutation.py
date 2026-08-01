@@ -585,59 +585,137 @@ def _stripped_qualname(parts: list[str]) -> list[str]:
     return [*head, last.split("[", 1)[0]]
 
 
+def _path_segments(path: str) -> tuple[str, ...]:
+    """`path`'s own dotted segments: every directory component, then the
+    file's stem with `.py` stripped. `"tests/test_utils/test_x.py"` is
+    `("tests", "test_utils", "test_x")`, the form a coverage context's module
+    portion is some trailing run of.
+    """
+    segments = path.split("/")
+    segments[-1] = Path(segments[-1]).stem
+    return tuple(segments)
+
+
+def _resolve_module(
+    context_parts: tuple[str, ...], files: dict[str, tuple[str, ...]]
+) -> tuple[str, int] | None:
+    """The one collected file `context_parts` names, and how many of its
+    leading segments the file's own path consumed as the module portion, or
+    `None` if no collected file's path ends that way at any length.
+
+    Longest run wins, checked from `len(context_parts) - 1` (leaving at least
+    one segment for the qualname) down to 1. A package directory (one sitting
+    under an `__init__.py`, coverage.py's own `dynamic_context = test_function`
+    reads it off `sys.modules`) makes the context carry that directory as a
+    leading dotted segment, one per package level between the test file and
+    the first ancestor pytest did not import as a package; a flat test
+    directory contributes none, and the module is just the file's bare stem.
+    Trying the longest possible split first, rather than always taking one
+    segment, is what lets one rule resolve both shapes without first knowing
+    which one the repo uses: `test_minirepo.test_parse_range_basic` resolves
+    at length 1 (no collected file ends in two segments matching a longer
+    prefix), `test_utils.test_make_default_short_help.test_make_default_short_help`
+    resolves at length 2 against `tests/test_utils/test_make_default_short_help.py`,
+    and `tests.test_columns.test_render` resolves at length 2 against
+    `tests/test_columns.py`.
+
+    Raises `SkepticInfraError` if more than one collected file's path ends
+    with the winning length's segments: a real naming collision (two test
+    files sharing a stem, or a stem plus enclosing directories, at exactly
+    the depth that would otherwise resolve), which this bridge refuses to
+    break by guessing one.
+    """
+    for k in range(len(context_parts) - 1, 0, -1):
+        prefix = context_parts[:k]
+        winners = sorted(file for file, segments in files.items()
+                         if len(segments) >= k and segments[-k:] == prefix)
+        if len(winners) > 1:
+            raise SkepticInfraError(
+                f"Coverage context module prefix {'.'.join(prefix)!r} matches "
+                f"more than one collected file: {winners}. Skeptic resolves a "
+                f"dotted coverage context to one file by the longest leading "
+                f"run of its dotted segments that equals the end of exactly "
+                f"one collected file's own path, and two files tying at that "
+                f"depth is a naming collision this bridge refuses to break by "
+                f"guessing which one coverage.py meant. This is an infra "
+                f"failure, never evidence. Next: rename one of the colliding "
+                f"test files, or teach `mutation._resolve_module` a "
+                f"tie-breaker with a real reason to prefer one over the other."
+            )
+        if winners:
+            return winners[0], k
+    return None
+
+
 def select_tests(
     coverage: CoverageReport, collected: tuple[str, ...], path: str, line: int
 ) -> tuple[str, ...] | None:
     """Map one line's coverage contexts to the nodeids that covered it.
 
     A context is an importable dotted name (`test_minirepo.test_parse_range_basic`,
-    `mod.TestCls.test_x`): coverage.py's `dynamic_context = test_function`
-    writes `f"{module}.{qualname}"`, where `module` is the top-level name
-    pytest imported the test file under (never dotted with a directory: `tests/`
-    contributes no package prefix, since the corpus carries no `__init__.py`
-    under a test dir). `collected` carries nodeids
-    (`tests/test_minirepo.py::test_parse_range_basic[case]`). The bridge splits
-    each on its own separator: the context's first dotted segment is the
-    module, matched against the nodeid file's stem (its "tail", the basename
-    without directory or extension); the remaining dotted segments are matched
-    against the nodeid's `::` parts, with any `[param]` suffix stripped from
-    the last one so a parametrized family collapses to the whole family
-    (every nodeid sharing that stripped qualname), a superset the spec accepts.
+    `test_utils.test_make_default_short_help.test_make_default_short_help`,
+    `tests.test_columns.test_render`): coverage.py's `dynamic_context =
+    test_function` writes `f"{module}.{qualname}"`, where `module` is the
+    dotted name pytest imported the test file under, one segment per
+    `__init__.py`'d directory between the file and the first ancestor that is
+    not one (`tests/` contributes nothing for a flat test directory, one
+    segment for a package, however deep). `collected` carries nodeids
+    (`tests/test_utils/test_x.py::test_fn[case]`). `_resolve_module` finds
+    which collected file `module` names, by the longest leading run of its
+    dotted segments that equals the end of that file's own path segments
+    (`_path_segments`); what is left over is matched against the nodeid's
+    `::` parts, with any `[param]` suffix stripped from the last one so a
+    parametrized family collapses to the whole family (every nodeid sharing
+    that stripped qualname), a superset the spec accepts.
 
     `None` means the line carried no non-empty context: either it is absent
     from `coverage.contexts[path]` entirely, or every context recorded there
     is `""` (import-time execution). Uncovered, never a bridge failure.
 
-    A non-empty context that matches zero nodeids in `collected` raises
-    `SkepticInfraError`: the naming bridge assumed something about how pytest
-    or coverage spells a name that this repo does not honor, and running the
-    mutant against nothing would silently score it uncovered instead of
-    failing loud.
+    A non-empty context that resolves to no file, or resolves to a file but
+    matches no nodeid there, raises `SkepticInfraError`: the naming bridge
+    assumed something about how pytest or coverage spells a name that this
+    repo does not honor, and running the mutant against nothing would
+    silently score it uncovered instead of failing loud. A context that
+    resolves to more than one file at its longest matching depth raises from
+    `_resolve_module` itself, with its own message.
     """
     contexts = coverage.contexts.get(path, {}).get(line, ())
     non_empty = sorted({c for c in contexts if c})
     if not non_empty:
         return None
+    files = {file: _path_segments(file)
+            for file in {nodeid.split("::")[0] for nodeid in collected}}
     matched: set[str] = set()
     for context in non_empty:
-        module, *qual = context.split(".")
-        family = [
-            nodeid for nodeid in collected
-            if (parts := nodeid.split("::"))
-            and Path(parts[0]).stem == module
-            and _stripped_qualname(parts[1:]) == qual
-        ]
+        context_parts = tuple(context.split("."))
+        resolved = _resolve_module(context_parts, files)
+        family: list[str] = []
+        if resolved is not None:
+            winning_file, consumed = resolved
+            qual = list(context_parts[consumed:])
+            family = [
+                nodeid for nodeid in collected
+                if (parts := nodeid.split("::"))
+                and parts[0] == winning_file
+                and _stripped_qualname(parts[1:]) == qual
+            ]
         if not family:
             raise SkepticInfraError(
                 f"Coverage context {context!r} on {path}:{line} matches no "
-                f"nodeid in the collected set. Skeptic maps a dotted coverage "
-                f"context to a `::`-separated nodeid by module tail and "
-                f"qualname, and a context this bridge cannot place would "
-                f"otherwise run the mutant against no test at all, reading as "
-                f"uncovered rather than as the naming mismatch it is. This is "
-                f"an infra failure, never evidence. Next: read the collect "
-                f"manifest for {path} and compare its nodeids' file-stem and "
-                f"qualname against {context!r}."
+                f"nodeid in the collected set. Skeptic resolves a dotted "
+                f"coverage context to a `::`-separated nodeid by the longest "
+                f"leading run of its dotted segments that equals the end of "
+                f"one collected file's own path (so a package prefix, one "
+                f"segment per `__init__.py`'d directory, resolves the same "
+                f"way a flat test file's bare stem does), then matching what "
+                f"is left over against that file's nodeids by qualname. A "
+                f"context this bridge cannot place either way would "
+                f"otherwise run the mutant against no test at all, reading "
+                f"as uncovered rather than as the naming mismatch it is. "
+                f"This is an infra failure, never evidence. Next: read the "
+                f"collect manifest for {path} and compare its nodeids' file "
+                f"path and qualname against {context!r}."
             )
         matched.update(family)
     return tuple(sorted(matched))

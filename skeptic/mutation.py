@@ -133,8 +133,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from skeptic.checks.observations import ObservationPair, parse_unified_diff
+from skeptic.checks.observations import CoverageReport, ObservationPair, parse_unified_diff
 from skeptic.errors import SkepticInfraError
+
+# The selection Task 9's batch runner uses for a caller-population mutant: the
+# coverage report is scoped to the candidate's changed files by design (row
+# 72's sibling decision), so a caller line carries no per-line context to
+# select from, and the fallback is the full uninstrumented suite. Both
+# admitted corpus suites are cheap uninstrumented (click ~2.8s, rich ~3.4s
+# worst 3.95s; docs/admission), cheaper than widening the instrumented report
+# to cover caller files too (DECISIONS row 113).
+FULL_SUITE: tuple[str, ...] = ("<full-suite>",)
 
 OPERATORS: tuple[str, ...] = (
     "conditional_boundary",    # < <-> <=, > <-> >=
@@ -562,3 +571,73 @@ def sample_mutants(mutants: Sequence[Mutant], budget: int, seed: int) -> tuple[M
         if not took_any:
             break
     return tuple(result)
+
+
+def _stripped_qualname(parts: list[str]) -> list[str]:
+    """`::`-split nodeid parts with a `[param]` suffix stripped from the last.
+
+    Pytest's parametrize suffix sits only on the final `::` part (the
+    parametrized function or method name), so only that part is stripped.
+    """
+    if not parts:
+        return parts
+    head, last = parts[:-1], parts[-1]
+    return [*head, last.split("[", 1)[0]]
+
+
+def select_tests(
+    coverage: CoverageReport, collected: tuple[str, ...], path: str, line: int
+) -> tuple[str, ...] | None:
+    """Map one line's coverage contexts to the nodeids that covered it.
+
+    A context is an importable dotted name (`test_minirepo.test_parse_range_basic`,
+    `mod.TestCls.test_x`): coverage.py's `dynamic_context = test_function`
+    writes `f"{module}.{qualname}"`, where `module` is the top-level name
+    pytest imported the test file under (never dotted with a directory: `tests/`
+    contributes no package prefix, since the corpus carries no `__init__.py`
+    under a test dir). `collected` carries nodeids
+    (`tests/test_minirepo.py::test_parse_range_basic[case]`). The bridge splits
+    each on its own separator: the context's first dotted segment is the
+    module, matched against the nodeid file's stem (its "tail", the basename
+    without directory or extension); the remaining dotted segments are matched
+    against the nodeid's `::` parts, with any `[param]` suffix stripped from
+    the last one so a parametrized family collapses to the whole family
+    (every nodeid sharing that stripped qualname), a superset the spec accepts.
+
+    `None` means the line carried no non-empty context: either it is absent
+    from `coverage.contexts[path]` entirely, or every context recorded there
+    is `""` (import-time execution). Uncovered, never a bridge failure.
+
+    A non-empty context that matches zero nodeids in `collected` raises
+    `SkepticInfraError`: the naming bridge assumed something about how pytest
+    or coverage spells a name that this repo does not honor, and running the
+    mutant against nothing would silently score it uncovered instead of
+    failing loud.
+    """
+    contexts = coverage.contexts.get(path, {}).get(line, ())
+    non_empty = sorted({c for c in contexts if c})
+    if not non_empty:
+        return None
+    matched: set[str] = set()
+    for context in non_empty:
+        module, *qual = context.split(".")
+        family = [
+            nodeid for nodeid in collected
+            if (parts := nodeid.split("::"))
+            and Path(parts[0]).stem == module
+            and _stripped_qualname(parts[1:]) == qual
+        ]
+        if not family:
+            raise SkepticInfraError(
+                f"Coverage context {context!r} on {path}:{line} matches no "
+                f"nodeid in the collected set. Skeptic maps a dotted coverage "
+                f"context to a `::`-separated nodeid by module tail and "
+                f"qualname, and a context this bridge cannot place would "
+                f"otherwise run the mutant against no test at all, reading as "
+                f"uncovered rather than as the naming mismatch it is. This is "
+                f"an infra failure, never evidence. Next: read the collect "
+                f"manifest for {path} and compare its nodeids' file-stem and "
+                f"qualname against {context!r}."
+            )
+        matched.update(family)
+    return tuple(sorted(matched))

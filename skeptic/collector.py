@@ -39,13 +39,16 @@ import re
 import shlex
 import shutil
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 
 from skeptic.candidate import CandidateReport
 from skeptic.checks.observations import (
     CoverageReport,
+    MutantRecord,
+    MutantStatus,
+    MutationReport,
     ObservationPair,
     Side,
     VariantObservations,
@@ -53,6 +56,7 @@ from skeptic.checks.observations import (
 )
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ensure_repo_image
+from skeptic.mutation import FULL_SUITE, Mutant
 from skeptic.sandbox import RunContainer
 from skeptic.seedcheck import parse_junit
 from skeptic.spec import TaskSpec
@@ -69,6 +73,27 @@ _DROPPED = "dropped-ro-subpaths.txt"
 _RC = "coveragerc"
 _COVERAGE_DATA = ".coverage"
 _COVERAGE_JSON = "coverage.json"
+
+# The mutation batch's own artifact layout, all under one batch's artifacts
+# mount (Task 9): `originals/<path>` (the pre-mutation candidate source, one
+# copy per distinct changed path), `mutants/<id>/<basename>` (one mutated
+# source per mutant) plus its `selection.txt`, and `calibration/<key>/`
+# (one timed baseline run per distinct selection set). See `observe_mutation`.
+_MUT_ORIGINALS = "originals"
+_MUT_MUTANTS = "mutants"
+_MUT_CALIBRATION = "calibration"
+
+# Timeout caps (DECISIONS row 112): 3x the calibration measurement, floor 5s,
+# ceiling 60s. The ceiling doubles as the calibration run's own bound, since a
+# hung baseline suite needs a cap too.
+_MUT_CAP_FLOOR_S = 5
+_MUT_CAP_CEILING_S = 60
+
+# The host-side `container.run` timeout: the worst case of every mutant and
+# every calibration run individually hitting the ceiling, plus slack for the
+# overlay install and the file copies. Independent of `spec.environment.
+# timeout_s`, which bounds the T1 unit's own suite run, not this batch.
+_MUT_SLACK_S = 120
 
 # Bumped by hand when observe_variant's or read_variant's behavior changes in
 # a way that makes an old baseline observation wrong to reuse: a new field
@@ -687,3 +712,227 @@ def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
         spec=spec, baseline=baseline, candidate=observed_candidate,
         candidate_diff=candidate, artifacts_dir=artifacts,
     )
+
+
+def _selection_key(selection: tuple[str, ...]) -> str:
+    """A filesystem-safe id for one distinct selection set, shared by every
+    mutant that resolved to it, so the batch times each selection once."""
+    return hashlib.sha256("\x1f".join(selection).encode()).hexdigest()[:12]
+
+
+def _mutation_argv(test_cmd: str, selection: tuple[str, ...]) -> list[str]:
+    """`test_cmd`'s own argv, plus the selected nodeids, or none for `FULL_SUITE`."""
+    argv = shlex.split(test_cmd)
+    if selection == FULL_SUITE:
+        return argv
+    return argv + list(selection)
+
+
+def _write_mutation_inputs(
+    tree: Path, artifacts: Path, mutants: Sequence[Mutant],
+    selections: Mapping[str, tuple[str, ...]],
+) -> None:
+    """Host-side layout for a runnable batch: originals, mutated sources,
+    and a per-mutant selection file, all on the artifacts mount.
+
+    Mutant source never reaches a shell: every mutated file lands through
+    `write_text`, the way `mutated_source` was produced (`ast.unparse` over a
+    parsed, harness-owned tree), never through interpolation into the batch
+    script below.
+    """
+    originals_dir = artifacts / _MUT_ORIGINALS
+    mutants_dir = artifacts / _MUT_MUTANTS
+    written: set[str] = set()
+    for m in mutants:
+        if m.path not in written:
+            dest = originals_dir / m.path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text((tree / m.path).read_text())
+            written.add(m.path)
+        mdir = mutants_dir / m.mutant_id
+        mdir.mkdir(parents=True, exist_ok=True)
+        (mdir / Path(m.path).name).write_text(m.mutated_source)
+        selection = selections[m.mutant_id]
+        (mdir / "selection.txt").write_text("".join(f"{nodeid}\n" for nodeid in selection))
+
+
+def _mutation_script(
+    test_cmd: str, mutants: Sequence[Mutant], selections: Mapping[str, tuple[str, ...]],
+) -> str:
+    """One calibration step per distinct selection, then one run per mutant.
+
+    Calibration measures how long the selected tests take against the
+    unmutated (already-copied-in) candidate source, in whole milliseconds via
+    `date +%s%N`, and clamps `3x` that into the mutant cap in-script (POSIX
+    arithmetic and `[ ]` tests only, no bashisms): a cap computed host-side
+    would need the calibration run's real wall time before the batch script
+    could even be written, and the whole point of one script per batch is
+    paying the overlay install once. Each mutant then: copies its mutated
+    file over `/workspace/<path>`, runs under that cap, records the exit code
+    and its own wall time, and restores the original.
+    """
+    distinct = sorted({selections[m.mutant_id] for m in mutants})
+    lines: list[str] = []
+    for selection in distinct:
+        key = _selection_key(selection)
+        cal_dir = f"{ARTIFACTS}/{_MUT_CALIBRATION}/{key}"
+        argv = _mutation_argv(test_cmd, selection)
+        lines.append(f"mkdir -p {cal_dir}")
+        lines.append("CSTART=$(date +%s%N)")
+        lines.append(f"timeout {_MUT_CAP_CEILING_S} {shlex.join(argv)} "
+                     f"> {cal_dir}/out 2> {cal_dir}/err")
+        lines.append("CEND=$(date +%s%N)")
+        lines.append("CAL_MS=$(( (CEND - CSTART) / 1000000 ))")
+        lines.append("CAP=$(( CAL_MS * 3 / 1000 ))")
+        lines.append(f'[ "$CAP" -lt {_MUT_CAP_FLOOR_S} ] && CAP={_MUT_CAP_FLOOR_S}')
+        lines.append(f'[ "$CAP" -gt {_MUT_CAP_CEILING_S} ] && CAP={_MUT_CAP_CEILING_S}')
+        lines.append(f'echo "$CAP" > {cal_dir}/cap')
+        lines.append(f'echo "$CAL_MS" > {cal_dir}/calibration_ms')
+    for m in mutants:
+        selection = selections[m.mutant_id]
+        key = _selection_key(selection)
+        argv = _mutation_argv(test_cmd, selection)
+        mdir = f"{ARTIFACTS}/{_MUT_MUTANTS}/{m.mutant_id}"
+        source = shlex.quote(f"{mdir}/{Path(m.path).name}")
+        workspace_path = shlex.quote(f"/workspace/{m.path}")
+        original = shlex.quote(f"{ARTIFACTS}/{_MUT_ORIGINALS}/{m.path}")
+        lines.append(f"CAP=$(cat {ARTIFACTS}/{_MUT_CALIBRATION}/{key}/cap)")
+        lines.append(f"cp {source} {workspace_path}")
+        lines.append("MSTART=$(date +%s%N)")
+        lines.append(f'timeout "$CAP" {shlex.join(argv)} > {mdir}/out 2> {mdir}/err')
+        lines.append(f"echo $? > {mdir}/exit")
+        lines.append("MEND=$(date +%s%N)")
+        lines.append(f"echo $(( (MEND - MSTART) / 1000000 )) > {mdir}/dur_ms")
+        lines.append(f"cp {original} {workspace_path}")
+    return "\n".join(lines)
+
+
+def _mutation_host_budget(n_runnable: int, n_distinct: int) -> int:
+    """The outer `container.run` timeout: every mutant and every calibration
+    run at its worst case (the 60s ceiling), plus slack for the overlay
+    install and the file copies. Computable before the batch runs, since it
+    depends on counts alone, never on a measured duration."""
+    return (n_runnable + n_distinct) * _MUT_CAP_CEILING_S + _MUT_SLACK_S
+
+
+def _status_for_exit(code: int) -> MutantStatus:
+    """The exit-code contract (DECISIONS row 112): 0 survived, 1 killed, 124
+    (GNU `timeout`'s own sentinel) timeout, everything else import_failed."""
+    if code == 0:
+        return "survived"
+    if code == 1:
+        return "killed"
+    if code == 124:
+        return "timeout"
+    return "import_failed"
+
+
+def _read_mutation_int(path: Path, what: str) -> int:
+    raw = path.read_text().strip()
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise SkepticInfraError(
+            f"{path} holds {raw[:40]!r} where {what} belongs. The batch script "
+            f"writes one integer there, so a partial or empty file means the "
+            f"container stopped while writing it. This is an infra failure, "
+            f"never evidence. Next: read {path.parent}/err, then re-run the pair."
+        ) from exc
+
+
+def observe_mutation(
+    spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
+    mutants: Sequence[Mutant], selections: Mapping[str, tuple[str, ...] | None],
+) -> MutationReport:
+    """Run a budgeted mutant batch and read back one record per mutant.
+
+    One fresh `RunContainer` for the whole batch (row 72's sibling: one tree
+    state, so paying the overlay install once is safe), reused for as many
+    mutants as `mutants` names. `mutants` is expected to already be the
+    sampled, budget-capped set (`mutation.sample_mutants`'s output); this
+    function does not sample. `selections[mutant_id]` is `None` for a mutant
+    `mutation.select_tests` could not cover (uncovered, never run) and
+    `mutation.FULL_SUITE` for a caller-population mutant (no per-line
+    context to select from).
+
+    Invalid and uncovered mutants short-circuit before any container work:
+    when nothing in `mutants` is runnable, no container is started at all.
+    Every runnable mutant's exit file is required after the run; a missing
+    one is INFRA for the whole batch (`observe_variant`'s `_read_exit`
+    pattern), since a partial batch says nothing trustworthy about any
+    mutant in it, run or not.
+
+    The candidate tree is left byte-identical to how it started: every
+    mutant's own script lines restore the original file before the next
+    mutant's lines run, so a mutant that timed out under `timeout` (which
+    always returns control to the shell) never skips its own restore. Only a
+    container-level failure external to the script (caught by the host-side
+    timeout below) can leave the tree mutated, and that failure is already
+    INFRA for the pair.
+    """
+    if artifacts.exists():
+        shutil.rmtree(artifacts)
+    artifacts.mkdir(parents=True)
+
+    records: dict[str, MutantRecord] = {}
+    runnable: list[Mutant] = []
+    for m in mutants:
+        if not m.valid:
+            records[m.mutant_id] = MutantRecord(
+                mutant_id=m.mutant_id, path=m.path, line=m.line, operator=m.operator,
+                population=m.population, status="invalid", tests_run=(), dur_ms=None)
+            continue
+        if selections.get(m.mutant_id) is None:
+            records[m.mutant_id] = MutantRecord(
+                mutant_id=m.mutant_id, path=m.path, line=m.line, operator=m.operator,
+                population=m.population, status="uncovered", tests_run=(), dur_ms=None)
+            continue
+        runnable.append(m)
+
+    if runnable:
+        selected: dict[str, tuple[str, ...]] = {m.mutant_id: selections[m.mutant_id] for m in runnable}
+        _write_mutation_inputs(tree, artifacts, runnable, selected)
+        distinct = {selected[m.mutant_id] for m in runnable}
+        script = _mutation_script(spec.environment.test_cmd, runnable, selected)
+        ro = (tuple(spec.environment.test_dirs)
+              + tuple(spec.environment.config_files)
+              + tuple(spec.environment.golden_dirs))
+        container = RunContainer(
+            image_tag, tree, ro_subpaths=ro,
+            extra_mounts=((artifacts, ARTIFACTS, "rw"),), missing_ro="drop")
+        budget_s = _mutation_host_budget(len(runnable), len(distinct))
+        result = container.run(script, timeout_s=budget_s)
+        if result.exit_code == -1:
+            raise SkepticInfraError(
+                f"The mutation batch of {len(runnable)} mutant(s) over {len(distinct)} "
+                f"selection set(s) timed out after {budget_s}s. That budget is the "
+                f"worst case of every mutant and every calibration run hitting the "
+                f"60s ceiling, plus 120s slack, so reaching it means the container "
+                f"itself stopped responding rather than any one mutant running long. "
+                f"This is an infra failure, never evidence. Next: `docker ps -a` "
+                f"and `docker system df` to check the daemon, then re-run the pair."
+            )
+        for m in runnable:
+            mdir = artifacts / _MUT_MUTANTS / m.mutant_id
+            exit_path = mdir / "exit"
+            if not exit_path.is_file():
+                raise SkepticInfraError(
+                    f"Mutant {m.mutant_id} ({m.path}:{m.line}) left no exit code at "
+                    f"{exit_path}. The batch script records one after every mutant "
+                    f"it runs, so an absent file means the container stopped "
+                    f"mid-batch before reaching this mutant. This is an infra "
+                    f"failure for the whole mutation observation, never evidence. "
+                    f"Next: read {mdir}/err, then re-run the pair."
+                )
+            code = _read_mutation_int(exit_path, "an exit code")
+            dur_path = mdir / "dur_ms"
+            dur_ms = _read_mutation_int(dur_path, "a duration in ms") if dur_path.is_file() else None
+            records[m.mutant_id] = MutantRecord(
+                mutant_id=m.mutant_id, path=m.path, line=m.line, operator=m.operator,
+                population=m.population, status=_status_for_exit(code),
+                tests_run=selected[m.mutant_id], dur_ms=dur_ms)
+
+    ordered = tuple(records[m.mutant_id] for m in mutants)
+    return MutationReport(
+        seed=spec.verification.mutation.seed, budget=spec.verification.mutation.budget_mutants,
+        generated=len(mutants), records=ordered)

@@ -250,11 +250,54 @@ class CoverageReport(_Model):
     """
 
 
+MutantStatus = Literal["killed", "survived", "timeout", "invalid", "uncovered", "import_failed"]
+
+
+class MutantRecord(_Model):
+    """One mutant's disposition after a batch: never run, or run to an exit code.
+
+    `tests_run` carries the nodeids `mutation.select_tests` resolved for a
+    changed-population mutant, or the sentinel `("<full-suite>",)` for a
+    caller-population mutant (the coverage report is scoped to changed files,
+    so a caller line has no per-line context to select from). Empty for a
+    mutant that never ran (`invalid` or `uncovered`).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    mutant_id: str
+    path: str
+    line: int
+    operator: str
+    population: Literal["changed", "caller"]
+    status: MutantStatus
+    tests_run: tuple[str, ...]
+    dur_ms: int | None
+
+
+class MutationReport(_Model):
+    """One candidate's mutation batch: the config it ran under, plus every record.
+
+    `generated` is the count of mutants this report covers (`len(records)`),
+    which is `sample_mutants`'s output count and can be smaller than `budget`
+    when the candidate's changed spans do not carry that many mutable sites.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    seed: int
+    budget: int
+    generated: int
+    records: tuple[MutantRecord, ...]
+
+
 class VariantObservations(_Model):
     """One side of the comparison: what one tree collected, ran, and covered.
 
     Everything from `collected` through `coverage` is `None` when it was not
-    observed. See the module docstring.
+    observed. See the module docstring. `mutation` is collector-side machinery
+    recorded onto the candidate side only (Task 9); the baseline is never
+    mutation-tested, so it stays `None` there by construction.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -282,6 +325,7 @@ class VariantObservations(_Model):
     seeded tree, and a declared path missing there raises. A reader who sees
     the field on both sides would otherwise expect the baseline to fill it.
     """
+    mutation: MutationReport | None = None
 
 
 class ObservationPair(_Model):

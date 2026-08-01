@@ -101,7 +101,7 @@ _PRECEDENCE_INDEX: dict[str, int] = {
 # The checks that can reach `checks_completed`, which is what PASS requires
 # (section 5.6). `t1_ast` is absent because it is attribution-only. Every
 # other T1 check is here, in `CHECK_PRECEDENCE` order; M4 appends each T2
-# check as it lands.
+# check as it lands. `t2_mutation` (Task 9) is the first.
 MANDATORY_CHECKS: tuple[str, ...] = (
     "t1_collect",
     "t1_outcomes",
@@ -110,6 +110,7 @@ MANDATORY_CHECKS: tuple[str, ...] = (
     "t1_goldens",
     "t1_patterns",
     "t1_coverage",
+    "t2_mutation",
 )
 
 # Seventeen ids over section 5.6's fourteen scoring rows: the tables set the

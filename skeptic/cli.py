@@ -379,13 +379,16 @@ def verify(
     """Run the deterministic check layer against a task's variant."""
     import json
     import shutil
+    import time
 
     from skeptic.candidate import extract_candidate, snapshot
     from skeptic.checks import run_verify_layer
     from skeptic.checks.aggregate import aggregate, exit_code
     from skeptic.checks.evidence import Verdict
     from skeptic.checks.t1_outcomes import compute_fix_verified
-    from skeptic.collector import collect_pair
+    from skeptic.collector import collect_pair, observe_mutation
+    from skeptic.image import repo_image_tag
+    from skeptic.mutation import FULL_SUITE, generate_mutants, sample_mutants, select_tests
     from skeptic.orchestrator import StageCache, run_stage
     from skeptic.spec import find_task
     from skeptic.trace import TraceWriter, config_hash
@@ -462,6 +465,46 @@ def verify(
             pair = collect_pair(
                 spec, repo_dir, report, verify_dir / "collect",
                 baseline_cache=workdir / spec.task_id / "baseline-cache")
+
+            # Mutation enrichment: generate -> sample -> select per mutant ->
+            # execute, then fold the report onto the candidate side. Any
+            # `SkepticInfraError` here (an unparseable candidate file, a dead
+            # docker daemon mid-batch) propagates the way `collect_pair`'s own
+            # failures do: loud, to this function's caller, never swallowed
+            # into a per-check capture. `t2_mutation.run` is what raises INFRA
+            # for `pair.candidate.mutation is None`, and `run_verify_layer`
+            # captures that the same way it captures every other check.
+            mutants = generate_mutants(pair)
+            sampled = sample_mutants(
+                mutants, spec.verification.mutation.budget_mutants,
+                spec.verification.mutation.seed)
+            selections: dict[str, tuple[str, ...] | None] = {}
+            for mutant in sampled:
+                if mutant.population == "caller":
+                    selections[mutant.mutant_id] = FULL_SUITE
+                else:
+                    selections[mutant.mutant_id] = select_tests(
+                        pair.candidate.coverage, pair.candidate.collected,
+                        mutant.path, mutant.line)
+            mutation_started = time.monotonic()
+            mutation_report = observe_mutation(
+                spec, repo_image_tag(spec), pair.candidate.tree,
+                pair.artifacts_dir / "mutation", sampled, selections)
+            for record in mutation_report.records:
+                trace.event(
+                    stage="VERIFY", actor="checks.t2_mutation", event="mutant_result",
+                    variant=variant_spec.id, dur_ms=record.dur_ms,
+                    payload={"mutant_id": record.mutant_id, "status": record.status,
+                            "tests_run": len(record.tests_run)})
+            trace.event(
+                stage="VERIFY", actor="checks.t2_mutation", event="mutation_batch",
+                variant=variant_spec.id,
+                dur_ms=int((time.monotonic() - mutation_started) * 1000),
+                payload={"seed": mutation_report.seed, "budget": mutation_report.budget,
+                        "generated": mutation_report.generated})
+            pair = pair.model_copy(update={
+                "candidate": pair.candidate.model_copy(update={"mutation": mutation_report})})
+
             layer = run_verify_layer(pair)
             verdict = aggregate(
                 layer, run_id=trace.run_id, task_id=spec.task_id,

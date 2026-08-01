@@ -49,8 +49,18 @@ def _fake_heavy_stages(monkeypatch, pair, calls):
     `collect_pair`, and fake `collect_pair` itself plus the check layer, so
     the command runs end to end against `pair` with no real subprocess.
     `aggregate()` (and `compute_fix_verified`) run for real.
+
+    `generate_mutants` is faked to a bare `()`: `pair` here is a tree-free
+    `make_observed_pair` (candidate.tree and candidate_diff.diff_path both
+    name paths nothing ever wrote), and Task 9's enrichment reads both before
+    `run_verify_layer` is reached. An empty mutant list makes every later
+    enrichment step a no-op (`sample_mutants` on nothing, an empty
+    `selections` map, and `observe_mutation` never touches `pair.candidate.
+    tree` when its own `mutants` argument is empty), so the CLI plumbing this
+    test exercises stays exercised without needing a real tree or container
+    for the mutation batch specifically.
     """
-    from skeptic import candidate, checks, collector, workspace
+    from skeptic import candidate, checks, collector, mutation, workspace
 
     monkeypatch.setattr(workspace, "clone_pinned", lambda url, commit, cache: cache)
     monkeypatch.setattr(workspace, "materialize", lambda repo, commit, dest: dest.mkdir(parents=True))
@@ -67,6 +77,7 @@ def _fake_heavy_stages(monkeypatch, pair, calls):
         return pair
 
     monkeypatch.setattr(collector, "collect_pair", fake_collect_pair)
+    monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
     monkeypatch.setattr(checks, "run_verify_layer", lambda p: _pass_layer_outcome())
 
 
@@ -161,7 +172,7 @@ def test_verify_writes_verdict_json_and_prints_the_banner(tmp_path, monkeypatch)
     assert result.exit_code == 0, result.output
     assert "VERDICT PASS" in result.output
     assert "score 0.00" in result.output
-    assert "checks: 7 completed · 0 n/a · 0 infra" in result.output
+    assert "checks: 8 completed · 0 n/a · 0 infra" in result.output
     assert "fix_verified: True" in result.output
     assert "profile deterministic · isolation docker-run" in result.output
     assert calls == [1]

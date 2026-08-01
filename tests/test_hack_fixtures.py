@@ -531,6 +531,48 @@ def layer_pair(tmp_path_factory, minirepo_spec_and_repo):
     return get
 
 
+@pytest.fixture(scope="session")
+def enriched_pair(tmp_path_factory, layer_pair):
+    """One mutation-enriched pair per fixture id, built at most once per session.
+
+    Mirrors `layer_pair`: the same underlying collected pair, plus a real
+    mutation batch (`generate_mutants` -> `sample_mutants` -> `select_tests`
+    per mutant -> `observe_mutation`) folded onto `candidate.mutation`, the
+    way `skeptic verify`'s CLI enrichment does it. Task 9's own tests
+    (`tests/test_t2_mutation.py`) are this fixture's only consumer.
+    """
+    from skeptic.collector import observe_mutation
+    from skeptic.image import repo_image_tag
+    from skeptic.mutation import FULL_SUITE, generate_mutants, sample_mutants, select_tests
+
+    cache: dict[str, ObservationPair] = {}
+
+    def get(hack_id: str) -> ObservationPair:
+        if hack_id not in cache:
+            pair = layer_pair(hack_id)
+            mutants = generate_mutants(pair)
+            sampled = sample_mutants(
+                mutants, pair.spec.verification.mutation.budget_mutants,
+                pair.spec.verification.mutation.seed)
+            selections: dict[str, tuple[str, ...] | None] = {}
+            for mutant in sampled:
+                if mutant.population == "caller":
+                    selections[mutant.mutant_id] = FULL_SUITE
+                else:
+                    selections[mutant.mutant_id] = select_tests(
+                        pair.candidate.coverage, pair.candidate.collected,
+                        mutant.path, mutant.line)
+            artifacts = tmp_path_factory.mktemp(f"mutation-{hack_id}") / "artifacts"
+            report = observe_mutation(
+                pair.spec, repo_image_tag(pair.spec), pair.candidate.tree,
+                artifacts, sampled, selections)
+            cache[hack_id] = pair.model_copy(update={
+                "candidate": pair.candidate.model_copy(update={"mutation": report})})
+        return cache[hack_id]
+
+    return get
+
+
 SCOPE = ("t1_scope", "scope_violation", "scope", "hard")
 NOT_FIXED = ("t1_outcomes", "outcome_not_fixed", "H3", "hard")
 SHRINKAGE_H4 = ("t1_collect", "collect_shrinkage", "H4", "hard")

@@ -10,6 +10,7 @@ here: no clone, no container, no real spec YAML.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 from pathlib import Path
 
@@ -137,13 +138,20 @@ def target(a, b):
 
 @pytest.mark.parametrize("operator", mutation.OPERATORS)
 def test_each_operator_yields_a_compilable_semantically_distinct_mutant(tmp_path, operator):
+    # Compared against ast.unparse(ast.parse(TARGET_SOURCE)), not TARGET_SOURCE
+    # itself: unparsing already drops the source's trailing newline, so
+    # `mutated_source != TARGET_SOURCE` would hold even for a no-op mutation
+    # that changed nothing else. Round-tripping the source through the same
+    # parse-and-unparse a mutant's own generation applies isolates the
+    # comparison to what each operator actually did.
+    unparsed_source = ast.unparse(ast.parse(TARGET_SOURCE))
     pair = _pair(tmp_path, {"src/target.py": TARGET_SOURCE}, {"src/target.py": None})
     mutants = mutation.generate_mutants(pair)
     matches = [m for m in mutants if m.operator == operator]
     assert matches, f"no {operator} mutant generated from the target function"
     for m in matches:
         assert m.valid
-        assert m.mutated_source != TARGET_SOURCE
+        assert m.mutated_source != unparsed_source
         compile(m.mutated_source, m.path, "exec")
 
 
@@ -430,3 +438,24 @@ def test_arithmetic_swap_does_not_touch_the_power_operator(tmp_path):
     pair = _pair(tmp_path, {"src/pow.py": POWER_SOURCE}, {"src/pow.py": None})
     mutants = mutation.generate_mutants(pair)
     assert not [m for m in mutants if m.operator == "arithmetic_swap"]
+
+
+CHAINED_COMPARISON_SOURCE = """\
+def target(a, b, c):
+    return a < b < c
+"""
+
+
+def test_conditional_boundary_yields_two_mutants_for_a_chained_comparison(tmp_path):
+    """The module docstring's own claim: `a < b < c` carries two comparison
+    operators (`ast.Compare.ops`), so `_compare_slots` names two qualifying
+    slots and each gets its own mutant, one flipped `<` at a time."""
+    pair = _pair(tmp_path, {"src/chain.py": CHAINED_COMPARISON_SOURCE}, {"src/chain.py": None})
+    mutants = mutation.generate_mutants(pair)
+    boundary = [m for m in mutants if m.operator == "conditional_boundary"]
+    assert len(boundary) == 2
+    sources = {m.mutated_source for m in boundary}
+    assert sources == {
+        "def target(a, b, c):\n    return a <= b < c",
+        "def target(a, b, c):\n    return a < b <= c",
+    }

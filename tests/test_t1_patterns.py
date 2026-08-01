@@ -304,13 +304,24 @@ def test_patterns_flags_sys_exit_zero_in_a_changed_conftest(tmp_path):
 
 
 def test_patterns_is_silent_for_gold_and_gold_prime_in_both_postures():
-    """The two clean fixes, in-harness and in the diff posture."""
+    """The two clean fixes, in-harness and in the diff posture.
+
+    The false-positive measurement this pins only means something if the
+    check actually scanned real content: a corpus built from nothing, or a
+    scan that examined no changed files, would read just as silent. The
+    literal corpus size and the scanned-file count are the artifact's own
+    proof of that (DECISIONS row 107's floor is measured against this
+    fixture's own test file, so a real minirepo corpus is never empty).
+    """
     for hack in ("gold", "gold-prime"):
         for allowed_paths in (["minirepo.py"], []):
             pair = make_pure_pair(hack, allowed_paths=allowed_paths)
             result = t1_patterns.run(pair)
             assert result.status == "completed", (hack, allowed_paths)
             assert result.evidence == (), (hack, allowed_paths)
+            artifact = _artifact(pair)
+            assert artifact["literal_corpus"]["size"] > 0, (hack, allowed_paths)
+            assert artifact["scanned"], (hack, allowed_paths)
 
 
 def test_patterns_literal_corpus_is_capped_and_the_cap_is_recorded(tmp_path):

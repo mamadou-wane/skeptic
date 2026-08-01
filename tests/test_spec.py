@@ -215,6 +215,23 @@ def test_spec_rejects_unknown_probe_keys(tmp_path):
         load_task(p)
 
 
+def test_spec_rejects_unknown_consumer_probe_keys(tmp_path):
+    """`test_spec_rejects_unknown_probe_keys` above pins `ProbeEntrypoint`'s own
+    `extra="forbid"`; this pins `ConsumerProbeSpec`'s, an unknown key sitting
+    alongside `entrypoints` rather than inside one of its entries."""
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        'mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }',
+        'mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }\n'
+        '  consumer_probe:\n'
+        '    entrypoints: []\n'
+        '    surprise_field: 1',
+    )
+    p = tmp_path / "bad.yaml"
+    p.write_text(text)
+    with pytest.raises(SkepticInfraError, match="surprise_field"):
+        load_task(p)
+
+
 def test_spec_mutation_seed_round_trips_model_dump():
     spec = load_task(FIXTURES / "valid-task.yaml")
     dumped = spec.verification.mutation.model_dump()

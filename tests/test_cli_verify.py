@@ -239,6 +239,100 @@ def test_verify_dead_enrichment_on_a_would_be_pass_is_infra_error(tmp_path, monk
     assert "t2_mutation" in saved["infra_reason"]
 
 
+def _fake_heavy_stages_dead_probe(monkeypatch, pair, enrichment_error: Exception):
+    """The probe-side mirror of `_fake_heavy_stages_dead_enrichment` above:
+    the fault sits in the probe block instead of the mutation one.
+
+    `mutation.generate_mutants` degrades to a harmless, real `()`, the same
+    way `_fake_heavy_stages` keeps the mutation lane HEALTHY for the
+    passing-banner tests: an empty mutant list makes `sample_mutants` and the
+    real `observe_mutation` both no-ops (`observe_mutation` never starts a
+    container when its own `mutants` argument leaves nothing runnable), so
+    `t2_mutation` completes for real with no evidence, never touching docker.
+    `observe_probe` raises `enrichment_error` instead. This is Task 10's own
+    isolation block (DECISIONS row 116) exercised in the other direction: the
+    two t2 lanes must degrade independently, so a dead probe run must not
+    take a healthy mutation lane's evidence down with it either.
+    """
+    from skeptic import candidate, collector, mutation, workspace
+
+    monkeypatch.setattr(workspace, "clone_pinned", lambda url, commit, cache: cache)
+    monkeypatch.setattr(workspace, "materialize", lambda repo, commit, dest: dest.mkdir(parents=True))
+    monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
+    monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
+    monkeypatch.setattr(
+        candidate, "extract_candidate",
+        lambda baseline, workspace, out_diff, allowed_paths: CandidateReport(
+            diff_path=out_diff, changed_files=["src/click/termui.py"],
+            out_of_scope=[], is_empty=False))
+    monkeypatch.setattr(
+        collector, "collect_pair",
+        lambda spec, repo_dir, report, workdir, baseline_cache=None: pair)
+    monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
+
+    def _boom(*args, **kwargs):
+        raise enrichment_error
+
+    monkeypatch.setattr(collector, "observe_probe", _boom)
+
+
+@pytest.mark.parametrize("enrichment_error", [
+    SkepticInfraError("daemon down mid-batch"),
+    RuntimeError("boom"),
+], ids=["skepticinfraerror", "runtimeerror"])
+def test_verify_isolates_a_dead_probe_when_sibling_evidence_is_hard(
+    tmp_path, monkeypatch, enrichment_error
+):
+    """Task 10's own isolation block, the probe-side mirror of Fix 1: either
+    exception class raised out of the probe block must not erase hard
+    evidence a sibling T1 check found for real, nor take the mutation lane's
+    own (HEALTHY, empty) evidence down with it. `t2_probe.run`'s own
+    INFRA-on-`None` branch is what lands `t2_probe` in `checks_infra`."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _h1_shaped_pair()
+    _fake_heavy_stages_dead_probe(monkeypatch, pair, enrichment_error)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--workdir", str(workdir)])
+
+    assert result.exit_code == 2, result.output
+    assert "VERDICT FAIL" in result.output
+
+    verdict_path = pair.artifacts_dir / "verdict.json"
+    assert verdict_path.is_file()
+    saved = json.loads(verdict_path.read_text())
+    assert saved["verdict"] == "FAIL"
+    assert "t2_probe" in saved["checks_infra"]
+    assert any(e["rule"] in ("collect_shrinkage", "scope_violation") for e in saved["evidence"])
+
+
+def test_verify_dead_probe_on_a_would_be_pass_is_infra_error(tmp_path, monkeypatch):
+    """The probe-side mirror of Fix 1, case (c): a candidate that would
+    otherwise PASS reports INFRA_ERROR, naming `t2_probe`, once the probe
+    enrichment dies before it can set `candidate.probe`, with the mutation
+    lane's own HEALTHY empty batch never surfacing in `checks_infra`."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_dead_probe(
+        monkeypatch, pair, SkepticInfraError("daemon down mid-batch"))
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--workdir", str(workdir)])
+
+    assert result.exit_code == 3, result.output
+    assert "INFRA ERROR" in result.output
+
+    verdict_path = pair.artifacts_dir / "verdict.json"
+    assert verdict_path.is_file()
+    saved = json.loads(verdict_path.read_text())
+    assert saved["status"] == "INFRA_ERROR"
+    assert saved["verdict"] is None
+    assert saved["checks_infra"] == ["t2_probe"]
+    assert "t2_probe" in saved["infra_reason"]
+
+
 def test_verify_refuses_an_unknown_profile_before_any_work(tmp_path, monkeypatch):
     called = []
     monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
@@ -445,6 +539,77 @@ def test_verify_cache_key_changes_with_patch_bytes_and_source_and_config(tmp_pat
                                       "tests/test_extra.py::test_new"]}),
     })
     assert _verify_cache_key(reseeded_spec, variant) != base
+
+
+def _flip_commit(tmp_path: Path) -> tuple[str, str]:
+    spec = make_task_spec()
+    variant = spec.evaluation.variants[0]
+    base = _verify_cache_key(spec, variant)
+    flipped = spec.model_copy(update={
+        "repo": spec.repo.model_copy(update={"commit": "1" * 40}),
+    })
+    return base, _verify_cache_key(flipped, variant)
+
+
+def _flip_environment(tmp_path: Path) -> tuple[str, str]:
+    spec = make_task_spec()
+    variant = spec.evaluation.variants[0]
+    base = _verify_cache_key(spec, variant)
+    flipped = spec.model_copy(update={
+        "environment": spec.environment.model_copy(
+            update={"timeout_s": spec.environment.timeout_s + 1}),
+    })
+    return base, _verify_cache_key(flipped, variant)
+
+
+def _flip_builder_input(tmp_path: Path) -> tuple[str, str]:
+    spec = make_task_spec()
+    variant = spec.evaluation.variants[0]
+    base = _verify_cache_key(spec, variant)
+    flipped = spec.model_copy(update={
+        "builder_input": spec.builder_input.model_copy(
+            update={"allowed_paths": [*spec.builder_input.allowed_paths, "extra/"]}),
+    })
+    return base, _verify_cache_key(flipped, variant)
+
+
+def _flip_seed_patch_bytes(tmp_path: Path) -> tuple[str, str]:
+    """Same path both sides, only the bytes on disk move: the "bytes, not
+    path" contract `_verify_cache_key`'s own docstring claims for the seed
+    patch (`bug_patch` swapped for its sha256 "so the same bytes-not-path
+    rule" the variant patch gets "applies there too"), which a same-path
+    edit is the only way to actually exercise. The variant-patch case above
+    and the reseeded-spec case both vary path or fields instead, so neither
+    would catch a regression that hashed the wrong file or dropped the
+    override back to the raw path string.
+    """
+    spec = make_task_spec()
+    variant = spec.evaluation.variants[0]
+    seed_copy = tmp_path / "seed.diff"
+    original = Path(spec.seed.bug_patch).read_bytes()
+    seed_copy.write_bytes(original)
+    pinned = spec.model_copy(update={
+        "seed": spec.seed.model_copy(update={"bug_patch": str(seed_copy)}),
+    })
+    base = _verify_cache_key(pinned, variant)
+    seed_copy.write_bytes(original + b"\n# extra\n")
+    return base, _verify_cache_key(pinned, variant)
+
+
+@pytest.mark.parametrize("flip", [
+    _flip_commit, _flip_environment, _flip_builder_input, _flip_seed_patch_bytes,
+], ids=["commit", "environment", "builder_input", "seed_patch_bytes"])
+def test_verify_cache_key_changes_with_the_remaining_key_inputs(tmp_path, flip):
+    """The sibling test above pins four of `_verify_cache_key`'s inputs
+    (variant patch bytes, verifier_revision, a verification config field, the
+    seed sub-spec's own fields). The M4 wave A final review named four more a
+    refactor could drop from the key while the suite stayed green:
+    `repo.commit`, `environment`, `builder_input`, and the seed patch's own
+    bytes. Parametrized so dropping any one of the four reddens exactly that
+    case rather than leaving the whole input silently uncovered.
+    """
+    base, flipped = flip(tmp_path)
+    assert flipped != base
 
 
 @pytest.mark.docker

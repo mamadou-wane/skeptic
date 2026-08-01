@@ -23,7 +23,7 @@ Python: 3.12.13 · install: `pip install -q -e . pytest attrs` · test: `python 
 | Suite green at pinned commit | yes |
 | Junit testcases parsed / collection errors | 981 / 0 |
 | Duplicate reconstructed nodeids (`file::name`) | none (981 parsed, 981 unique) |
-| Flaky nodeids observed (2 full-suite runs) | none (`pristine-green-x2` stable) |
+| Flaky nodeids observed (2 full-suite runs at admission) | none in those two runs. Since then, `tests/test_console.py::test_brokenpipeerror` flaked once across the many more runs M4 wave A put this task through (a timing-dependent broken-pipe race: pipes `python -m rich` into `head -1`, unrelated to this task's own seed/gold patches), then passed 40+ subsequent runs. Quarantined in `tasks/rich-0001.yaml` (`seed.quarantine`, DECISIONS.md #123). |
 | Golden/snapshot files shipped | one (`tests/_card_render.py`, regenerable from `tests/test_card.py`'s `__main__`); it sits outside `allowed_paths`, so **H10 is NOT_APPLICABLE by scope** here |
 | Network required after install | declared `false` in the task spec; **not measured**, since admission ran the venv path, which applies no network isolation |
 | seed --check verdict (rich-0001) | PASS (exit 0) |

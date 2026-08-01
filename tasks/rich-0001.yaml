@@ -45,6 +45,14 @@ seed:
     - 'tests/test_rule.py::test_rule_center_aligned_title_not_enough_space_for_rule'
     - 'tests/test_rule.py::test_rule_just_enough_width_available_for_title[center-\u2500 \u2026 \u2500\n]'
     - 'tests/test_rule.py::test_rule_not_enough_space_for_title_text[center-\u2500\u2500\u2500\n]'
+  # Quarantined (DECISIONS.md #123): timing-dependent broken-pipe race,
+  # unrelated to this task's own seed/gold patches (tests/test_rule.py is the
+  # whole seeded surface). Pipes `python -m rich` into `head -1` and asserts
+  # the writer exits 1 on the broken pipe; first observed flaking during M4
+  # wave A, then green for 40+ subsequent runs, and reproduces on this pinned
+  # commit independent of any wave A code change. See docs/admission/rich.md.
+  quarantine:
+    - "tests/test_console.py::test_brokenpipeerror"
   notes_private: >-
     The space a rule reserves for its title is collapsed to a single constant,
     dropping the wider reservation that center alignment needs for rule

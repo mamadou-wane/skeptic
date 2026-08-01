@@ -236,6 +236,43 @@ def _tree(root: Path) -> Path:
     return tree
 
 
+# --- the batch script: pycache staleness (M4 follow-up batch 2) ------------
+
+
+def test_mutation_script_clears_pycache_between_install_and_timed_run():
+    """Root cause of the h5 minirepo docker row's load-flake: every mutant in
+    a batch overwrites the same path, and CPython's default `.pyc`
+    invalidation truncates the source mtime to whole seconds, so two `cp`s
+    landing in the same wall-clock second (the normal case here: a mutant's
+    own run took ~110ms uncontended, measured) can leave a fresh process
+    reading a stale compile from whatever the file held a moment earlier.
+    The script has to force a fresh compile on every mutant run rather than
+    trust the timestamp."""
+    m = _mutant("mut1", path="src/a.py")
+    script = collector._mutation_script(
+        "python -m pytest -q", [m], {"mut1": ("tests/test_a.py::test_x",)})
+    lines = script.splitlines()
+    cp_idx = next(i for i, line in enumerate(lines) if line.startswith("if cp "))
+    timeout_idx = next(i for i, line in enumerate(lines) if 'timeout "$CAP"' in line)
+
+    assert cp_idx < timeout_idx
+    between = lines[cp_idx + 1:timeout_idx]
+    assert any("rm -rf" in line and "/workspace/src/__pycache__" in line
+              for line in between)
+
+
+def test_mutation_script_clears_pycache_for_a_root_level_path():
+    """A mutated file with no directory component (`minirepo.py`, the real
+    h5 fixture's own shape) still gets a `__pycache__` next to it at
+    `/workspace`, not `/workspace/.`."""
+    m = _mutant("mut1", path="minirepo.py")
+    script = collector._mutation_script(
+        "python -m pytest -q", [m], {"mut1": ("tests/test_minirepo.py::test_x",)})
+
+    assert "rm -rf /workspace/__pycache__" in script
+    assert "/workspace/./__pycache__" not in script
+
+
 @pytest.mark.parametrize("exit_code, status", [
     (0, "survived"),
     (1, "killed"),
@@ -320,6 +357,30 @@ def test_calibration_exit_nonzero_raises_naming_the_selection(tmp_path, monkeypa
         collector.observe_mutation(
             make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
     assert "infra failure, never evidence" in str(exc.value)
+
+
+def test_calibration_exit_124_is_reported_as_a_timeout_not_a_red_candidate(
+    tmp_path, monkeypatch
+):
+    """M4 follow-up batch 2: 124 is GNU `timeout`'s own sentinel for hitting
+    the calibration ceiling, not a test outcome. The pre-existing message
+    (still the one raised for exit 1, still pinned by the test above) says
+    "a selection already red there", which is wrong for a slow-but-possibly-
+    passing selection that never finished; 124 needs its own wording."""
+    tree = _tree(tmp_path)
+    m = _mutant("mut1")
+    selection = ("tests/test_a.py::test_x",)
+    selections = {"mut1": selection}
+    fake_mutation_run(monkeypatch, {"mut1": 0}, selections, calibration_exit=124)
+
+    with pytest.raises(SkepticInfraError, match=re.escape(str(selection))) as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+    message = str(exc.value)
+    assert "infra failure, never evidence" in message
+    assert "124" in message
+    assert "timeout" in message.lower()
+    assert "already red" not in message
 
 
 def test_calibration_missing_exit_file_is_also_infra(tmp_path, monkeypatch):
@@ -785,7 +846,8 @@ def test_h6_fallback_survivors_produce_the_changed_code_row(enriched_pair):  # n
 @pytest.mark.docker
 @pytest.mark.slow
 def test_h5_hardcoded_produces_no_mutation_row(enriched_pair):  # noqa: F811
-    """The uncovered-bucket reasoning, measured rather than assumed.
+    """The uncovered-bucket reasoning, measured rather than assumed, plus one
+    genuine equivalent mutant (M4 follow-up batch 2 correction).
 
     h5-hardcoded's buggy fallback (`return int(lo), int(hi) - 1`) is reached
     by neither tested input: both `"1-5"` and `"10-250"` return early through
@@ -793,12 +855,33 @@ def test_h5_hardcoded_produces_no_mutation_row(enriched_pair):  # noqa: F811
     the sense h6's ternary is (a covered line whose wrong branch never runs);
     it is a line no test executes at all. Its two sampled mutants therefore
     land `uncovered`, not `survived`, and drop out of the denominator the same
-    way `timeout`/`invalid`/`import_failed` do. What is left is the three
-    mutants on the new literal-matching branches, which the suite's own two
-    calls exercise directly and all three kill outright. Changed rate lands
-    at a perfect 1.0 over a 3-mutant denominator, which is a real, measured
-    absence of evidence, not an empty batch (`t1_patterns`, Task 7, is this
-    fixture's actual detector, on the newly introduced literals themselves)."""
+    way `timeout`/`invalid`/`import_failed` do.
+
+    Of the three mutants on the literal-matching branches, two are killed
+    outright. The third, an `off_by_one` on `s.split("-", 1)`'s `maxsplit`
+    (`1` to `2`), is a genuine equivalent mutant, not a flake: both tested
+    inputs, `"1-5"` and `"10-250"`, contain exactly one `"-"`, so raising
+    `maxsplit` past the number of separators actually present changes
+    nothing either input observes, and no covering test can ever kill it.
+    Changed rate lands at 2/3, not a perfect 1.0: a real, measured survivor,
+    the same kind of absence of evidence the uncovered bucket already
+    reports, not an empty batch (`t1_patterns`, Task 7, is this fixture's
+    actual detector, on the newly introduced literals themselves).
+
+    This corrects the row's own prior claim that all three kill outright.
+    That claim was measured against a batch script with a real bug
+    (DECISIONS.md, M4 follow-up batch 2): every mutant in a batch overwrites
+    the same path, and CPython's default `.pyc` invalidation truncates the
+    source mtime to whole seconds, so a fresh process could silently reuse
+    the *previous* mutant's compiled bytecode when two `cp`s landed in the
+    same wall-clock second, which they did most of the time at ~110ms per
+    mutant. That let this survivor inherit a neighboring mutant's failing
+    result often enough to read as `killed` almost every run, with the true
+    result surfacing only on the rare timing where the cache actually
+    invalidated, which is what M4 wave A logged as a flake. `_mutation_script`
+    now clears `__pycache__` before every mutant's timed run, and this
+    fixture's rate is 2/3 on every run since (measured: 16 consecutive real
+    docker runs, this fix, one result)."""
     pair = enriched_pair("h5-hardcoded")
 
     result = t2_mutation.run(pair)
@@ -806,8 +889,8 @@ def test_h5_hardcoded_produces_no_mutation_row(enriched_pair):  # noqa: F811
     assert result.status == "completed"
     assert result.evidence == ()
     artifact = _artifact(pair, result.artifact)
-    assert artifact["rates"]["changed"] == {"rate": pytest.approx(1.0), "killed": 3,
-                                            "survived": 0}
+    assert artifact["rates"]["changed"] == {
+        "rate": pytest.approx(2 / 3), "killed": 2, "survived": 1}
     assert artifact["buckets"]["uncovered"] == 2
 
 

@@ -821,6 +821,21 @@ def _mutation_script(
     too, with its own `_CP_RESTORE_FAILED` sentinel, because a failed restore
     leaves that file mutated for every mutant the batch runs after this one:
     `observe_mutation` maps either sentinel to a whole-observation INFRA.
+
+    Each successful install `cp` is followed by `rm -rf` on that file's own
+    `__pycache__` (M4 follow-up batch 2, root-caused on the h5 minirepo
+    fixture's own load-flake). CPython's default timestamp-based `.pyc`
+    invalidation truncates the source mtime to whole seconds, and every
+    mutant in a batch overwrites the same path in well under a second: two
+    `cp`s landing in the same wall-clock second leave a fresh process free to
+    reuse a stale compile from whatever the file held a moment earlier
+    (measured directly: a same-second overwrite of a same-length file left a
+    fresh `python -c "import mod"` returning the previous body's value). That
+    silently reruns a mutant's selected tests against the wrong source and
+    can flip `killed` to `survived` or back with no exit-code anomaly to
+    catch it. `rm -rf` is unconditional and pre-timing, so a missing
+    directory costs nothing and the deletion never counts against the
+    mutant's own measured duration.
     """
     distinct = sorted({selections[m.mutant_id] for m in mutants})
     lines: list[str] = [f"echo ok > {ARTIFACTS}/{_INSTALL_OK}"]
@@ -848,8 +863,13 @@ def _mutation_script(
         source = shlex.quote(f"{mdir}/{Path(m.path).name}")
         workspace_path = shlex.quote(f"/workspace/{m.path}")
         original = shlex.quote(f"{ARTIFACTS}/{_MUT_ORIGINALS}/{m.path}")
+        parent = Path(m.path).parent
+        pycache_dir = shlex.quote(
+            f"/workspace/{parent}/__pycache__" if str(parent) != "."
+            else "/workspace/__pycache__")
         lines.append(f"CAP=$(cat {ARTIFACTS}/{_MUT_CALIBRATION}/{key}/cap)")
         lines.append(f"if cp {source} {workspace_path}; then")
+        lines.append(f"  rm -rf {pycache_dir}")
         lines.append("  MSTART=$(date +%s%N)")
         lines.append(f'  timeout "$CAP" {shlex.join(argv)} > {mdir}/out 2> {mdir}/err')
         lines.append(f"  echo $? > {mdir}/exit")
@@ -928,7 +948,13 @@ def _guard_calibration(
     suite is environmentally red, and voiding on it would launder a real
     infrastructure failure into a quietly smaller batch. Those exits refuse
     the whole observation exactly like a per-line selection's own nonzero
-    exit.
+    exit, and this applies to a per-line selection's own exit the same way:
+    a red exit means its covering tests failed, but 124 means the ceiling
+    fired before the tests reported anything at all (M4 follow-up batch 2).
+    The raised message says which: 124 is reported as a timeout, never as
+    "the candidate is red", since a slow-but-passing selection under host
+    contention and an actually-failing one are different problems with
+    different next steps.
     """
     voided: dict[tuple[str, ...], int] = {}
     for selection in sorted(distinct):
@@ -949,6 +975,20 @@ def _guard_calibration(
         if selection == FULL_SUITE and code == 1:
             voided[selection] = code
             continue
+        if code == 124:
+            raise SkepticInfraError(
+                f"The calibration run for selection {selection} exited 124: "
+                f"GNU `timeout`'s own sentinel for hitting the "
+                f"{_MUT_CAP_CEILING_S}s ceiling before the selection finished, "
+                f"not a report from the tests themselves. This says nothing "
+                f"about whether the candidate is red: a selection this slow "
+                f"to calibrate is the shape a real, passing-but-slow run "
+                f"takes under host contention, and misreading it as 'the "
+                f"candidate is red' would send the next step to the wrong "
+                f"artifact. This is an infra failure, never evidence. Next: "
+                f"read {cal_dir}/err for what was still running, then re-run "
+                f"the pair once the host is less busy."
+            )
         raise SkepticInfraError(
             f"The calibration run for selection {selection} exited {code}, "
             f"not 0. Skeptic times this selection against the unmutated "

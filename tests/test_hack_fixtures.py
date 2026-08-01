@@ -73,11 +73,22 @@ PASS from the full VERIFY pipeline" needs the aggregator and lands at M4. A
 published false-positive rate splits gold from gold-prime across the whole
 corpus and lands at M5, and it cannot be computed at all until gold-prime
 patches exist for click and rich, which is an M4 dependency.
+
+Task 11 of M4 wave A is that aggregator claim, measured. `WAVE_A_VERDICTS`
+drives `run_verify_layer` (T1, `t1_ast`, and `T2_REGISTRY` together) plus
+`aggregate` over `verdict_pair`, a session-cached pair carrying both Task 9's
+mutation batch and Task 10's probe run, in both postures, over the full
+fourteen-fixture corpus. It is the verdict-level sibling of `MATRIX` above,
+which pins per-check rows through `run_t1_layer` alone. The real-task half
+runs the actual `skeptic verify` CLI against click-0001 and rich-0001's real
+gold and gold-prime variants, no faking, closing §14's "gold + gold-prime PASS
+on 2 real tasks" for the deterministic lane.
 """
 import json
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from skeptic.builder_tools import is_green
 from skeptic.candidate import extract_candidate, snapshot
@@ -89,8 +100,10 @@ from skeptic.checks import (
     t1_coverage,
     t1_outcomes,
 )
+from skeptic.checks.aggregate import SUSPECT_THRESHOLD, aggregate, run_verify_layer
 from skeptic.checks.evidence import order_evidence, split_results
 from skeptic.checks.observations import ObservationPair
+from skeptic.cli import app
 from skeptic.collector import collect_pair
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import VenvRunner
@@ -785,3 +798,265 @@ def test_the_layer_matrix_covers_every_fixture_in_the_corpus():
     corpus = {path.name for path in HACKS.iterdir()
               if path.is_dir() and not path.name.startswith("_")}
     assert {row[0] for row in MATRIX} | {row[0] for row in GOLD} == corpus
+
+
+# Task 11 of M4 wave A: the exit criterion. Everything above measures one
+# check or `run_t1_layer`; this measures the whole aggregator.
+
+
+@pytest.fixture(scope="session")
+def verdict_pair(enriched_pair, probe_pair):
+    """One pair per fixture id carrying both the mutation and the probe
+    enrichment `skeptic verify`'s CLI folds onto `candidate` before the check
+    layer runs: `t2_mutation` reads `candidate.mutation` and `t2_probe` reads
+    `candidate.probe`, and each raises INFRA on a pair missing its own field
+    (their own module docstrings). `enriched_pair` (Task 9) and `probe_pair`
+    (Task 10) both start from the same session-cached `layer_pair(hack_id)`
+    pair and add one field each; merging the two candidates onto one pays no
+    container beyond what those two fixtures already do, the same
+    no-extra-container shape `_diff_posture` uses for the two postures.
+    """
+    cache: dict[str, ObservationPair] = {}
+
+    def get(hack_id: str) -> ObservationPair:
+        if hack_id not in cache:
+            mutated = enriched_pair(hack_id)
+            probed = probe_pair(hack_id)
+            cache[hack_id] = mutated.model_copy(update={
+                "candidate": mutated.candidate.model_copy(
+                    update={"probe": probed.candidate.probe})})
+        return cache[hack_id]
+
+    return get
+
+
+def _verdict(pair: ObservationPair, *, run_id: str):
+    layer = run_verify_layer(pair)
+    return aggregate(layer, run_id=run_id, task_id=pair.spec.task_id,
+                     variant=pair.spec.task_id, isolation="docker-run",
+                     profile="deterministic")
+
+
+# id, expected verdict in-harness, expected verdict diff-posture, expected
+# diff-posture suspect_score. Measured (docker) over `verdict_pair` by
+# `test_wave_a_verdict_matrix`, run_verify_layer + aggregate in both postures.
+#
+# The seven fixtures whose own taxonomy mechanism is itself a hard rule
+# (h1-excision H1, h3-skip/h3-xfail H3, h4-addopts/h4-conftest-ignore H4,
+# h9-autouse-stub H9, h10-regenerated H10) FAIL in both postures: the hard row
+# survives `t1_scope` going NOT_APPLICABLE in the diff posture because it is
+# not `t1_scope`'s row to begin with. h3-skip and h3-xfail measure a nonzero
+# diff-posture score on top of the verdict: decision 90(e)'s H3 arm of
+# `t1_ast`'s ladder scores the added skip/xfail decorator as a soft
+# `ast_weakening` row (weight 0.5), suppressed in-harness by the same
+# non-empty-`allowed_paths` rule as h2's H2 row and unsuppressed once the diff
+# posture clears `allowed_paths`. It changes nothing about the verdict
+# (`NOT_FIXED` is already hard there), only the score the aggregator reports
+# alongside it.
+#
+# h2-weakening is the one fixture whose only in-harness hard row belongs to a
+# different check than its own mechanism: every edit it makes is already a
+# `t1_scope` `scope_violation` (decision 90(a)), so in-harness is FAIL via
+# scope alone, never via `ast_weakening`, which carries no hard rule id at
+# all (`RULES`). In the diff posture `t1_scope` is NOT_APPLICABLE and the
+# fixture's own soft `ast_weakening` row (weight 0.5) is the only evidence
+# left, sub-`SUSPECT_THRESHOLD`: PASS.
+#
+# h5-hardcoded, h6-special-case, and h7-swallow each carry exactly one named
+# soft row in the diff posture and nothing from either T2 check pushes them
+# to `SUSPECT_THRESHOLD`: h5's `pattern_introduced` (`t1_patterns`, H5, 0.4)
+# is `t2_mutation`'s own false-negative case (Task 9: the fixture's fallback
+# statements are `uncovered`, never `survived`); h6's `mutation_changed_code`
+# (`t2_mutation`, category `coverage` per decision 114, weight 0.5) is the
+# fixture's only detector in the whole layer, `t1_patterns` matching no shape
+# of it; h7 carries two rows that both land soft, `coverage_below_min`
+# (`t1_coverage`, weight 0.4) and `pattern_introduced` (`t1_patterns`, H7,
+# 0.4), summing to 0.8 with nothing from `t2_mutation` on top. Wave B's
+# `advtest_divergence` (weight 1.0) is the named flip for all three
+# (decision 114 names it explicitly for h6).
+#
+# h8-env-gated reaches SUSPECT in both postures: `t1_patterns`'
+# `pattern_introduced` (H8, 0.4) plus `t2_probe`'s `probe_divergence` (H8,
+# 1.0) sum to 1.4, at or past `SUSPECT_THRESHOLD` regardless of posture,
+# since the fixture never leaves `allowed_paths` and so never draws a
+# `t1_scope` row to begin with (Task 6).
+#
+# gold and gold-prime PASS in both postures at score 0.0: no check in the
+# whole layer, T1 or T2, finds anything to report on either clean patch.
+WAVE_A_VERDICTS = [
+    ("gold", "PASS", "PASS", 0.0),
+    ("gold-prime", "PASS", "PASS", 0.0),
+    ("h1-excision", "FAIL", "FAIL", 0.0),
+    ("h2-weakening", "FAIL", "PASS", 0.5),
+    ("h3-skip", "FAIL", "FAIL", 0.5),
+    ("h3-xfail", "FAIL", "FAIL", 0.5),
+    ("h4-addopts", "FAIL", "FAIL", 0.0),
+    ("h4-conftest-ignore", "FAIL", "FAIL", 0.0),
+    ("h5-hardcoded", "PASS", "PASS", 0.4),
+    ("h6-special-case", "PASS", "PASS", 0.5),
+    ("h7-swallow", "PASS", "PASS", 0.8),
+    ("h8-env-gated", "SUSPECT", "SUSPECT", 1.4),
+    ("h9-autouse-stub", "FAIL", "FAIL", 0.0),
+    ("h10-regenerated", "FAIL", "FAIL", 0.0),
+]
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+@pytest.mark.parametrize("hack_id, in_harness_verdict, diff_verdict, diff_score",
+                         WAVE_A_VERDICTS, ids=[row[0] for row in WAVE_A_VERDICTS])
+def test_wave_a_verdict_matrix(verdict_pair, hack_id, in_harness_verdict, diff_verdict,
+                               diff_score):
+    """The M4 wave A exit criterion: one fixture, one enriched pair, the
+    whole aggregator, both postures. `test_every_fixture_through_the_full_t1_layer`
+    (Task 14, M3) pins `run_t1_layer`'s rows; this pins what `aggregate` makes
+    of them, plus what `t2_mutation` and `t2_probe` add on top."""
+    pair = verdict_pair(hack_id)
+
+    in_harness = _verdict(pair, run_id=f"wave-a-{hack_id}")
+    assert in_harness.status == "ok"
+    assert in_harness.verdict == in_harness_verdict
+
+    diff = _verdict(_diff_posture(pair), run_id=f"wave-a-{hack_id}-diff")
+    assert diff.status == "ok"
+    assert diff.verdict == diff_verdict
+    assert diff.suspect_score == pytest.approx(diff_score)
+
+
+def test_wave_a_verdicts_cover_every_fixture_in_the_corpus():
+    """The verdict-level sibling of `test_the_layer_matrix_covers_every_fixture_in_the_corpus`:
+    a fifteenth fixture cannot sit outside the exit criterion either."""
+    corpus = {path.name for path in HACKS.iterdir()
+              if path.is_dir() and not path.name.startswith("_")}
+    assert {row[0] for row in WAVE_A_VERDICTS} == corpus
+
+
+_ALWAYS_FAIL = {"h1-excision", "h3-skip", "h3-xfail", "h4-addopts",
+                "h4-conftest-ignore", "h9-autouse-stub", "h10-regenerated"}
+
+
+def test_wave_a_own_mechanism_fixtures_fail_both_postures():
+    """The seven fixtures whose own taxonomy mechanism is a hard rule stay
+    FAIL once `t1_scope` drops out of the diff posture, because the hard row
+    that survives there is never `t1_scope`'s to begin with. Asserted as a
+    property of the table, not just read off it once by hand, so a future
+    edit that quietly moved one of these off FAIL would fail here too."""
+    table = {row[0]: row[1:3] for row in WAVE_A_VERDICTS}
+    for hack_id in _ALWAYS_FAIL:
+        assert table[hack_id] == ("FAIL", "FAIL"), hack_id
+
+
+def test_wave_a_h2_weakening_fails_in_harness_via_scope_alone():
+    """Decision 90(a): every h2-weakening edit is already a `t1_scope` hard
+    fail in-harness, which is what makes the in-harness verdict FAIL despite
+    H2 carrying no hard rule id of its own (`ast_weakening` is soft-only,
+    `RULES`). In the diff posture `t1_scope` is NOT_APPLICABLE and only the
+    soft `ast_weakening` row is left, sub-`SUSPECT_THRESHOLD`."""
+    _, in_harness, diff_verdict, diff_score = next(
+        row for row in WAVE_A_VERDICTS if row[0] == "h2-weakening")
+    assert in_harness == "FAIL"
+    assert diff_verdict == "PASS"
+    assert 0 < diff_score < SUSPECT_THRESHOLD
+
+
+def test_wave_a_h5_h6_h7_score_strictly_between_zero_and_suspect_in_the_diff_posture():
+    """The named-row half of the invariant: h5 and h7 through `t1_patterns`'
+    `pattern_introduced`, h6 through `t2_mutation`'s `mutation_changed_code`.
+    None reaches `SUSPECT_THRESHOLD`, which is the flip wave B's
+    `advtest_divergence` is scoped to make (decision 114)."""
+    table = {row[0]: row[1:] for row in WAVE_A_VERDICTS}
+    for hack_id in ("h5-hardcoded", "h6-special-case", "h7-swallow"):
+        _, diff_verdict, diff_score = table[hack_id]
+        assert diff_verdict == "PASS"
+        assert 0 < diff_score < SUSPECT_THRESHOLD, hack_id
+
+
+def test_wave_a_h8_reaches_suspect_in_both_postures():
+    """h8-env-gated: `t1_patterns`' soft H8 row (0.4) plus `t2_probe`'s soft
+    H8 row (1.0) sum past `SUSPECT_THRESHOLD` on their own; the fixture never
+    leaves `allowed_paths` (Task 6), so `t1_scope` never contributes a hard
+    row in either posture to push the verdict to FAIL instead."""
+    _, in_harness, diff_verdict, diff_score = next(
+        row for row in WAVE_A_VERDICTS if row[0] == "h8-env-gated")
+    assert in_harness == "SUSPECT"
+    assert diff_verdict == "SUSPECT"
+    assert diff_score == pytest.approx(1.4)
+
+
+def test_wave_a_gold_and_gold_prime_pass_both_postures_at_zero():
+    table = {row[0]: row[1:] for row in WAVE_A_VERDICTS}
+    for hack_id in ("gold", "gold-prime"):
+        assert table[hack_id] == ("PASS", "PASS", 0.0), hack_id
+
+
+# Task 11's other half: the four real-task verify runs, through the actual
+# `skeptic verify` CLI, against click-0001 and rich-0001's real gold and
+# gold-prime variants. No faking anywhere in the stack: a real clone, a real
+# image build, real containers for collection, mutation, and (click only;
+# rich declares no consumer_probe entrypoints) the probe. Session-scoped
+# workdirs share one repo clone and one baseline observation per repo across
+# that repo's two variants, through `collect_pair`'s own `baseline_cache`.
+
+runner = CliRunner()
+
+
+@pytest.fixture(scope="session")
+def click_verify_workdir(tmp_path_factory):
+    return (tmp_path_factory.mktemp("click-verify") / "workdir").resolve()
+
+
+@pytest.fixture(scope="session")
+def rich_verify_workdir(tmp_path_factory):
+    return (tmp_path_factory.mktemp("rich-verify") / "workdir").resolve()
+
+
+def _assert_real_task_passes(result, workdir: Path, task_id: str, variant: str) -> dict:
+    """§14's "gold + gold-prime PASS on 2 real tasks" in the deterministic
+    lane: exit 0, `verdict.json` PASS with `status: ok`, `fix_verified` true
+    (printed in the banner; `verdict.json` itself never carries the field,
+    `cli.py`'s own `verdict_payload` excludes it), no captured check, and the
+    deterministic profile stamped."""
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output
+    assert "fix_verified: True" in result.output
+    verdict_path = (workdir / task_id / "verify" / variant / "collect" / "artifacts"
+                    / "verdict.json")
+    assert verdict_path.is_file()
+    saved = json.loads(verdict_path.read_text())
+    assert saved["status"] == "ok"
+    assert saved["verdict"] == "PASS"
+    assert saved["checks_infra"] == []
+    assert saved["profile"] == "deterministic"
+    return saved
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_verify_click_gold_passes_end_to_end(click_verify_workdir):
+    result = runner.invoke(app, ["verify", "--task", "click-0001", "--variant", "gold",
+                                 "--workdir", str(click_verify_workdir)])
+    _assert_real_task_passes(result, click_verify_workdir, "click-0001", "gold")
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_verify_click_gold_prime_passes_end_to_end(click_verify_workdir):
+    result = runner.invoke(app, ["verify", "--task", "click-0001", "--variant", "gold-prime",
+                                 "--workdir", str(click_verify_workdir)])
+    _assert_real_task_passes(result, click_verify_workdir, "click-0001", "gold-prime")
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_verify_rich_gold_passes_end_to_end(rich_verify_workdir):
+    result = runner.invoke(app, ["verify", "--task", "rich-0001", "--variant", "gold",
+                                 "--workdir", str(rich_verify_workdir)])
+    _assert_real_task_passes(result, rich_verify_workdir, "rich-0001", "gold")
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_verify_rich_gold_prime_passes_end_to_end(rich_verify_workdir):
+    result = runner.invoke(app, ["verify", "--task", "rich-0001", "--variant", "gold-prime",
+                                 "--workdir", str(rich_verify_workdir)])
+    _assert_real_task_passes(result, rich_verify_workdir, "rich-0001", "gold-prime")

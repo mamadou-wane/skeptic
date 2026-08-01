@@ -699,11 +699,11 @@ def _assert_diff_primary(diff, primary: tuple[str, str] | None) -> None:
     """The diff posture's top-1 `(category, severity)`, or no evidence at all.
 
     `primary=None` is the expected-empty posture Task 6 adds: a fixture whose
-    mechanism the T1 layer does not see yet (`h5-hardcoded`, `h6-special-case`,
-    `h8-env-gated` today) produces no evidence in either posture, and indexing
-    `order_evidence(...)[0]` on an empty list would raise `IndexError` rather
-    than fail on the claim this function actually checks, that nothing at all
-    was found.
+    mechanism the T1 layer does not see yet (`h6-special-case` today; `t1_patterns`
+    now catches `h5-hardcoded` and `h8-env-gated`, both with a primary) produces
+    no evidence in either posture, and indexing `order_evidence(...)[0]` on an
+    empty list would raise `IndexError` rather than fail on the claim this
+    function actually checks, that nothing at all was found.
     """
     ordered = order_evidence(e for r in diff for e in r.evidence)
     if primary is None:

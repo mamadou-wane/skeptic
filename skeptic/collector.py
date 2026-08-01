@@ -665,6 +665,12 @@ def _observe_baseline(spec: TaskSpec, repo_dir: Path, image_tag: str,
     instead of under `workdir`, and a second call at the same key skips the
     container entirely, rehydrating the observation from the first call's
     artifacts through `read_variant`.
+
+    `baseline_cache` grows without eviction: every distinct `changed_files`
+    set against the same seed adds one more full tree-plus-artifacts entry
+    under it and nothing ever removes an old one. Deliberate (DECISIONS row
+    102): content-addressing makes an entry correct for as long as it exists,
+    and pruning it needs its own staleness argument the plan never asked for.
     """
     if baseline_cache is None:
         tree = workdir / "baseline"
@@ -859,6 +865,9 @@ def _mutation_script(
         selection = selections[m.mutant_id]
         key = _selection_key(selection)
         argv = _mutation_argv(test_cmd, selection)
+        # mdir lands unquoted in the redirections below (>, 2>) further down
+        # this loop; that is safe only because `mutant_id` is always a 12-hex
+        # sha256 digest (`mutation._mutant_id`), never arbitrary text.
         mdir = f"{ARTIFACTS}/{_MUT_MUTANTS}/{m.mutant_id}"
         source = shlex.quote(f"{mdir}/{Path(m.path).name}")
         workspace_path = shlex.quote(f"/workspace/{m.path}")

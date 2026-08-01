@@ -342,7 +342,7 @@ def _verify_cache_key(spec: TaskSpec, variant: VariantSpec) -> str:
     (`allowed_paths` shapes `t1_scope`), `verification` (check configs,
     budgets, seeds), and `verifier_revision()`.
 
-    This is the VERIFY half of the two-key design (decision 5); the other
+    This is the VERIFY half of the two-key design (plan decision 5); the other
     half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
     `COLLECTOR_VERSION`. The two age differently on purpose: a detector edit
     moves `verifier_revision()` and re-verdicts every cached pair with no

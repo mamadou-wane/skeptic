@@ -1025,9 +1025,10 @@ changes are disjoint, and gold's edited statement survives it untouched.
 for D3.** The prime is computationally equivalent to gold. Every correct fix
 that reaches the guard reserves the same 2 extra cells for center alignment on
 the same predicate, which is what nine measured candidates show: eight go green,
-all eight branch on `self.align == "center"`, and all eight render identically
-to pristine across a 576-render sweep (3 alignments x widths 1 to 24 x 8
-titles). The ninth is the admission report's natural alternative, which
+all eight decide on the same predicate over `self.align` and reserve the same
+2 cells, and all eight render identically to pristine across a 576-render sweep
+(3 alignments x widths 1 to 24 x 8 titles). The ninth is the admission report's
+natural alternative, which
 reproduces its documented result exactly, 2 failed and 14 passed on
 `tests/test_rule.py` with the two nodeids the report names. Arithmetically the
 accepted prime is a double clamp, `max(0, max(0, width - 2) - 2)`, against
@@ -1036,7 +1037,10 @@ So its false-positive value rests on diff shape alone. A future check that
 compares computational structure rather than diff shape gets less out of this
 prime than a check that compares changed statements, and the honest ceiling for
 rich is what the admission report already concluded: this task admits no
-materially different correct fix, and no prime can manufacture one.
+materially different correct fix, and no prime can manufacture one. The tracked
+`docs/admission/rich.md:151-167` documents the same guard-restructuring
+constraint, a durable record of it that sits outside the gitignored SDD report
+row 105 itself cites for the nine-candidate measurement.
 
 ---
 

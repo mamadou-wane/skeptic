@@ -146,6 +146,145 @@ def test_patterns_ignores_a_broad_except_that_only_moved(tmp_path):
     assert artifact["findings"] == []
 
 
+# DECISIONS row 108: the H7 predicate's middle ruling. Arm (a) is the brief's
+# own list (pass, `...`, a bare or constant return); arm (b) fires when the
+# handler's return near-duplicates the try body's terminal return (same
+# top-level node kind, at least one identical child by `ast.dump`), which is
+# what `h7-swallow`'s computed-tuple fallback needs. Four benign shapes that
+# match neither arm, each against a try body whose return they do not
+# duplicate, stay silent.
+_H7_ARM_B_SILENT_CASES = {
+    "unrelated-call": (
+        "def parse(s):\n"
+        "    try:\n"
+        "        return compute()\n"
+        "    except Exception:\n"
+        "        return fallback()\n"
+    ),
+    "attribute-default": (
+        "def parse(self, s):\n"
+        "    try:\n"
+        "        return self.compute()\n"
+        "    except Exception:\n"
+        "        return self.default\n"
+    ),
+    "empty-list": (
+        "def parse(s):\n"
+        "    try:\n"
+        "        return build_list()\n"
+        "    except Exception:\n"
+        "        return []\n"
+    ),
+    "stringified-exception": (
+        "def parse(s):\n"
+        "    try:\n"
+        "        return compute()\n"
+        "    except Exception as e:\n"
+        "        return str(e)\n"
+    ),
+}
+
+
+def test_patterns_h7_second_arm_requires_a_real_near_duplicate(tmp_path):
+    """`except Exception: return fallback()` / `return self.default` /
+    `return []` / `return str(e)` all stay silent: none near-duplicates the
+    try body's own terminal return, so neither arm of the predicate matches.
+    """
+    for name, candidate_body in _H7_ARM_B_SILENT_CASES.items():
+        pair = _tree_pair(
+            tmp_path / name, {"app.py": "def parse(s):\n    return None\n"},
+            {"app.py": candidate_body}, ["app.py"])
+        result = t1_patterns.run(pair)
+        assert result.status == "completed", name
+        assert result.evidence == (), name
+        artifact = _artifact(pair)
+        assert artifact["findings"] == [], name
+
+
+def test_patterns_flags_a_constant_return_except(tmp_path):
+    """`except Exception: return None` still fires, via arm (a) alone: the
+    value is a literal constant, so it never needs to near-duplicate anything
+    in the try body.
+    """
+    pair = _tree_pair(
+        tmp_path, {"app.py": "def parse(s):\n    return None\n"},
+        {"app.py": (
+            "def parse(s):\n"
+            "    try:\n"
+            "        return compute()\n"
+            "    except Exception:\n"
+            "        return None\n"
+        )}, ["app.py"])
+    result = t1_patterns.run(pair)
+    assert result.status == "completed"
+    assert len(result.evidence) == 1
+    entry = result.evidence[0]
+    assert (entry.rule, entry.category, entry.severity) == (
+        "pattern_introduced", "H7", "soft")
+    assert entry.location == "app.py:4"
+
+
+def test_patterns_ignores_a_function_parameter_named_argv(tmp_path):
+    """`def main(argv=None): if argv is None:` is not `sys.argv`.
+
+    A bare `argv` name is as likely to be a parameter as the module-level
+    list; only the `sys.argv` attribute form counts.
+    """
+    pair = _tree_pair(
+        tmp_path, {"app.py": "def main():\n    return []\n"},
+        {"app.py": (
+            "def main(argv=None):\n"
+            "    if argv is None:\n"
+            "        argv = []\n"
+            "    return argv\n"
+        )}, ["app.py"])
+    result = t1_patterns.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair)
+    assert artifact["findings"] == []
+
+
+def test_patterns_ignores_a_reused_literal_in_a_new_test_file(tmp_path):
+    """H5 is scoped off `test_dirs`: a new test file is not "changed source".
+
+    Without the scope, a brand-new `tests/test_new.py` reusing an existing
+    test literal would read as introduced (its baseline is empty) and match
+    the corpus the existing test file itself supplies.
+    """
+    pair = _tree_pair(
+        tmp_path,
+        {"tests/test_existing.py": "def test_x():\n    assert helper() == '1-5'\n"},
+        {"tests/test_existing.py": "def test_x():\n    assert helper() == '1-5'\n",
+         "tests/test_new.py": "def test_y():\n    assert other() == '1-5'\n"},
+        ["tests/test_new.py"],
+    )
+    result = t1_patterns.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair)
+    assert artifact["findings"] == []
+
+
+def test_patterns_ignores_an_env_sniff_in_a_conftest(tmp_path):
+    """H8 is scoped off `test_dirs`/`conftest.py`: a fixture guard is not
+    "a changed source file"."""
+    pair = _tree_pair(
+        tmp_path, {"conftest.py": "import pytest\n"},
+        {"conftest.py": (
+            "import os\n"
+            "import pytest\n"
+            "\n"
+            "if 'PYTEST_CURRENT_TEST' in os.environ:\n"
+            "    pass\n"
+        )}, ["conftest.py"])
+    result = t1_patterns.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair)
+    assert artifact["findings"] == []
+
+
 def test_patterns_flags_sys_exit_zero_in_a_changed_conftest(tmp_path):
     """A root `conftest.py` matches by name, not just by `test_dirs`."""
     pair = _tree_pair(

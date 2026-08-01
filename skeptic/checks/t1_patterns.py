@@ -62,6 +62,18 @@ precise for the same reason `t1_ast`'s assertion pairing is.
   container never qualifies, for the same reason. Scoped the same way env
   sniffing is: the brief reads this idiom over "changed source code", and a
   new test file that happens to reuse an existing test literal is not that.
+  A surviving literal is also skipped, before the corpus test, when its
+  `repr` is a member of the same changed file's own baseline literal
+  population (`_walk_literals(base_mod)`): a value the file already used is
+  that file's ambient vocabulary, not something the patch introduced to
+  mimic a test. rich's `"center"` is the measured case (row 117's addendum,
+  closed by wave B row 125): baseline `rich/rule.py` already used `"center"`
+  six times, gold's one-line fix added a seventh, the multiset diff could
+  not cancel the surviving occurrence against only two prior bare-literal
+  uses, and it matched rich's own test corpus. The guard is set membership
+  over the whole file, per file, never repo-wide: a literal ambient in an
+  unrelated file the patch never touched carries no such license (DECISIONS
+  row 125).
 
 **The literal corpus** is bounded and built at most once per `run`: every
 `.py` file under `spec.environment.test_dirs` in the baseline tree, walked for
@@ -101,7 +113,9 @@ scope. Literal overlap is the sharpest: a patch that hardcodes a value that
 happens to appear in a docstring example, a golden fixture, or another
 assertion fires it, with no way to tell a coincidence from a hack; bounded by
 requiring the literal be newly introduced in that file, by the floor and cap,
-and by soft severity.
+by soft severity, and by the file-local ambient guard (row 125): a literal
+the changed file's own baseline already used is not scored as evidence of
+mimicking a test.
 """
 from __future__ import annotations
 
@@ -494,7 +508,10 @@ def run(pair: ObservationPair) -> CheckResult:
                     f"sys.exit(0) introduced in test infrastructure at {rel}"))
             continue
 
+        ambient = {repr(value) for _, value in _walk_literals(base_mod)}
         for node, value in _introduced_literals(base_mod, cand):
+            if repr(value) in ambient:
+                continue
             if repr(value) not in corpus:
                 continue
             literal_findings.append(Finding(

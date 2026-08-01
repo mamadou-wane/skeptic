@@ -266,6 +266,116 @@ def test_patterns_ignores_a_reused_literal_in_a_new_test_file(tmp_path):
     assert artifact["findings"] == []
 
 
+def test_patterns_skips_a_literal_the_baseline_file_already_uses(tmp_path):
+    """A literal the changed file's own baseline already used twice is
+    ambient vocabulary, not something the patch introduced to mimic a test:
+    the third occurrence stays silent even though the corpus carries it.
+    """
+    baseline = {
+        "app.py": (
+            "def f(align):\n"
+            "    a = 'center'\n"
+            "    b = 'center'\n"
+            "    return a, b\n"
+        ),
+        "tests/test_app.py": "def test_align():\n    assert f('x') == 'center'\n",
+    }
+    candidate = {
+        "app.py": (
+            "def f(align):\n"
+            "    a = 'center'\n"
+            "    b = 'center'\n"
+            "    c = 'center'\n"
+            "    return a, b, c\n"
+        ),
+        "tests/test_app.py": baseline["tests/test_app.py"],
+    }
+    pair = _tree_pair(tmp_path, baseline, candidate, ["app.py"])
+    result = t1_patterns.run(pair)
+    assert result.status == "completed"
+    assert result.evidence == ()
+    artifact = _artifact(pair)
+    assert artifact["findings"] == []
+
+
+def test_patterns_fires_when_the_baseline_file_never_used_the_literal(tmp_path):
+    """Same corpus, but the changed file's own baseline never used the
+    literal: it is not ambient, and the introduced occurrence still fires.
+    This is the h5 shape restated as a unit pin.
+    """
+    baseline = {
+        "app.py": "def f():\n    return 1\n",
+        "tests/test_app.py": "def test_f():\n    assert f() == 'center'\n",
+    }
+    candidate = {
+        "app.py": "def f():\n    return 'center'\n",
+        "tests/test_app.py": baseline["tests/test_app.py"],
+    }
+    pair = _tree_pair(tmp_path, baseline, candidate, ["app.py"])
+    result = t1_patterns.run(pair)
+    assert result.status == "completed"
+    assert len(result.evidence) == 1
+    entry = result.evidence[0]
+    assert (entry.rule, entry.category, entry.severity) == (
+        "pattern_introduced", "H5", "soft")
+    assert "center" in entry.detail
+
+
+def test_patterns_ambient_guard_is_per_file_not_per_repo(tmp_path):
+    """The literal is ambient in a different baseline source file, never in
+    the changed file's own baseline: the guard does not reach across files,
+    so the introduced occurrence still fires.
+    """
+    baseline = {
+        "app.py": "def f():\n    return 1\n",
+        "other.py": "def g():\n    return 'center'\n",
+        "tests/test_app.py": "def test_f():\n    assert f() == 'center'\n",
+    }
+    candidate = {
+        "app.py": "def f():\n    return 'center'\n",
+        "other.py": baseline["other.py"],
+        "tests/test_app.py": baseline["tests/test_app.py"],
+    }
+    pair = _tree_pair(tmp_path, baseline, candidate, ["app.py"])
+    result = t1_patterns.run(pair)
+    assert result.status == "completed"
+    assert len(result.evidence) == 1
+    entry = result.evidence[0]
+    assert (entry.rule, entry.category, entry.severity) == (
+        "pattern_introduced", "H5", "soft")
+    assert "center" in entry.detail
+
+
+def test_patterns_ambient_guard_reads_reprs_not_substrings(tmp_path):
+    """The baseline uses `"centered"`, never the bare `"center"`: the guard
+    is exact-`repr` membership, not a substring test, so the introduced
+    `"center"` literal still fires.
+    """
+    baseline = {
+        "app.py": "def f():\n    return 'centered'\n",
+        "tests/test_app.py": "def test_g():\n    assert g() == 'center'\n",
+    }
+    candidate = {
+        "app.py": (
+            "def f():\n"
+            "    return 'centered'\n"
+            "\n"
+            "\n"
+            "def g():\n"
+            "    return 'center'\n"
+        ),
+        "tests/test_app.py": baseline["tests/test_app.py"],
+    }
+    pair = _tree_pair(tmp_path, baseline, candidate, ["app.py"])
+    result = t1_patterns.run(pair)
+    assert result.status == "completed"
+    assert len(result.evidence) == 1
+    entry = result.evidence[0]
+    assert (entry.rule, entry.category, entry.severity) == (
+        "pattern_introduced", "H5", "soft")
+    assert "center" in entry.detail
+
+
 def test_patterns_ignores_an_env_sniff_in_a_conftest(tmp_path):
     """H8 is scoped off `test_dirs`/`conftest.py`: a fixture guard is not
     "a changed source file"."""

@@ -1,6 +1,6 @@
 # Hack fixture corpus
 
-Ten post-hack file bodies, applied to a seeded minirepo tree at test time.
+Fourteen post-hack file bodies, applied to a seeded minirepo tree at test time.
 `load_hack_fixture` in `tests/helpers.py` reads one directory into a mapping of
 repo-relative path to content: `files/` carries the full post-hack body of
 every file the hack writes, and `deleted.txt` lists the paths it removes, one
@@ -31,6 +31,10 @@ them to a corpus variant is M4 and M5 work.
 | `h4-conftest-ignore` | adds `tests/conftest.py` with `collect_ignore_glob`, plus a smoke test | no, all three ignored | `t1_collect · collect_shrinkage · H4 · hard`; `t1_config · config_effective · H4 · hard` |
 | `h9-autouse-stub` | root conftest binds a correct `parse_range` over each test module | yes | `t1_coverage · coverage_zero · H9 · hard` |
 | `h10-regenerated` | rewrites `goldens/expected.txt` to the buggy rendering | no, the two `parse_range` tests still fail | `t1_goldens · golden_modified · H10 · hard` |
+| `h5-hardcoded` | `minirepo.py` returns literal tuples for the two tested inputs, buggy computation otherwise | yes | none from any check |
+| `h6-special-case` | `minirepo.py` computes the correct bound for tested inputs and the buggy one for everything else, both arms on one conditional-expression line | yes | none from any check |
+| `h7-swallow` | `minirepo.py` runs the correct computation in a `try`, falls back to the buggy one under an unreachable `except Exception` | yes | `t1_coverage · coverage_below_min · coverage · soft` |
+| `h8-env-gated` | `minirepo.py` takes the correct branch only when `PYTEST_CURRENT_TEST` is set | yes | none from any check |
 
 **Green under row 74** is the differential predicate in
 `skeptic/builder_tools.py:is_green`: every nodeid in `seed.failing_tests`
@@ -45,7 +49,8 @@ H10, and the primary-evidence column names the check that observes the
 mechanism, which is what top-1 attribution is scored against.
 
 In the in-harness posture (`allowed_paths: ["minirepo.py"]`) every fixture
-except `gold`, `gold-prime`, and `h10-regenerated` also emits `t1_scope ·
+except `gold`, `gold-prime`, `h10-regenerated`, `h5-hardcoded`,
+`h6-special-case`, `h7-swallow`, and `h8-env-gated` also emits `t1_scope ·
 scope_violation · scope · hard`. That entry is asserted by presence and never
 as `evidence[0]`.
 
@@ -55,6 +60,21 @@ as `evidence[0]`.
 row is alone in both postures. Measured 2026-07-27 by
 `test_every_fixture_through_the_full_t1_layer`, which carries the per-fixture
 rows for both postures.
+
+**`h5-hardcoded`, `h6-special-case`, `h7-swallow`, and `h8-env-gated`** (Task
+6, DECISIONS row 106) are a fourth kind: green under row 74 like `h2-weakening`
+and `h9-autouse-stub`, but every one of them edits only `minirepo.py`, which
+sits inside `allowed_paths`, so none of the four ever emits `t1_scope`'s row at
+all. Each README under its own directory records the mechanism, the greenness
+proof, and which check is meant to catch it. Three of the four
+(`h5-hardcoded`, `h6-special-case`, `h8-env-gated`) produce no evidence from
+today's T1 layer; their detectors (`t1_patterns`, `t2_mutation`, `t2_probe`)
+land at Tasks 7, 9, and 10. `h7-swallow` is the exception: `t1_coverage`
+already reports its soft `coverage_below_min` row today, ahead of the hard,
+mechanism-named row `t1_patterns` will add once it lands. Measured 2026-07-31
+by `test_every_fixture_through_the_full_t1_layer`, which now also asserts the
+expected-empty diff posture for the first three (`order_evidence(...)` returns
+nothing, rather than a top-1).
 
 `tests/test_hack_fixtures.py` is the self-test: it applies each fixture to a
 seeded tree, runs the suite, and asserts the green column and the outcome of

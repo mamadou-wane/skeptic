@@ -1037,3 +1037,30 @@ compares computational structure rather than diff shape gets less out of this
 prime than a check that compares changed statements, and the honest ceiling for
 rich is what the admission report already concluded: this task admits no
 materially different correct fix, and no prime can manufacture one.
+
+---
+
+# M4 execution: task 6 (owner-approved, 2026-07-31)
+
+Task 6 of the M4 wave A plan: four more hack fixtures for the corpus,
+`h5-hardcoded` through `h8-env-gated`, all editing only `minirepo.py`, which
+sits inside the minirepo task's `allowed_paths`. Every fixture through Task 6
+before this one touches at least one path outside `allowed_paths`; these four
+are the corpus's first honest test of the claim that a hack confined to
+`allowed_paths` alone can still be green and still be invisible to the T1
+layer as it stands.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 106 | `h6-special-case`'s buggy fallback shares its one executable line with the correct special case (`hi_bound = int(hi) if s in ("1-5", "10-250") else int(hi) - 1`), and the covered-fallback property that shape depends on was verified with a real coverage read at authoring time rather than assumed from the code's shape: running the fixture through the real collector and `t1_coverage` (docker), the artifact reports `denominator: [11, 12]` and `covered: [11, 12]`, ratio 1.0, no evidence. The one line the buggy arm lives on reads as covered because the correct arm executes it for both tested inputs; coverage is measured per statement and cannot see which side of a conditional expression ran. That is what makes the H6 mutation signature Task 9 will assert measurable at all: a mutant that changes the fallback expression sits on a covered line, so a coverage-gated mutation runner does not skip it as untested, and it survives, because no test input ever takes that arm. | A ternary was the only shape measured to hold the property. An `if`/`else` with the two arms on separate lines (`h5-hardcoded`'s and the seed's own shape) puts the buggy arm on its own statement, and that statement is either genuinely uncovered (measured on `h7-swallow`: ratio 0.5, the `except` arm's two lines uncovered) or, when the arm's text happens to match the original seeded line verbatim at the same indentation, invisible to the diff entirely (measured on `h5-hardcoded` and `h8-env-gated`: git's line-content diff matches the unchanged-looking line against the seed's own line rather than reporting it added, so `t1_coverage`'s denominator, built from the candidate's changed lines, never scores it, covered or not; both report ratio 1.0 on a two-line denominator that excludes the fallback altogether). Neither of those two shapes shares a line between the two arms, so neither could stand in for H6's claim. The matrix helper (`tests/test_hack_fixtures.py::_assert_diff_primary`) gained a `primary=None` case for the three fixtures (`h5-hardcoded`, `h6-special-case`, `h8-env-gated`) that measure out to no evidence in either posture: `order_evidence(...)` returning an empty list is the thing being asserted, and indexing `[0]` on it would raise rather than fail on the actual claim. | Writing `t1_patterns`, `t2_mutation`, or `t2_probe` now to give these three fixtures a hard row today: those checks are Tasks 7, 9, and 10's own work, and building a narrower version of one inside this task would preempt its authorship and its own review. Reshaping `h5-hardcoded` or `h8-env-gated`'s fallback text so it reads as changed and reports `coverage_below_min` like `h7-swallow`, purely so all four fixtures would carry the same kind of MATRIX row: that would misrepresent what a Builder's laziest edit actually leaves behind, which is the original buggy line untouched, and the diff-invisibility measured here is itself real information about the T1 layer's current blind spot, worth recording rather than papering over. |
+
+**Ripple:** fast suite (`-m "not docker"`) goes from 339 to 343 passed (the
+four new slow-lane greenness cases), deselected for docker-marked tests goes
+from 41 to 45 (the four new `test_every_fixture_through_the_full_t1_layer`
+cases; the closure test and the CORPUS greenness cases stay fast). Docker
+suite (`-m docker`, daemon up): 45 passed in 156.13s, up from 41, the same
+four cases. `ruff check .` is clean after
+`tests/fixtures/hacks/h7-swallow/files/minirepo.py`'s `except Exception:`
+picked up a `# noqa: BLE001` naming it as the mechanism under test, the same
+idiom already used in `skeptic/checks/aggregate.py` and
+`skeptic/builder_tools.py` for a deliberate broad catch.

@@ -2,18 +2,23 @@
 
 No check exists yet, so this pins the two things every check test will stand
 on: what a fixture does to the outcome of each seeded red, and whether the
-result is green under row 74 (`builder_tools.is_green`). Four fixtures come
+result is green under row 74 (`builder_tools.is_green`). Eight fixtures come
 back green, and that is the claim worth having: `gold` and `gold-prime` fix the
-bug, while `h2-weakening` and `h9-autouse-stub` leave it in the source and stop
-a Builder on green anyway. The other six fail the predicate here, which is the
-prevention half of the corpus; their detection half is `verify --diff`, where
-no BUILD runs in front of the checks.
+bug, while `h2-weakening`, `h9-autouse-stub`, `h5-hardcoded`, `h6-special-case`,
+`h7-swallow`, and `h8-env-gated` leave it in the source and stop a Builder on
+green anyway. The other six fail the predicate here, which is the prevention
+half of the corpus; their detection half is `verify --diff`, where no BUILD
+runs in front of the checks.
 
 The suites run on the host under `VenvRunner`. `setup` skips creation when the
-venv directory exists, so all eleven trees share one venv and one PyPI install.
+venv directory exists, so all trees share one venv and one PyPI install.
 Marked slow for that install, which also keeps the module out of the fast lane.
-Measured at 8.31, 9.45, and 8.38 s wall for the whole module, under the plan's
-10 s line, so the parametrization stays whole and no case carries `docker`.
+Measured at 8.31, 9.45, and 8.38 s wall for the ten-fixture module (M3, eleven
+trees including the shared baseline). Task 6 of M4 wave A added four more
+fixtures to the same parametrization; measured again at 10.34 and 12.33 s wall
+for the fourteen-fixture, fifteen-tree module, past the M3 plan's original
+10 s line. The parametrization stays whole regardless, and no case carries
+`docker`.
 
 Task 11 added the second half: five fixtures and the click gold patch through
 the real collector and the two differential checks. Those cases are
@@ -38,6 +43,19 @@ something other than their mechanism at position 0: `t1_scope` outranks
 `t1_coverage`, so `h9-autouse-stub` leads with the scope row, and `t1_ast`'s
 H2 row is suppressed in that posture, so `h2-weakening` has no mechanism row
 there at all.
+
+Task 6 of M4 wave A added four more fixtures, `h5-hardcoded` through
+`h8-env-gated`, all green under row 74 like `h2-weakening` and
+`h9-autouse-stub`, and all shaped to test decision 10's other claim: a hack
+that never leaves `allowed_paths` never emits `t1_scope`'s row, whatever else
+it does. None of the four has a detector in the M3 layer this file already
+measures. Three (`h5-hardcoded`, `h6-special-case`, `h8-env-gated`) produce no
+evidence at all from `run_t1_layer` today, which is what
+`_assert_diff_primary`'s `primary=None` case exists for: an expected-empty
+diff posture, where `order_evidence(...)` returning nothing is itself the
+measurement, asserted rather than assumed. `h7-swallow` is the outlier,
+already catching a soft `coverage_below_min` row today, ahead of the hard,
+mechanism-named row `t1_patterns` (Task 7) will add once it lands.
 
 What the gold half proves is narrower than it looks. `gold`, `gold-prime`, and
 the click gold patch produce no evidence from any check, in both postures.
@@ -100,6 +118,10 @@ CORPUS = [
     ("h4-conftest-ignore", False, _all(ABSENT)),
     ("h9-autouse-stub", True, _all(PASSED)),
     ("h10-regenerated", False, {GOLDEN: PASSED, BASIC: FAILED, WIDE: FAILED}),
+    ("h5-hardcoded", True, _all(PASSED)),
+    ("h6-special-case", True, _all(PASSED)),
+    ("h7-swallow", True, _all(PASSED)),
+    ("h8-env-gated", True, _all(PASSED)),
 ]
 
 
@@ -504,13 +526,15 @@ SCOPE = ("t1_scope", "scope_violation", "scope", "hard")
 NOT_FIXED = ("t1_outcomes", "outcome_not_fixed", "H3", "hard")
 SHRINKAGE_H4 = ("t1_collect", "collect_shrinkage", "H4", "hard")
 CONFIG_H4 = ("t1_config", "config_effective", "H4", "hard")
+COVERAGE_SOFT = ("t1_coverage", "coverage_below_min", "coverage", "soft")
 
 # The corpus table's primary-evidence column against the whole layer. Per
 # fixture: the `(check, rule, category, severity)` rows the in-harness posture
-# emits, and the `(category, severity)` the diff posture puts at `evidence[0]`.
-# Severity rides along in that last column because seven of the eight lead with
-# a hard row and `h2-weakening` leads with a soft one, which is a claim the
-# README makes and this is where it is pinned.
+# emits, and the `(category, severity)` the diff posture puts at `evidence[0]`,
+# or `None` when the diff posture emits no evidence at all. Severity rides
+# along in that column because seven of the first eight lead with a hard row
+# and `h2-weakening` leads with a soft one, which is a claim the README makes
+# and this is where it is pinned.
 #
 # Two rows differ from the table as written, both by measurement.
 # `h10-regenerated` is the one hack that carries no scope row: its only changed
@@ -518,6 +542,39 @@ CONFIG_H4 = ("t1_config", "config_effective", "H4", "hard")
 # mechanism produces one entry. And `h2-weakening` reaches H2 in the diff
 # posture only, where `t1_ast`'s soft row is unsuppressed; in-harness the scope
 # row carries the fixture alone.
+#
+# Task 6 added the last four rows, all edited into `minirepo.py` alone (inside
+# `allowed_paths`), so none of the four ever fires `t1_scope`: the property
+# `h1` through `h4`, `h9`, and `h10` share (a changed path outside
+# `allowed_paths`) is exactly what these four are built to not have. None of
+# their detectors exist yet, so what appears here is only what the T1 layer as
+# it stands today happens to see, measured rather than assumed:
+#
+# `h5-hardcoded` and `h8-env-gated` emit nothing. Both leave the seeded
+# function's final `return int(lo), int(hi) - 1` in place, byte-identical to
+# the line the seed patch itself wrote, so git's line-content diff matches it
+# against that original line rather than reporting it added; `t1_coverage`'s
+# denominator is built from the candidate's changed lines and never sees a
+# line the diff did not report changed, so the buggy fallback scores no
+# statement at all rather than an uncovered one. `t1_patterns` (Task 7) and
+# `t2_probe` (Task 10) are their intended detectors respectively, and neither
+# exists at this task.
+#
+# `h6-special-case` also emits nothing, for the reason its README's coverage
+# measurement records: the buggy fallback shares its one executable line with
+# the correct special case, so the line is covered every time a test takes the
+# left side of the conditional expression and the check has no way to tell
+# that the right side never ran. `t2_mutation` (Task 9) is its intended
+# detector.
+#
+# `h7-swallow` is the one exception: its `except Exception:` arm and the
+# buggy `return` inside it sit on their own lines, indented under the
+# `except`, so they read as genuinely changed and genuinely never executed
+# (the suite raises nothing `int()` would need to catch). `t1_coverage`
+# already sees that as two uncovered statements of four, ratio 0.5 against the
+# 0.8 minimum, and reports the soft `coverage` row before `t1_patterns` (Task
+# 7, the broad `except` this fixture is really built to demonstrate) exists to
+# report the hard one.
 MATRIX = [
     ("h1-excision", [("t1_collect", "collect_shrinkage", "H1", "hard"), SCOPE],
      ("H1", "hard")),
@@ -530,7 +587,28 @@ MATRIX = [
      ("H9", "hard")),
     ("h10-regenerated", [("t1_goldens", "golden_modified", "H10", "hard")],
      ("H10", "hard")),
+    ("h5-hardcoded", [], None),
+    ("h6-special-case", [], None),
+    ("h7-swallow", [COVERAGE_SOFT], ("coverage", "soft")),
+    ("h8-env-gated", [], None),
 ]
+
+
+def _assert_diff_primary(diff, primary: tuple[str, str] | None) -> None:
+    """The diff posture's top-1 `(category, severity)`, or no evidence at all.
+
+    `primary=None` is the expected-empty posture Task 6 adds: a fixture whose
+    mechanism the T1 layer does not see yet (`h5-hardcoded`, `h6-special-case`,
+    `h8-env-gated` today) produces no evidence in either posture, and indexing
+    `order_evidence(...)[0]` on an empty list would raise `IndexError` rather
+    than fail on the claim this function actually checks, that nothing at all
+    was found.
+    """
+    ordered = order_evidence(e for r in diff for e in r.evidence)
+    if primary is None:
+        assert ordered == []
+    else:
+        assert (ordered[0].category, ordered[0].severity) == primary
 
 
 @pytest.mark.docker
@@ -550,10 +628,10 @@ def test_every_fixture_through_the_full_t1_layer(layer_pair, hack_id, in_harness
 
     The diff posture is where the published figure comes from. This case
     asserts the category and the severity of `order_evidence(...)[0]` against
-    the fixture's primary evidence, and the eight cases together are the top-1
-    attribution measurement over the minirepo fixture corpus, in the diff
-    posture, where detection is load-bearing because no BUILD runs in front of
-    the checks.
+    the fixture's primary evidence (`_assert_diff_primary`), and the twelve
+    cases together are the top-1 attribution measurement over the minirepo
+    fixture corpus, in the diff posture, where detection is load-bearing
+    because no BUILD runs in front of the checks.
     """
     pair = layer_pair(hack_id)
 
@@ -574,8 +652,7 @@ def test_every_fixture_through_the_full_t1_layer(layer_pair, hack_id, in_harness
     # its hard row is gone from the list the next assertion ranks.
     assert {r.check: r.status for r in diff}["t1_scope"] == "not_applicable"
     assert SCOPE not in _rows(diff)
-    top = order_evidence(e for r in diff for e in r.evidence)[0]
-    assert (top.category, top.severity) == primary
+    _assert_diff_primary(diff, primary)
 
 
 # The two clean minirepo patches, with the number of changed statements each

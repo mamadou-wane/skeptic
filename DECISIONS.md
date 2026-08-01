@@ -1140,3 +1140,25 @@ h5/h7/h8 MATRIX rows are unchanged (h7 fires through arm (b), h5 and h8 still
 fire on `minirepo.py`, which is source, not test infrastructure). Full docker
 suite (`-m docker`, daemon up): still 45 passed, 153.92s. `ruff check .` is
 clean.
+
+---
+
+# M4 execution: task 8 (owner-approved, 2026-07-31)
+
+Task 8 of the M4 wave A plan: `skeptic/mutation.py`, the pure module that
+enumerates mutants over the changed functions (and, in `patch_plus_callers`
+scope, their approximate callers) and samples a budgeted subset of them
+deterministically. Nothing here executes a mutant; Task 9 runs what this
+task produces.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 109 | Three narrow readings, one module. (a) **The operator set has six entries; the engineering plan's own list names seven.** `off_by_one` folds the engineering plan's separate "constant tweak" entry into itself, since both name "integer constant n -> n + 1"; `off_by_one` also reaches through a leading unary minus with no special case, because Python's own parser never folds a sign into a `Constant` node (`-1` parses as `UnaryOp(USub(), Constant(1))`), so the operator increments the constant's own stored value regardless of a `USub` wrapping it (`-1` becomes `-2`). `arithmetic_swap` does not touch `**`: the operator names two swapped pairs (`+ <-> -`, `* <-> //`), `Pow` has no partner in either, and inventing one would be a seventh transformation nobody asked for. (b) **The caller scan is name-based**, matching a `Call` whose callee is `ast.Name` or `ast.Attribute` against a changed function's own name, with no import resolution: a same-name method on an unrelated class over-includes, an aliased import under-includes, and both are bounded by the caller row's 0.25 weight (decision 4's sibling); `test_dirs`/`conftest.py` are excluded from the caller scan for the same reason they are excluded from changed spans, even though the brief only restates the cut for the latter. (c) **Sampling's stratum key substitutes `line` for "enclosing function".** `Mutant`'s shape, fixed by the brief, carries no function-identity field, and `sample_mutants` receives a bare `Sequence[Mutant]` with no spans and no tree, so it cannot look up which function a `line` sits inside after generation. The stratum key is `(0 if changed else 1, path, line, operator)`: finer-grained than true function-level grouping when one function is mutated at several lines, but every pinned sampling property (seed-determinism, seed-sensitivity, the budget cap, changed-before-caller ordering) holds under it exactly. | (a) An `off_by_one -> off_by_one` plus `constant_tweak` split would double-count one mutation kind as two rule ids under the frozen weight table, and Python's own parsing of a signed literal makes the "reach through the minus" behavior free rather than a deliberate widening. `arithmetic_swap` reaching `Pow` has no textual basis in the brief and no natural partner to swap it with. (b) Import-graph precision for the caller scan was already cut at the plan's v2 gate (decision 4's sibling); re-opening it here would be scope creep into Task 9's execution budget. (c) Threading true function identity through would need either a new `Mutant` field (out of scope: the brief's shape is the contract Task 9 codes against next) or a second return channel from `generate_mutants` that `sample_mutants`'s fixed two-argument signature has no room for. | Giving `off_by_one` a signed-literal special case that decrements a negative constant's magnitude toward zero instead of incrementing its stored value: the brief states no direction for the negative case, and the chosen reading needs no special-casing at all, which is the narrower of the two. Adding a `Pow` entry to `arithmetic_swap`'s flip table paired with `*` or `Mult`: no basis in the operator's own two-pairs name. Widening `Mutant` with a function-name field to make sampling's true intent literal: rejected pending Task 9's own review gate, since the shape here is what that task's brief already cites verbatim. |
+
+**Ripple:** fast suite (`-m "not docker"`) goes from 359 to 378 passed (19
+new `test_mutation.py` cases: the six-operator parametrization, the two
+span-scoping tests, the three caller-scan tests, the four sampling tests,
+the invalid-mutant test, the late-line test, and two extra narrow-reading
+pins for the off-by-one/unary-minus and arithmetic-swap/power calls above).
+No docker-marked test added (Task 8 needs no daemon), so the docker-deselected
+count is unchanged from Task 7 at 45. `ruff check .` is clean.

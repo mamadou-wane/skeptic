@@ -371,6 +371,34 @@ def test_full_suite_calibration_exit_voids_the_caller_population_not_infra(
     assert "killed" in void.reason
 
 
+def test_voided_mutants_restore_sentinel_still_infras_the_batch(tmp_path, monkeypatch):
+    """Review finding on batch 1 (Important): the batch script emits lines
+    for every runnable mutant regardless of whether its selection later
+    calibrates void, so a voided mutant still ran inside the container and
+    its own `cp-restore-failed` sentinel is just as real as a non-voided
+    mutant's. Skipping straight to `continue` on a voided mutant before ever
+    reading its exit file would let that corruption reach every mutant the
+    batch runs after it undetected: here, `c1`'s own real exit 1 would
+    otherwise read as a scored `killed` despite running against a workspace
+    `k1`'s failed restore left mutated. This is click's normal shape
+    (DECISIONS row 119 voids its caller population every run), so it is
+    exactly the configuration this fix protects."""
+    tree = _tree(tmp_path)
+    changed = _mutant("c1", population="changed")
+    caller = _mutant("k1", population="caller")
+    selections = {"c1": ("tests/test_a.py::test_x",), "k1": mutation.FULL_SUITE}
+    fake_mutation_run(
+        monkeypatch, {"c1": 1}, selections,
+        calibration_exits={mutation.FULL_SUITE: 1},
+        raw_exits={"k1": collector._CP_RESTORE_FAILED})
+
+    with pytest.raises(SkepticInfraError, match="k1") as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [changed, caller], selections)
+    assert "infra failure" in str(exc.value)
+    assert "restore copy" in str(exc.value)
+
+
 @pytest.mark.parametrize("exit_code", [2, 3, 4, 124])
 def test_full_suite_calibration_exit_other_than_one_still_infras(
     tmp_path, monkeypatch, exit_code
@@ -781,3 +809,38 @@ def test_h5_hardcoded_produces_no_mutation_row(enriched_pair):  # noqa: F811
     assert artifact["rates"]["changed"] == {"rate": pytest.approx(1.0), "killed": 3,
                                             "survived": 0}
     assert artifact["buckets"]["uncovered"] == 2
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_a_real_cp_failure_writes_the_real_sentinel(tmp_path, monkeypatch, layer_pair):  # noqa: F811
+    """Batch 1 review fold-in: the fast `test_install_cp_failure_is_infra_
+    not_a_manufactured_survival` above pins `observe_mutation`'s read-back of
+    `_CP_INSTALL_FAILED` by writing the sentinel directly at the
+    fake-subprocess boundary, which proves the read side but never the
+    write side: that a real `cp` failure inside a real container actually
+    produces that exact string. This test removes a mutant's own staged
+    source under `artifacts/mutants/<id>/` right after `_write_mutation_inputs`
+    writes it and before the real container runs, so the batch script's own
+    install `cp` has nothing to copy and fails for real, against a real
+    minirepo image."""
+    from skeptic.image import repo_image_tag
+
+    pair = layer_pair("gold")
+    m = mutation.Mutant(
+        mutant_id="realcpfail001", path="minirepo.py", line=1, operator="off_by_one",
+        function="", population="changed", mutated_source="SENTINEL = 1\n", valid=True)
+    selections = {"realcpfail001": ("tests/test_minirepo.py::test_parse_range_basic",)}
+    real_write = collector._write_mutation_inputs
+
+    def sabotage(tree, artifacts, mutants, sels):
+        real_write(tree, artifacts, mutants, sels)
+        (artifacts / "mutants" / "realcpfail001" / "minirepo.py").unlink()
+
+    monkeypatch.setattr(collector, "_write_mutation_inputs", sabotage)
+
+    with pytest.raises(SkepticInfraError, match="realcpfail001") as exc:
+        collector.observe_mutation(
+            pair.spec, repo_image_tag(pair.spec), pair.candidate.tree,
+            tmp_path / "artifacts", [m], selections)
+    assert "install copy" in str(exc.value)

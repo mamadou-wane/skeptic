@@ -990,13 +990,21 @@ def observe_mutation(
     mutant's own `exit` file can also carry `_CP_INSTALL_FAILED` or
     `_CP_RESTORE_FAILED` instead of a real exit code, when the script's own
     cp into or out of `/workspace` failed; either sentinel is a
-    whole-observation INFRA too, naming the mutant and which copy failed. The
-    one exception to "missing or bad reads INFRA the whole batch" is a
-    mutant whose own selection's calibration came back red over `FULL_SUITE`
-    (DECISIONS row 119): `_guard_calibration` names it voided rather than
-    INFRA, and this function excludes it from both container read-back and
-    `records` entirely, carrying it instead in the returned report's
-    `calibration_void`.
+    whole-observation INFRA too, naming the mutant and which copy failed.
+
+    A mutant whose own selection's calibration came back red over
+    `FULL_SUITE` (DECISIONS row 119) is voided rather than scored:
+    `_guard_calibration` names it, and this function excludes it from both
+    container read-back and `records` entirely, carrying it instead in the
+    returned report's `calibration_void`. The batch script still emits lines
+    for a voided mutant the same as any other runnable one, so its own
+    `exit` file can still carry a cp sentinel; that check runs on every
+    runnable mutant before the voided skip, not after it, since a corrupted
+    restore reaches every mutant the batch runs afterward regardless of
+    whether the mutant whose restore failed was itself voided. Only past
+    that point does voided mean "skip entirely": a voided mutant's own
+    absent exit file is not INFRA, since its selection never calibrated
+    green in the first place.
 
     The candidate tree is left byte-identical to how it started: every
     mutant's own script lines restore the original file before the next
@@ -1064,10 +1072,46 @@ def observe_mutation(
             )
         voided = _guard_calibration(artifacts, distinct)
         for m in runnable:
-            if selected[m.mutant_id] in voided:
-                continue
             mdir = artifacts / _MUT_MUTANTS / m.mutant_id
             exit_path = mdir / "exit"
+            # A cp sentinel is checked before the voided skip below, on every
+            # runnable mutant, voided or not: the batch script emits lines for
+            # every runnable mutant regardless of whether its own selection
+            # later calibrates void, so a voided mutant still ran inside the
+            # container, and a restore-cp failure there corrupts the workspace
+            # for every mutant the batch runs after it, voided or scored,
+            # exactly the same as a non-voided mutant's own would. Reading it
+            # after the skip would let that corruption reach a later mutant's
+            # exit code undetected (review finding on batch 1).
+            if exit_path.is_file():
+                raw_exit = exit_path.read_text().strip()
+                if raw_exit == _CP_INSTALL_FAILED:
+                    raise SkepticInfraError(
+                        f"Mutant {m.mutant_id} ({m.path}:{m.line})'s install copy (its "
+                        f"mutated source into /workspace) failed before its test "
+                        f"command ran. Running the selection anyway would have scored "
+                        f"it against whatever unmutated source was already sitting "
+                        f"there instead, an exit 0 that would silently manufacture "
+                        f"`survived` for a mutant that never actually ran. This is an "
+                        f"infra failure for the whole mutation observation, never "
+                        f"evidence. Next: read {mdir}/err, then re-run the pair."
+                    )
+                if raw_exit == _CP_RESTORE_FAILED:
+                    raise SkepticInfraError(
+                        f"Mutant {m.mutant_id} ({m.path}:{m.line})'s restore copy (the "
+                        f"original source back into /workspace) failed after its test "
+                        f"command ran. {m.path} is left mutated for every mutant the "
+                        f"batch runs after this one, so their own exit codes are no "
+                        f"longer trustworthy either. This is an infra failure for the "
+                        f"whole mutation observation, never evidence. Next: read "
+                        f"{mdir}/err, then re-run the pair."
+                    )
+            if selected[m.mutant_id] in voided:
+                continue
+            # A voided mutant's own absent exit file says nothing about the
+            # others (its selection never calibrated green, so nothing about
+            # it ran to completion either way); this guard only applies once
+            # the voided skip above has already passed.
             if not exit_path.is_file():
                 raise SkepticInfraError(
                     f"Mutant {m.mutant_id} ({m.path}:{m.line}) left no exit code at "
@@ -1076,28 +1120,6 @@ def observe_mutation(
                     f"mid-batch before reaching this mutant. This is an infra "
                     f"failure for the whole mutation observation, never evidence. "
                     f"Next: read {mdir}/err, then re-run the pair."
-                )
-            raw_exit = exit_path.read_text().strip()
-            if raw_exit == _CP_INSTALL_FAILED:
-                raise SkepticInfraError(
-                    f"Mutant {m.mutant_id} ({m.path}:{m.line})'s install copy (its "
-                    f"mutated source into /workspace) failed before its test "
-                    f"command ran. Running the selection anyway would have scored "
-                    f"it against whatever unmutated source was already sitting "
-                    f"there instead, an exit 0 that would silently manufacture "
-                    f"`survived` for a mutant that never actually ran. This is an "
-                    f"infra failure for the whole mutation observation, never "
-                    f"evidence. Next: read {mdir}/err, then re-run the pair."
-                )
-            if raw_exit == _CP_RESTORE_FAILED:
-                raise SkepticInfraError(
-                    f"Mutant {m.mutant_id} ({m.path}:{m.line})'s restore copy (the "
-                    f"original source back into /workspace) failed after its test "
-                    f"command ran. {m.path} is left mutated for every mutant the "
-                    f"batch runs after this one, so their own exit codes are no "
-                    f"longer trustworthy either. This is an infra failure for the "
-                    f"whole mutation observation, never evidence. Next: read "
-                    f"{mdir}/err, then re-run the pair."
                 )
             code = _read_mutation_int(exit_path, "an exit code")
             status = _status_for_exit(code)

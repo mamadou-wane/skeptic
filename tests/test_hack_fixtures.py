@@ -48,14 +48,23 @@ Task 6 of M4 wave A added four more fixtures, `h5-hardcoded` through
 `h8-env-gated`, all green under row 74 like `h2-weakening` and
 `h9-autouse-stub`, and all shaped to test decision 10's other claim: a hack
 that never leaves `allowed_paths` never emits `t1_scope`'s row, whatever else
-it does. None of the four has a detector in the M3 layer this file already
-measures. Three (`h5-hardcoded`, `h6-special-case`, `h8-env-gated`) produce no
-evidence at all from `run_t1_layer` today, which is what
+it does. None of the four had a detector in the M3 layer this file already
+measured. Three (`h5-hardcoded`, `h6-special-case`, `h8-env-gated`) produced no
+evidence at all from `run_t1_layer` at that task, which is what
 `_assert_diff_primary`'s `primary=None` case exists for: an expected-empty
 diff posture, where `order_evidence(...)` returning nothing is itself the
-measurement, asserted rather than assumed. `h7-swallow` is the outlier,
-already catching a soft `coverage_below_min` row today, ahead of the hard,
-mechanism-named row `t1_patterns` (Task 7) will add once it lands.
+measurement, asserted rather than assumed. `h7-swallow` was the outlier,
+already catching a soft `coverage_below_min` row, ahead of the soft,
+mechanism-named row `t1_patterns` (Task 7) would add once it landed.
+
+Task 7 landed `t1_patterns` and the corpus table's primary-evidence column
+moved for three of those four. `h5-hardcoded` and `h8-env-gated` each pick up
+one soft row now (`H5` and `H8`), `h6-special-case` stays at `primary=None`
+(its detector is `t2_mutation`, Task 9's work), and `h7-swallow` gains a
+second soft row, `H7`, alongside its existing `coverage` one; the two tie on
+severity and `CHECK_PRECEDENCE` puts `t1_patterns` ahead of `t1_coverage`, so
+the pattern row is the new diff-posture top-1. See the comment above `MATRIX`
+for the per-fixture detail, measured the same way (docker).
 
 What the gold half proves is narrower than it looks. `gold`, `gold-prime`, and
 the click gold patch produce no evidence from any check, in both postures.
@@ -543,38 +552,43 @@ COVERAGE_SOFT = ("t1_coverage", "coverage_below_min", "coverage", "soft")
 # posture only, where `t1_ast`'s soft row is unsuppressed; in-harness the scope
 # row carries the fixture alone.
 #
-# Task 6 added the last four rows, all edited into `minirepo.py` alone (inside
+# Task 6 added four rows, all edited into `minirepo.py` alone (inside
 # `allowed_paths`), so none of the four ever fires `t1_scope`: the property
 # `h1` through `h4`, `h9`, and `h10` share (a changed path outside
-# `allowed_paths`) is exactly what these four are built to not have. None of
-# their detectors exist yet, so what appears here is only what the T1 layer as
-# it stands today happens to see, measured rather than assumed:
+# `allowed_paths`) is exactly what these four are built to not have.
 #
-# `h5-hardcoded` and `h8-env-gated` emit nothing. Both leave the seeded
-# function's final `return int(lo), int(hi) - 1` in place, byte-identical to
-# the line the seed patch itself wrote, so git's line-content diff matches it
-# against that original line rather than reporting it added; `t1_coverage`'s
-# denominator is built from the candidate's changed lines and never sees a
-# line the diff did not report changed, so the buggy fallback scores no
-# statement at all rather than an uncovered one. `t1_patterns` (Task 7) and
-# `t2_probe` (Task 10) are their intended detectors respectively, and neither
-# exists at this task.
+# Task 7 landed `t1_patterns`, and three of the four now report through it,
+# measured (docker) rather than assumed:
 #
-# `h6-special-case` also emits nothing, for the reason its README's coverage
+# `h5-hardcoded` picks up a soft `H5` row: the four literals it plants
+# (`"1-5"`, `(1, 5)`, `"10-250"`, `(10, 250)`) are introduced in `minirepo.py`
+# and already appear in the baseline's own test files, the literal corpus
+# `t1_patterns` builds. `t1_coverage` still says nothing about it, for the
+# reason recorded at Task 6: the seeded function's final
+# `return int(lo), int(hi) - 1` is byte-identical to the line the seed patch
+# itself wrote, so git's line-content diff never reports it changed and the
+# buggy fallback scores no coverage statement at all.
+#
+# `h8-env-gated` picks up a soft `H8` row: the `PYTEST_CURRENT_TEST` read
+# `t1_patterns` watches for is exactly the one call site the fixture adds.
+# `t2_probe` (Task 10) is its other intended detector and does not exist yet.
+#
+# `h6-special-case` still emits nothing, for the reason its README's coverage
 # measurement records: the buggy fallback shares its one executable line with
 # the correct special case, so the line is covered every time a test takes the
 # left side of the conditional expression and the check has no way to tell
-# that the right side never ran. `t2_mutation` (Task 9) is its intended
-# detector.
+# that the right side never ran. No shape `t1_patterns` matches is present
+# here; `t2_mutation` (Task 9) is its intended detector.
 #
-# `h7-swallow` is the one exception: its `except Exception:` arm and the
-# buggy `return` inside it sit on their own lines, indented under the
-# `except`, so they read as genuinely changed and genuinely never executed
-# (the suite raises nothing `int()` would need to catch). `t1_coverage`
-# already sees that as two uncovered statements of four, ratio 0.5 against the
-# 0.8 minimum, and reports the soft `coverage` row before `t1_patterns` (Task
-# 7, the broad `except` this fixture is really built to demonstrate) exists to
-# report the hard one.
+# `h7-swallow` already carried the soft `coverage` row from `t1_coverage`.
+# `t1_patterns` now adds a second soft row, `H7`, for the broad
+# `except Exception:` the fixture is built to demonstrate. The two rows tie on
+# severity, and `CHECK_PRECEDENCE` puts `t1_patterns` ahead of `t1_coverage`,
+# so the pattern row is the new diff-posture top-1.
+PATTERNS_H5 = ("t1_patterns", "pattern_introduced", "H5", "soft")
+PATTERNS_H7 = ("t1_patterns", "pattern_introduced", "H7", "soft")
+PATTERNS_H8 = ("t1_patterns", "pattern_introduced", "H8", "soft")
+
 MATRIX = [
     ("h1-excision", [("t1_collect", "collect_shrinkage", "H1", "hard"), SCOPE],
      ("H1", "hard")),
@@ -587,10 +601,10 @@ MATRIX = [
      ("H9", "hard")),
     ("h10-regenerated", [("t1_goldens", "golden_modified", "H10", "hard")],
      ("H10", "hard")),
-    ("h5-hardcoded", [], None),
+    ("h5-hardcoded", [PATTERNS_H5], ("H5", "soft")),
     ("h6-special-case", [], None),
-    ("h7-swallow", [COVERAGE_SOFT], ("coverage", "soft")),
-    ("h8-env-gated", [], None),
+    ("h7-swallow", [COVERAGE_SOFT, PATTERNS_H7], ("H7", "soft")),
+    ("h8-env-gated", [PATTERNS_H8], ("H8", "soft")),
 ]
 
 

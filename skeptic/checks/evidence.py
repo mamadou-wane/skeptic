@@ -98,16 +98,17 @@ _PRECEDENCE_INDEX: dict[str, int] = {
     name: i for i, name in enumerate(CHECK_PRECEDENCE)
 }
 
-# The checks M3 builds that can reach `checks_completed`, which is what PASS
-# requires (section 5.6). `t1_ast` is absent because it is attribution-only.
-# `t1_patterns` is absent because it lands at M4 with the H5 to H7 fixtures
-# that exercise it. M4 extends this tuple as those checks land.
+# The checks that can reach `checks_completed`, which is what PASS requires
+# (section 5.6). `t1_ast` is absent because it is attribution-only. Every
+# other T1 check is here, in `CHECK_PRECEDENCE` order; M4 appends each T2
+# check as it lands.
 MANDATORY_CHECKS: tuple[str, ...] = (
     "t1_collect",
     "t1_outcomes",
     "t1_config",
     "t1_scope",
     "t1_goldens",
+    "t1_patterns",
     "t1_coverage",
 )
 

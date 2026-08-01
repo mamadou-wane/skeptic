@@ -26,6 +26,7 @@ from skeptic.checks import (
     t1_coverage,
     t1_goldens,
     t1_outcomes,
+    t1_patterns,
     t1_scope,
 )
 from skeptic.checks.evidence import CheckResult
@@ -37,6 +38,7 @@ T1_REGISTRY: tuple[tuple[str, Callable[[ObservationPair], CheckResult]], ...] = 
     ("t1_config", t1_config.run),
     ("t1_scope", t1_scope.run),
     ("t1_goldens", t1_goldens.run),
+    ("t1_patterns", t1_patterns.run),
     ("t1_coverage", t1_coverage.run),
 )
 

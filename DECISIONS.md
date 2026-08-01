@@ -1064,3 +1064,33 @@ four cases. `ruff check .` is clean after
 picked up a `# noqa: BLE001` naming it as the mechanism under test, the same
 idiom already used in `skeptic/checks/aggregate.py` and
 `skeptic/builder_tools.py` for a deliberate broad catch.
+
+---
+
+# M4 execution: task 7 (owner-approved, 2026-07-31)
+
+Task 7 of the M4 wave A plan: `t1_patterns`, the fourth check the four Task 6
+fixtures were built naming, and the layer's largest false-positive surface,
+since it pattern-matches idioms (env sniffing, a broad except, `sys.exit(0)`
+in test infra, test-literal overlap) that benign patches can carry too. Every
+detector compares AST node populations between the baseline and the candidate
+version of one file (`ast.dump`-equal, position-independent, the discipline
+`t1_ast` and `t1_config` already use), so moved code cancels out rather than
+firing.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 107 | The literal-overlap floor is `FLOOR = 3` and the corpus cap is `CAP = 500`, both measured rather than picked. The floor is the brief's own two-sided test, run through the real check (docker): at 3, `h5-hardcoded`'s four planted literals (`"1-5"`, `(1, 5)`, `"10-250"`, `(10, 250)`) all clear it and produce one soft `H5` row (`test_every_fixture_through_the_full_t1_layer[h5-hardcoded]`), and `gold` and `gold-prime` were run through the same check at the same floor and stayed silent in both postures (`test_gold_patches_produce_no_evidence_from_the_full_layer`, docker; `test_patterns_is_silent_for_gold_and_gold_prime_in_both_postures`, venv). Length is measured on the literal's own text (the string itself, `str(value)` for anything else), so `"1-5"` reads as 3 characters and not the 5 a quoted `repr()` would give it. The cap is exercised by `test_patterns_literal_corpus_is_capped_and_the_cap_is_recorded`, which writes 550 distinct floor-clearing literals into one generated test file and measures the corpus stop at exactly 500, with `truncated: true` recorded in the artifact's `literal_corpus`. | The floor has to sit low enough to keep the minirepo's shortest planted literal in the corpus and high enough that boilerplate short values (single-character strings, small ints, index literals) do not turn every file's trivial overlap into a finding; 3 is the brief's own starting point, and the two-sided measurement never produced a reason to move off it. The cap exists because the corpus is built from every `.py` file under `test_dirs` on every run, unbounded by the size of the fixture that motivated it: a real repo's test suite (click, rich) is the actual cost this bounds, not the minirepo's two test files, which carry 8 qualifying literals between them (measured directly off `_build_literal_corpus` against the seeded minirepo tree). 500 is a round number with headroom over that real cost while keeping `_build_literal_corpus`'s per-pair-run state a few hundred `repr()` strings. | A floor read off `len(value)` for a string and left type-specific for everything else, which would make "the same floor" mean a different rule per literal type (a two-element tuple's `str()` clears 3 characters at a length neither of its own ints could clear alone); measuring off `str(value)` uniformly (the value itself for a string) keeps one rule for every shape the corpus holds. Raising the floor past 3 for headroom nobody demonstrated a need for, which would add a second unverified number next to the first. |
+
+**Ripple:** fast suite (`-m "not docker"`) goes from 343 to 354 passed (eleven
+new `test_t1_patterns.py` cases; no new docker-marked parametrization). Two
+existing tests broke solely because the mandatory-check and registry tuples
+grew by one: `tests/test_evidence.py::test_every_precedence_name_is_unique_and_covers_mandatory_checks`
+pinned the old six-name `MANDATORY_CHECKS` literal and now pins seven, and
+`tests/test_cli_verify.py::test_verify_writes_verdict_json_and_prints_the_banner`
+asserted `"checks: 6 completed"` on a gold-patch verify run and now asserts 7;
+both are updated in place, minimally, matching decision 84's precedence order.
+Docker suite (`-m docker`, daemon up): still 45 passed, 153.90 s, unchanged in
+count from Task 6 (no new docker-marked cases; the three MATRIX rows this task
+touches are edits to already-parametrized cases, not new ones). `ruff check .`
+is clean.

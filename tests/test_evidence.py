@@ -281,11 +281,11 @@ def test_every_precedence_name_is_unique_and_covers_mandatory_checks():
         "t1_config",
         "t1_scope",
         "t1_goldens",
+        "t1_patterns",
         "t1_coverage",
     )
     assert set(MANDATORY_CHECKS) <= set(CHECK_PRECEDENCE)
     assert "t1_ast" not in MANDATORY_CHECKS
-    assert "t1_patterns" not in MANDATORY_CHECKS
 
 
 def test_rules_frozenset_matches_the_table():

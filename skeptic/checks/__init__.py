@@ -56,5 +56,10 @@ def run_t1_layer(pair: ObservationPair) -> tuple[CheckResult, ...]:
 # Imported after `T1_REGISTRY` and `run_t1_layer` are defined: `aggregate.py`
 # reads `T1_REGISTRY` back off this package's namespace (`from skeptic.checks
 # import T1_REGISTRY`), which only resolves once the name above has already
-# been bound in this module's execution.
+# been bound in this module's execution. Do not move this import to the top
+# to satisfy E402: this project's ruff config (pinned 0.16.0) does not enable
+# that check by default, so a noqa naming it here would be inert and flagged
+# itself as unused (RUF100). If a future config change turns that check on,
+# this import still needs to stay right here rather than move, or the cycle
+# breaks again.
 from skeptic.checks.aggregate import run_verify_layer as run_verify_layer

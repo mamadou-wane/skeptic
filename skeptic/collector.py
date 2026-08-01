@@ -1382,13 +1382,24 @@ def _read_probe_step(artifacts: Path, step: str, expected: int) -> list[dict]:
             f"evidence. Next: read {artifacts}/{_PROBE_ENTRYPOINTS} against "
             f"{path} by hand."
         )
+    for i, record in enumerate(records):
+        if not isinstance(record, dict) or not isinstance(record.get("outcome"), str):
+            raise SkepticInfraError(
+                f"{path} record {i} is {record!r}. `run_probe` writes one "
+                f"{{'call': ..., 'outcome': ...}} object per entrypoint, with "
+                f"`outcome` always a string, and `_read_probe` reads `outcome` off "
+                f"every record, so a differently shaped one means the driver "
+                f"and the collector disagree about the JSON contract. This is "
+                f"an infra failure, never evidence. Next: read "
+                f"{artifacts}/{step}.err, then re-run the pair."
+            )
     return records
 
 
 def _read_probe(artifacts: Path, entrypoints: Sequence[ProbeEntrypoint]) -> ProbeReport:
     """Pair the two steps' records positionally into one `ProbeReport`.
 
-    Positional, not by `call`: two entrypoints could legally name the same
+    Positional rather than by `call`: two entrypoints could legally name the same
     dotted call with different args, and the driver both writes and reads
     its records in spec order, so position is the one key that is always
     unambiguous. An `import_error:` outcome on either side is INFRA for the

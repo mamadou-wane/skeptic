@@ -102,6 +102,30 @@ def test_driver_import_failure_is_marked_and_becomes_infra(tmp_path):
     assert "infra failure, never evidence" in str(exc.value)
 
 
+@pytest.mark.parametrize("bad_record", [
+    "not-a-dict",
+    {"call": "a.b"},
+    {"call": "a.b", "outcome": 1},
+], ids=["not-a-dict", "missing-outcome", "outcome-not-a-string"])
+def test_probe_record_wrong_shape_is_infra(tmp_path, bad_record):
+    """A right-length record list with one malformed entry: `run_probe`
+    always writes `{"call": ..., "outcome": ...}`, so this shape never
+    reaches `_read_probe` in harness, but the read-back should still refuse
+    it loud (`SkepticInfraError`) rather than raise a bare `KeyError` or
+    `AttributeError` out of `rec["outcome"]`."""
+    artifacts = tmp_path
+    (artifacts / "probe-pytest.json").write_text(json.dumps([bad_record]))
+    (artifacts / "probe-bare.json").write_text(
+        json.dumps([{"call": "a.b", "outcome": "value:1"}]))
+    (artifacts / "probe-pytest.exit").write_text("0\n")
+    (artifacts / "probe-bare.exit").write_text("0\n")
+    entrypoints = [ProbeEntrypoint(call="a.b")]
+
+    with pytest.raises(SkepticInfraError, match="probe-pytest.json") as exc:
+        collector._read_probe(artifacts, entrypoints)
+    assert "infra failure, never evidence" in str(exc.value)
+
+
 # --- the check: t2_probe.run over hand-built reports -------------------------
 
 

@@ -28,6 +28,7 @@ def verifier_revision(package_root: Path | None = None) -> str:
         if "__pycache__" in path.parts:
             continue
         digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b"\0")
         digest.update(path.read_bytes())
     return digest.hexdigest()[:12]
 

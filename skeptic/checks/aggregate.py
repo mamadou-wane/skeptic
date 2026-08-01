@@ -46,12 +46,12 @@ from dataclasses import dataclass
 
 from skeptic.checks import T1_REGISTRY, t1_ast, t2_mutation, t2_probe
 from skeptic.checks.evidence import (
-    CHECK_PRECEDENCE,
     MANDATORY_CHECKS,
     RULES,
     CheckResult,
     Evidence,
     Verdict,
+    _precedence_index,
     order_evidence,
     split_results,
 )
@@ -86,17 +86,10 @@ T2_REGISTRY: tuple[tuple[str, Callable[[ObservationPair], CheckResult]], ...] = 
     ("t2_probe", t2_probe.run),
 )
 
-# `CHECK_PRECEDENCE`'s index of every name, for sorting `checks_infra` the
-# same way `evidence.py`'s own `_evidence_sort_key` ranks evidence. A
-# captured check's infra key is its registry name or `"t1_ast"`; only the
-# value is `type(exc).__name__` territory. The `.get` fallback (an unlisted
-# name sorts last rather than raising) is defensive: every name
-# `run_verify_layer` can capture is already in `CHECK_PRECEDENCE`.
-_PRECEDENCE_INDEX: dict[str, int] = {name: i for i, name in enumerate(CHECK_PRECEDENCE)}
-
-
-def _precedence(check: str) -> int:
-    return _PRECEDENCE_INDEX.get(check, len(CHECK_PRECEDENCE))
+# Sorting `checks_infra` reuses `evidence._precedence_index`, the same
+# ranking `evidence.py`'s own `_evidence_sort_key` uses for evidence, so the
+# tie-break rule has one home. A captured check's infra key is its registry
+# name or `"t1_ast"`; only the value is `type(exc).__name__` territory.
 
 
 @dataclass(frozen=True)
@@ -229,7 +222,7 @@ def aggregate(
 
     ordered = order_evidence(raw_evidence)
     completed, not_applicable = split_results(outcome.results)
-    checks_infra = sorted(outcome.infra, key=_precedence)
+    checks_infra = sorted(outcome.infra, key=_precedence_index)
 
     hard_present = any(e.severity == "hard" for e in ordered)
     soft_rules = {e.rule for e in ordered if e.severity == "soft"}

@@ -303,7 +303,15 @@ def test_verify_isolates_a_dead_probe_when_sibling_evidence_is_hard(
     assert verdict_path.is_file()
     saved = json.loads(verdict_path.read_text())
     assert saved["verdict"] == "FAIL"
-    assert "t2_probe" in saved["checks_infra"]
+    # Exact-list, not containment: a regression that collapsed the mutation
+    # and probe isolation blocks into one (computing both reports, then
+    # applying both in a single model_copy at the end) would let a probe
+    # raise discard the already-computed HEALTHY mutation result too,
+    # landing t2_mutation in checks_infra alongside t2_probe. hard_present
+    # drives FAIL regardless of checks_infra's contents, so exit code,
+    # VERDICT FAIL, and the T1-evidence assertion below all stay green
+    # through exactly that collapse; only this exact-list form catches it.
+    assert saved["checks_infra"] == ["t2_probe"]
     assert any(e["rule"] in ("collect_shrinkage", "scope_violation") for e in saved["evidence"])
 
 

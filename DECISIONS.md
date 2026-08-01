@@ -1293,3 +1293,40 @@ disturbs either test's existing hard-FAIL/PASS assertion.
 (all in `tests/test_t2_mutation.py`: 5 bridge, 6 execution, 6 check, plus one
 past the brief's twelve names pinning the batch's host-side file layout).
 `ruff check .` is clean.
+
+**Review round 1 fix (2026-08-01).** Four findings from the task 9 review:
+two spec-mandated fixes (enrichment isolation, the calibration exit guard),
+one rider pinning the h6 survivor's identity rather than just its rule and
+rate, and this row.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 115 | `do_verify`'s mutation enrichment (`generate_mutants` through the `model_copy` that sets `candidate.mutation`) is now wrapped in `except Exception`, matching `run_verify_layer`'s own decision-8 breadth rather than `SkepticInfraError` alone: on capture, a `mutation_enrichment_failed` trace event records `f"{type(exc).__name__}: {exc}"`, `candidate.mutation` stays `None`, and `run_verify_layer` proceeds, where `t2_mutation.run`'s existing INFRA-on-`None` branch turns the failure into one more per-check capture. `BaseException` is not caught and still propagates. The calibration guard (`collector._guard_calibration`) reads a per-selection exit code the batch script now records immediately after each calibration run, and refuses the whole batch (`SkepticInfraError` naming the selection) on a missing or nonzero one, before any mutant's own exit code is read. The design spec's companion clause (`docs/superpowers/specs/2026-07-27-m4-wave-a-design.md:106`), "retry once, then INFRA for t2_mutation alone," is implemented for the isolation half only; the retry-once half is deferred, recorded here as a spec-correction candidate for the wave close-out rather than quietly dropped. | Decision 8's own reasoning (`checks/aggregate.py`'s module docstring) generalizes directly to enrichment: a bug there that killed sibling T1 evidence would violate the same coexistence principle a crashing registered check would, and a narrower `SkepticInfraError`-only catch leaves a plain `AttributeError` (or any other programming-error class) fatal to the whole VERIFY run, exactly the failure mode `run_verify_layer` exists to prevent for every other check. The calibration guard exists because a selection already red on the unmutated candidate source would make every mutant sampled onto it read `killed` regardless of what it actually changed, publishing a kill rate that measures nothing; the red candidate is `t1_outcomes`' evidence to report, not this check's, so the guard refuses rather than launders the rate. The retry-once clause is deferred rather than implemented because the "existing sandbox contract" it cites does not exist: no retry logic exists anywhere in `sandbox.py`, `collector.py`, or `image.py` today (confirmed by search at review time), so implementing it here would be inventing a first instance of a pattern the spec's own wording implies is already established elsewhere, with no fixture or named test asking for it. Isolation alone already delivers the clause's operative guarantee (sibling evidence survives a dead batch); retry is a reliability optimization layered on top, not a correctness requirement the checked-in behavior is missing. | Catching only `SkepticInfraError` in the enrichment block, the narrower reading the first round shipped: does not hold under decision 8's own stated reasoning, and the review that raised this finding is right that an `AttributeError` in, say, `select_tests`'s slot-matching would otherwise still be fatal to the whole run. Skipping the calibration guard and letting a red selection's mutants read `killed`: silently launders a broken or already-failing suite into a perfect-looking kill rate, the exact failure mode `t1_outcomes` exists to report honestly elsewhere in the same verdict. Implementing a bare retry (re-run `observe_mutation` once on any exception before giving up) in this same round: scope creep introducing new, untested failure-mode branching (what counts as retryable, whether a retried batch's artifacts directory needs a second `rmtree`) into a fix round scoped to isolation, not reliability; the deferral is recorded explicitly, naming the spec line it leaves unaddressed, rather than silently dropped. |
+
+**Ripple, the calibration guard's fast tests.** `tests/test_t2_mutation.py`'s
+`fake_mutation_run` wrote only per-mutant exit files, so every existing
+execution test would now fail at the new calibration-exit check before ever
+reaching the behavior it was written to pin. Fixed by having the fake also
+accept the `selections` mapping and write a healthy (`0`) calibration exit
+for every distinct selection in it, with a `calibration_exit` override for
+the two tests that pin the guard itself (a nonzero exit, and a missing one).
+Every call site that names a runnable mutant now passes `selections`
+explicitly; `test_invalid_and_uncovered_mutants_never_run` (nothing runnable,
+so the guard is never reached) needed no change.
+
+**Ripple, fix 1's tests.** `tests/test_cli_verify.py` gains three tests
+(`test_verify_isolates_a_dead_enrichment_when_sibling_evidence_is_hard`,
+parametrized over `SkepticInfraError`/`RuntimeError`, and
+`test_verify_dead_enrichment_on_a_would_be_pass_is_infra_error`), each over a
+real, tree-backed, container-free pair (`make_pure_pair`) with
+`run_verify_layer` left real rather than the file's usual canned
+`_pass_layer_outcome()` fake, since the point is proving real sibling T1
+evidence (or its real absence) survives a faulted `generate_mutants`.
+
+**Ripple counts, review round 1.** Fast suite: 404 to 409 passed (five new:
+the two calibration-guard cases in `test_t2_mutation.py`, and fix 1's three
+cases in `test_cli_verify.py`). Docker: unchanged at 48 passed (no new
+docker-marked test this round, only assertion changes to three existing
+`test_t2_mutation.py` rows and the two real end-to-end `test_cli_verify.py`
+CLI tests, all re-run and green with the calibration guard and the
+try/except-wrapped enrichment both active). `ruff check .` is clean.

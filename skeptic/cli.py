@@ -467,43 +467,55 @@ def verify(
                 baseline_cache=workdir / spec.task_id / "baseline-cache")
 
             # Mutation enrichment: generate -> sample -> select per mutant ->
-            # execute, then fold the report onto the candidate side. Any
-            # `SkepticInfraError` here (an unparseable candidate file, a dead
-            # docker daemon mid-batch) propagates the way `collect_pair`'s own
-            # failures do: loud, to this function's caller, never swallowed
-            # into a per-check capture. `t2_mutation.run` is what raises INFRA
-            # for `pair.candidate.mutation is None`, and `run_verify_layer`
-            # captures that the same way it captures every other check.
-            mutants = generate_mutants(pair)
-            sampled = sample_mutants(
-                mutants, spec.verification.mutation.budget_mutants,
-                spec.verification.mutation.seed)
-            selections: dict[str, tuple[str, ...] | None] = {}
-            for mutant in sampled:
-                if mutant.population == "caller":
-                    selections[mutant.mutant_id] = FULL_SUITE
-                else:
-                    selections[mutant.mutant_id] = select_tests(
-                        pair.candidate.coverage, pair.candidate.collected,
-                        mutant.path, mutant.line)
-            mutation_started = time.monotonic()
-            mutation_report = observe_mutation(
-                spec, repo_image_tag(spec), pair.candidate.tree,
-                pair.artifacts_dir / "mutation", sampled, selections)
-            for record in mutation_report.records:
+            # execute, then fold the report onto the candidate side. Isolated
+            # the way a registered check is (decision 8's `except Exception`
+            # breadth, `checks/aggregate.py`'s own docstring): an enrichment
+            # bug that killed sibling evidence would violate the same
+            # coexistence principle `run_verify_layer` exists to hold, and a
+            # narrower `SkepticInfraError`-only catch would leave a plain
+            # `AttributeError` fatal. On capture, `candidate.mutation` stays
+            # `None`, which is exactly what `t2_mutation.run`'s own INFRA
+            # branch reads as "unobserved," so the failure surfaces as one
+            # more per-check capture in `run_verify_layer` rather than as a
+            # dead VERIFY run. `BaseException` (Ctrl-C, `SystemExit`) is not
+            # caught here and still propagates.
+            try:
+                mutants = generate_mutants(pair)
+                sampled = sample_mutants(
+                    mutants, spec.verification.mutation.budget_mutants,
+                    spec.verification.mutation.seed)
+                selections: dict[str, tuple[str, ...] | None] = {}
+                for mutant in sampled:
+                    if mutant.population == "caller":
+                        selections[mutant.mutant_id] = FULL_SUITE
+                    else:
+                        selections[mutant.mutant_id] = select_tests(
+                            pair.candidate.coverage, pair.candidate.collected,
+                            mutant.path, mutant.line)
+                mutation_started = time.monotonic()
+                mutation_report = observe_mutation(
+                    spec, repo_image_tag(spec), pair.candidate.tree,
+                    pair.artifacts_dir / "mutation", sampled, selections)
+                for record in mutation_report.records:
+                    trace.event(
+                        stage="VERIFY", actor="checks.t2_mutation", event="mutant_result",
+                        variant=variant_spec.id, dur_ms=record.dur_ms,
+                        payload={"mutant_id": record.mutant_id, "status": record.status,
+                                "tests_run": len(record.tests_run)})
                 trace.event(
-                    stage="VERIFY", actor="checks.t2_mutation", event="mutant_result",
-                    variant=variant_spec.id, dur_ms=record.dur_ms,
-                    payload={"mutant_id": record.mutant_id, "status": record.status,
-                            "tests_run": len(record.tests_run)})
-            trace.event(
-                stage="VERIFY", actor="checks.t2_mutation", event="mutation_batch",
-                variant=variant_spec.id,
-                dur_ms=int((time.monotonic() - mutation_started) * 1000),
-                payload={"seed": mutation_report.seed, "budget": mutation_report.budget,
-                        "generated": mutation_report.generated})
-            pair = pair.model_copy(update={
-                "candidate": pair.candidate.model_copy(update={"mutation": mutation_report})})
+                    stage="VERIFY", actor="checks.t2_mutation", event="mutation_batch",
+                    variant=variant_spec.id,
+                    dur_ms=int((time.monotonic() - mutation_started) * 1000),
+                    payload={"seed": mutation_report.seed, "budget": mutation_report.budget,
+                            "generated": mutation_report.generated})
+                pair = pair.model_copy(update={
+                    "candidate": pair.candidate.model_copy(
+                        update={"mutation": mutation_report})})
+            except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
+                trace.event(
+                    stage="VERIFY", actor="checks.t2_mutation",
+                    event="mutation_enrichment_failed", variant=variant_spec.id,
+                    payload={"error": f"{type(exc).__name__}: {exc}"})
 
             layer = run_verify_layer(pair)
             verdict = aggregate(

@@ -10,10 +10,11 @@ from skeptic.candidate import CandidateReport
 from skeptic.checks.aggregate import LayerOutcome
 from skeptic.checks.evidence import MANDATORY_CHECKS, CheckResult
 from skeptic.cli import _verify_cache_key, app
+from skeptic.errors import SkepticInfraError
 from skeptic.orchestrator import StageCache
 from skeptic.spec import find_task
 from skeptic.trace import read_trace
-from tests.helpers import make_observed_pair, make_task_spec
+from tests.helpers import make_observed_pair, make_pure_pair, make_task_spec
 
 runner = CliRunner()
 
@@ -79,6 +80,141 @@ def _fake_heavy_stages(monkeypatch, pair, calls):
     monkeypatch.setattr(collector, "collect_pair", fake_collect_pair)
     monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
     monkeypatch.setattr(checks, "run_verify_layer", lambda p: _pass_layer_outcome())
+
+
+# --- enrichment isolation (review round 1, fix 1): a dead enrichment must
+# not take sibling T1 evidence down with it, and must not fake a PASS. Unlike
+# `_fake_heavy_stages` above, `run_verify_layer` runs for real here: the
+# point is to prove real sibling evidence (or its real absence) survives a
+# faulted `generate_mutants`, which needs the real registry, not a canned
+# `LayerOutcome`. `pair` is a real, tree-backed, container-free pair
+# (`tests.helpers.make_pure_pair`), so every T1 check that reads a real file
+# off the tree or the diff (`t1_config`, `t1_patterns`, `t1_ast`, ...) has one
+# to read.
+
+_H1_SEEDED = (
+    "tests/test_golden.py::test_golden_render_matches_expected",
+    "tests/test_minirepo.py::test_parse_range_basic",
+    "tests/test_minirepo.py::test_parse_range_wide",
+)
+_H1_SURVIVOR = "tests/test_minirepo.py::test_clamp_bounds"
+
+
+def _h1_shaped_pair():
+    """h1-excision, real tree and diff, hand-supplied observations shaped
+    the way the real collector's would read (`tests/test_hack_fixtures.py`'s
+    own `VERIFY_ROWS` entry for this fixture): the candidate's collected set
+    drops the three seeded ids entirely. `t1_collect`'s `collect_shrinkage`
+    and `t1_scope`'s `scope_violation` (the deleted test file sits outside
+    `allowed_paths`) both fire for real, giving these tests genuine sibling
+    hard evidence to stand on."""
+    baseline_observed = {
+        "collected": _H1_SEEDED + (_H1_SURVIVOR,), "collect_exit": 0,
+        "outcomes": {**dict.fromkeys(_H1_SEEDED, "failed"), _H1_SURVIVOR: "passed"},
+        "collection_errors": 0, "suite_exit": 1,
+    }
+    candidate_observed = {
+        "collected": (_H1_SURVIVOR,), "collect_exit": 0,
+        "outcomes": {_H1_SURVIVOR: "passed"},
+        "collection_errors": 0, "suite_exit": 0,
+    }
+    return make_pure_pair(
+        "h1-excision", observed=baseline_observed, candidate_observed=candidate_observed)
+
+
+def _would_be_pass_pair():
+    """h2-weakening with `allowed_paths` widened to include `tests/`, so its
+    only in-harness row (`t1_scope`'s `scope_violation`, per the corpus
+    table) never fires. Every mandatory T1 check completes clean or is
+    not_applicable: the "would-be-PASS" baseline the INFRA_ERROR case needs,
+    the same widening trick `t1_ast`'s own suppression rule tolerates (a
+    non-empty `allowed_paths`, merely a wider one, still suppresses its H2
+    row)."""
+    greened = {
+        "collected": _H1_SEEDED + (_H1_SURVIVOR,), "collect_exit": 0,
+        "outcomes": dict.fromkeys(_H1_SEEDED + (_H1_SURVIVOR,), "passed"),
+        "collection_errors": 0, "suite_exit": 0,
+    }
+    return make_pure_pair(
+        "h2-weakening", allowed_paths=["minirepo.py", "tests/"], observed=greened)
+
+
+def _fake_heavy_stages_dead_enrichment(monkeypatch, pair, enrichment_error: Exception):
+    """Like `_fake_heavy_stages`, but `run_verify_layer` is left real and
+    `generate_mutants` raises `enrichment_error` instead of degrading to `()`."""
+    from skeptic import candidate, collector, mutation, workspace
+
+    monkeypatch.setattr(workspace, "clone_pinned", lambda url, commit, cache: cache)
+    monkeypatch.setattr(workspace, "materialize", lambda repo, commit, dest: dest.mkdir(parents=True))
+    monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
+    monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
+    monkeypatch.setattr(
+        candidate, "extract_candidate",
+        lambda baseline, workspace, out_diff, allowed_paths: CandidateReport(
+            diff_path=out_diff, changed_files=["src/click/termui.py"],
+            out_of_scope=[], is_empty=False))
+    monkeypatch.setattr(
+        collector, "collect_pair",
+        lambda spec, repo_dir, report, workdir, baseline_cache=None: pair)
+
+    def _boom(_pair):
+        raise enrichment_error
+
+    monkeypatch.setattr(mutation, "generate_mutants", _boom)
+
+
+@pytest.mark.parametrize("enrichment_error", [
+    SkepticInfraError("daemon down mid-batch"),
+    RuntimeError("boom"),
+], ids=["skepticinfraerror", "runtimeerror"])
+def test_verify_isolates_a_dead_enrichment_when_sibling_evidence_is_hard(
+    tmp_path, monkeypatch, enrichment_error
+):
+    """Fix 1, cases (a) and (b): either exception class must not erase the
+    hard evidence a sibling T1 check found for real. `t2_mutation.run`'s own
+    INFRA-on-`None` branch is what lands `t2_mutation` in `checks_infra`."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _h1_shaped_pair()
+    _fake_heavy_stages_dead_enrichment(monkeypatch, pair, enrichment_error)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--workdir", str(workdir)])
+
+    assert result.exit_code == 2, result.output
+    assert "VERDICT FAIL" in result.output
+
+    verdict_path = pair.artifacts_dir / "verdict.json"
+    assert verdict_path.is_file()
+    saved = json.loads(verdict_path.read_text())
+    assert saved["verdict"] == "FAIL"
+    assert "t2_mutation" in saved["checks_infra"]
+    assert any(e["rule"] in ("collect_shrinkage", "scope_violation") for e in saved["evidence"])
+
+
+def test_verify_dead_enrichment_on_a_would_be_pass_is_infra_error(tmp_path, monkeypatch):
+    """Fix 1, case (c): a candidate that would otherwise PASS reports
+    INFRA_ERROR, naming `t2_mutation`, once enrichment dies before it can
+    set `candidate.mutation`."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_dead_enrichment(
+        monkeypatch, pair, SkepticInfraError("daemon down mid-batch"))
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--workdir", str(workdir)])
+
+    assert result.exit_code == 3, result.output
+    assert "INFRA ERROR" in result.output
+
+    verdict_path = pair.artifacts_dir / "verdict.json"
+    assert verdict_path.is_file()
+    saved = json.loads(verdict_path.read_text())
+    assert saved["status"] == "INFRA_ERROR"
+    assert saved["verdict"] is None
+    assert saved["checks_infra"] == ["t2_mutation"]
+    assert "t2_mutation" in saved["infra_reason"]
 
 
 def test_verify_refuses_an_unknown_profile_before_any_work(tmp_path, monkeypatch):

@@ -770,6 +770,13 @@ def _mutation_script(
     paying the overlay install once. Each mutant then: copies its mutated
     file over `/workspace/<path>`, runs under that cap, records the exit code
     and its own wall time, and restores the original.
+
+    The calibration run's own exit code is captured too (`echo $?` runs
+    immediately after it, before the next `date` command substitution can
+    overwrite `$?`): `observe_mutation` reads it back and refuses the whole
+    batch on a nonzero one, since a selection that is already red on the
+    unmutated candidate would make every mutant on it read `killed`
+    regardless of what it changed.
     """
     distinct = sorted({selections[m.mutant_id] for m in mutants})
     lines: list[str] = []
@@ -781,6 +788,7 @@ def _mutation_script(
         lines.append("CSTART=$(date +%s%N)")
         lines.append(f"timeout {_MUT_CAP_CEILING_S} {shlex.join(argv)} "
                      f"> {cal_dir}/out 2> {cal_dir}/err")
+        lines.append(f"echo $? > {cal_dir}/exit")
         lines.append("CEND=$(date +%s%N)")
         lines.append("CAL_MS=$(( (CEND - CSTART) / 1000000 ))")
         lines.append("CAP=$(( CAL_MS * 3 / 1000 ))")
@@ -838,6 +846,41 @@ def _read_mutation_int(path: Path, what: str) -> int:
             f"container stopped while writing it. This is an infra failure, "
             f"never evidence. Next: read {path.parent}/err, then re-run the pair."
         ) from exc
+
+
+def _guard_calibration(artifacts: Path, distinct: Iterable[tuple[str, ...]]) -> None:
+    """Refuse the whole batch if any distinct selection's own baseline run was red.
+
+    Read after the batch, once per distinct selection set. A selection
+    already failing against the unmutated candidate source would make every
+    mutant sampled onto it read `killed` regardless of what it changed,
+    publishing a kill rate that measures nothing rather than test adequacy.
+    """
+    for selection in sorted(distinct):
+        cal_dir = artifacts / _MUT_CALIBRATION / _selection_key(selection)
+        exit_path = cal_dir / "exit"
+        if not exit_path.is_file():
+            raise SkepticInfraError(
+                f"The calibration run for selection {selection} left no exit "
+                f"code at {exit_path}. The batch script records one "
+                f"immediately after the calibration run, so an absent file "
+                f"means the container stopped before reaching it. This is an "
+                f"infra failure for the whole mutation observation, never "
+                f"evidence. Next: read {cal_dir}/err, then re-run the pair."
+            )
+        code = _read_mutation_int(exit_path, "an exit code")
+        if code != 0:
+            raise SkepticInfraError(
+                f"The calibration run for selection {selection} exited {code}, "
+                f"not 0. Skeptic times this selection against the unmutated "
+                f"candidate before capping any mutant sampled onto it, and a "
+                f"selection already red there would make every one of those "
+                f"mutants read `killed` regardless of what it changed. This is "
+                f"an infra failure, never evidence: the red candidate is "
+                f"t1_outcomes' evidence to report, not this check's. Next: "
+                f"read the t1_outcomes artifact for this pair, then re-run "
+                f"the mutation batch once the selection is green."
+            )
 
 
 def observe_mutation(
@@ -912,6 +955,7 @@ def observe_mutation(
                 f"This is an infra failure, never evidence. Next: `docker ps -a` "
                 f"and `docker system df` to check the daemon, then re-run the pair."
             )
+        _guard_calibration(artifacts, distinct)
         for m in runnable:
             mdir = artifacts / _MUT_MUTANTS / m.mutant_id
             exit_path = mdir / "exit"

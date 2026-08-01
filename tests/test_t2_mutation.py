@@ -15,6 +15,7 @@ fixture (`tests/test_hack_fixtures.py`), which mirrors that module's own
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -97,17 +98,32 @@ def _artifacts_of(argv: list[str]) -> Path:
     return Path(mount.split(":")[0])
 
 
-def fake_mutation_run(monkeypatch, exits: dict[str, int], *, write_exit: bool = True):
+def fake_mutation_run(
+    monkeypatch, exits: dict[str, int],
+    selections: dict[str, tuple[str, ...]] | None = None, *,
+    write_exit: bool = True, calibration_exit: int = 0,
+):
     """Answer one `docker run` by writing the exit files the batch script
     would have written for the mutants named in `exits`, ignoring the actual
     script content: the fast tests pin `observe_mutation`'s read-back and
     status-mapping contract, not the shell it composes (the docker rows do
-    that, for real, against the minirepo fixture)."""
+    that, for real, against the minirepo fixture).
+
+    `selections` (when given) also writes a healthy calibration exit for
+    every distinct selection in it, since `observe_mutation` now refuses the
+    whole batch on a missing or nonzero calibration exit before it ever reads
+    a mutant's own: `calibration_exit` overrides that value for the tests
+    pinning the calibration-guard contract itself.
+    """
     calls: list[list[str]] = []
 
     def fake_run(cmd, cwd, timeout_s, env):
         calls.append(cmd)
         artifacts = _artifacts_of(cmd)
+        for selection in {selections[mid] for mid in selections} if selections else ():
+            cal_dir = artifacts / "calibration" / collector._selection_key(selection)
+            cal_dir.mkdir(parents=True, exist_ok=True)
+            (cal_dir / "exit").write_text(f"{calibration_exit}\n")
         if write_exit:
             for mutant_id, code in exits.items():
                 mdir = artifacts / "mutants" / mutant_id
@@ -146,11 +162,11 @@ def _tree(root: Path) -> Path:
 def test_exit_codes_map_to_the_six_statuses(tmp_path, monkeypatch, exit_code, status):
     tree = _tree(tmp_path)
     m = _mutant("mut1")
-    fake_mutation_run(monkeypatch, {"mut1": exit_code})
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {"mut1": exit_code}, selections)
 
     report = collector.observe_mutation(
-        make_task_spec(), "img", tree, tmp_path / "artifacts",
-        [m], {"mut1": ("tests/test_a.py::test_x",)})
+        make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
 
     assert report.records == (MutantRecord(
         mutant_id="mut1", path="src/a.py", line=1, operator="off_by_one",
@@ -164,11 +180,11 @@ def test_exit_codes_map_to_the_six_statuses(tmp_path, monkeypatch, exit_code, st
 def test_timeout_is_never_a_kill(tmp_path, monkeypatch):
     tree = _tree(tmp_path)
     m = _mutant("mut1")
-    fake_mutation_run(monkeypatch, {"mut1": 124})
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {"mut1": 124}, selections)
 
     report = collector.observe_mutation(
-        make_task_spec(), "img", tree, tmp_path / "artifacts",
-        [m], {"mut1": ("tests/test_a.py::test_x",)})
+        make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
 
     assert report.records[0].status == "timeout"
     assert report.records[0].status != "killed"
@@ -195,12 +211,44 @@ def test_invalid_and_uncovered_mutants_never_run(tmp_path, monkeypatch):
 def test_missing_exit_file_is_infra(tmp_path, monkeypatch):
     tree = _tree(tmp_path)
     m = _mutant("missing1")
-    fake_mutation_run(monkeypatch, {}, write_exit=False)
+    selections = {"missing1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {}, selections, write_exit=False)
 
     with pytest.raises(SkepticInfraError, match="missing1") as exc:
         collector.observe_mutation(
-            make_task_spec(), "img", tree, tmp_path / "artifacts",
-            [m], {"missing1": ("tests/test_a.py::test_x",)})
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+    assert "infra failure" in str(exc.value)
+
+
+def test_calibration_exit_nonzero_raises_naming_the_selection(tmp_path, monkeypatch):
+    """The calibration guard (fix for a spec-mandated review finding): a
+    selection already red on the unmutated candidate must not silently
+    publish a `killed` rate for every mutant sampled onto it."""
+    tree = _tree(tmp_path)
+    m = _mutant("mut1")
+    selection = ("tests/test_a.py::test_x",)
+    selections = {"mut1": selection}
+    fake_mutation_run(monkeypatch, {"mut1": 1}, selections, calibration_exit=1)
+
+    with pytest.raises(SkepticInfraError, match=re.escape(str(selection))) as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+    assert "infra failure, never evidence" in str(exc.value)
+
+
+def test_calibration_missing_exit_file_is_also_infra(tmp_path, monkeypatch):
+    tree = _tree(tmp_path)
+    m = _mutant("mut1")
+    selection = ("tests/test_a.py::test_x",)
+    selections = {"mut1": selection}
+    # No `selections` passed to the fake: no calibration exit file lands at
+    # all, the same shape a container that died before calibration finished
+    # would leave.
+    fake_mutation_run(monkeypatch, {"mut1": 0})
+
+    with pytest.raises(SkepticInfraError, match=re.escape(str(selection))) as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
     assert "infra failure" in str(exc.value)
 
 
@@ -211,11 +259,11 @@ def test_original_is_restored_and_batch_inputs_land_on_the_artifacts_mount(
     describes, faked at the same boundary."""
     tree = _tree(tmp_path)
     m = _mutant("mut1")
-    fake_mutation_run(monkeypatch, {"mut1": 1})
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {"mut1": 1}, selections)
 
     collector.observe_mutation(
-        make_task_spec(), "img", tree, tmp_path / "artifacts",
-        [m], {"mut1": ("tests/test_a.py::test_x",)})
+        make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
 
     artifacts = tmp_path / "artifacts"
     assert (artifacts / "originals" / "src" / "a.py").read_text() == "x = 1\n"
@@ -407,6 +455,15 @@ def test_h6_fallback_survivors_produce_the_changed_code_row(enriched_pair):  # n
     assert artifact["rates"]["changed"] == {"rate": pytest.approx(0.25), "killed": 1,
                                             "survived": 3}
     assert artifact["buckets"]["uncovered"] == 0
+    # The fixture's whole claim (its own README) is that the covered ternary
+    # fallback itself survives, not merely that something on the changed
+    # span does: line 11 is `hi_bound = int(hi) if s in (...) else int(hi) - 1`,
+    # the line coverage marks executed because the correct arm runs it, while
+    # the buggy `- 1` arm never does. Without this, Task 11's h6 invariant
+    # could hollow out silently (any survivor at all, on any line, would
+    # still satisfy the rate/rule assertions above).
+    survivor_lines = {r["line"] for r in artifact["records"] if r["status"] == "survived"}
+    assert 11 in survivor_lines
 
 
 @pytest.mark.docker

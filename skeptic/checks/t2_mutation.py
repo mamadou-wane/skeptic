@@ -120,14 +120,31 @@ def run(pair: ObservationPair) -> CheckResult:
         )
 
     if not report.records:
+        if report.calibration_void:
+            # `MutationReport`'s own invariant (`len(records) +
+            # sum(excluded_mutant_ids) == generated`) means an empty
+            # `records` alongside a non-empty `calibration_void` can only
+            # mean every sampled mutant was excluded there: FULL_SUITE
+            # calibrated red (DECISIONS row 119) and nothing else was
+            # runnable, not that sample_mutants sampled nothing.
+            voided = sum(len(v.excluded_mutant_ids) for v in report.calibration_void)
+            reason = (
+                f"sample_mutants sampled {report.generated} mutant(s), but every "
+                f"one calibrated void ({voided} excluded via calibration_void: "
+                f"a FULL_SUITE selection calibrated red against the unmutated "
+                f"candidate before any mutant ran), leaving nothing to score."
+            )
+        else:
+            reason = ("sample_mutants sampled zero mutants for this candidate: "
+                      "no mutable site sat in the changed or caller spans")
         artifact = write_artifact(pair, CHECK, {
             "check": CHECK,
             "status": "not_applicable",
             "seed": report.seed,
             "budget": report.budget,
             "generated": report.generated,
-            "reason": "sample_mutants sampled zero mutants for this candidate: "
-                      "no mutable site sat in the changed or caller spans",
+            "reason": reason,
+            "calibration_void": [v.model_dump(mode="json") for v in report.calibration_void],
         })
         return CheckResult(check=CHECK, status="not_applicable", evidence=(),
                            artifact=artifact, dur_ms=elapsed_ms(started))

@@ -166,12 +166,19 @@ def fake_mutation_run(
     selections: dict[str, tuple[str, ...]] | None = None, *,
     write_exit: bool = True, calibration_exit: int = 0,
     calibration_exits: dict[tuple[str, ...], int] | None = None,
+    install_ok: bool = True, raw_exits: dict[str, str] | None = None,
 ):
     """Answer one `docker run` by writing the exit files the batch script
     would have written for the mutants named in `exits`, ignoring the actual
     script content: the fast tests pin `observe_mutation`'s read-back and
     status-mapping contract, not the shell it composes (the docker rows do
     that, for real, against the minirepo fixture).
+
+    `install_ok` writes the batch's own `install.ok` marker before anything
+    else, the way the real script's first line now does; `install_ok=False`
+    answers the run the way a failed overlay install would, with no marker
+    and no calibration or mutant files at all, for the tests pinning that
+    failure's own message.
 
     `selections` (when given) also writes a healthy calibration exit for
     every distinct selection in it, since `observe_mutation` now refuses the
@@ -181,12 +188,19 @@ def fake_mutation_run(
     itself; `calibration_exits` overrides it per selection instead, for a
     batch that needs one selection green and another red in the same run
     (DECISIONS row 119's `FULL_SUITE`-voids-not-INFRAs split).
+
+    `raw_exits` writes its string values verbatim to a mutant's own `exit`
+    file instead of an integer from `exits`, for the tests pinning the cp
+    guard's sentinel values (DECISIONS row 121) rather than a real exit code.
     """
     calls: list[list[str]] = []
 
     def fake_run(cmd, cwd, timeout_s, env):
         calls.append(cmd)
         artifacts = _artifacts_of(cmd)
+        if not install_ok:
+            return ExecResult(1, "", "overlay install failed", 100)
+        (artifacts / "install.ok").write_text("ok\n")
         for selection in {selections[mid] for mid in selections} if selections else ():
             cal_dir = artifacts / "calibration" / collector._selection_key(selection)
             cal_dir.mkdir(parents=True, exist_ok=True)
@@ -198,6 +212,10 @@ def fake_mutation_run(
                 mdir.mkdir(parents=True, exist_ok=True)
                 (mdir / "exit").write_text(f"{code}\n")
                 (mdir / "dur_ms").write_text("42\n")
+            for mutant_id, raw in (raw_exits or {}).items():
+                mdir = artifacts / "mutants" / mutant_id
+                mdir.mkdir(parents=True, exist_ok=True)
+                (mdir / "exit").write_text(f"{raw}\n")
         return ExecResult(0, "", "", 500)
 
     monkeypatch.setattr("skeptic.sandbox._run", fake_run)
@@ -422,6 +440,75 @@ def test_original_is_restored_and_batch_inputs_land_on_the_artifacts_mount(
     assert (tree / "src" / "a.py").read_text() == "x = 1\n"
 
 
+def test_install_cp_failure_is_infra_not_a_manufactured_survival(tmp_path, monkeypatch):
+    """DECISIONS row 121, half one. A failed install copy must not let the
+    selection run against whatever unmutated source is already sitting in
+    /workspace, an exit 0 that would silently manufacture `survived`."""
+    tree = _tree(tmp_path)
+    m = _mutant("mut1")
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {}, selections,
+                      raw_exits={"mut1": collector._CP_INSTALL_FAILED})
+
+    with pytest.raises(SkepticInfraError, match="mut1") as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+    assert "infra failure" in str(exc.value)
+    assert "install copy" in str(exc.value)
+
+
+def test_restore_cp_failure_is_infra_for_the_whole_batch(tmp_path, monkeypatch):
+    """DECISIONS row 121, half two. A failed restore leaves the mutated file
+    in place for every mutant that runs after it, so it refuses the whole
+    observation rather than just this one mutant's own record."""
+    tree = _tree(tmp_path)
+    m = _mutant("mut1")
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {}, selections,
+                      raw_exits={"mut1": collector._CP_RESTORE_FAILED})
+
+    with pytest.raises(SkepticInfraError, match="mut1") as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+    assert "infra failure" in str(exc.value)
+    assert "restore copy" in str(exc.value)
+
+
+def test_missing_install_marker_blames_the_overlay_install(tmp_path, monkeypatch):
+    """A failed overlay install for the mutation batch itself leaves zero
+    exit files (calibration or per-mutant): before this fix, the missing
+    calibration exit file made `_guard_calibration` blame a mid-batch death
+    and point at a `.../err` that never existed."""
+    tree = _tree(tmp_path)
+    m = _mutant("mut1")
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {"mut1": 0}, selections, install_ok=False)
+
+    with pytest.raises(SkepticInfraError, match="overlay install") as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+    assert "infra failure" in str(exc.value)
+    assert "calibration run" not in str(exc.value)
+
+
+@pytest.mark.parametrize("exit_code", [125, 127, 137, 255])
+def test_unlisted_exit_code_is_infra_not_import_failed(tmp_path, monkeypatch, exit_code):
+    """DECISIONS row 122. 0/1/124/2-5 are the whole briefed contract (row
+    112); anything else is a container or process death (an OOM SIGKILL, a
+    docker exec failure, a missing binary), not a pytest outcome, and must
+    not be filed under `import_failed` alongside a legitimate one."""
+    tree = _tree(tmp_path)
+    m = _mutant("mut1")
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {"mut1": exit_code}, selections)
+
+    with pytest.raises(SkepticInfraError, match="mut1") as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+    assert "infra failure" in str(exc.value)
+    assert str(exit_code) in str(exc.value)
+
+
 # --- the check: t2_mutation.run ---------------------------------------------
 
 
@@ -573,6 +660,33 @@ def test_report_with_no_records_is_not_applicable():
 
     assert result.status == "not_applicable"
     assert result.evidence == ()
+    artifact = _artifact(pair, result.artifact)
+    assert "zero mutants" in artifact["reason"]
+    assert artifact["calibration_void"] == []
+
+
+def test_fully_voided_batch_reports_an_accurate_reason_and_carries_the_void():
+    """Every sampled mutant landed on a `FULL_SUITE` selection that
+    calibrated red (nothing else runnable): `records` is empty the same way
+    a zero-mutant batch's is, but "sample_mutants sampled zero mutants" would
+    be false here, and dropping `calibration_void` from the artifact would
+    hide the only evidence of what actually happened."""
+    void = CalibrationVoid(
+        selection=mutation.FULL_SUITE, calibration_exit=1,
+        excluded_mutant_ids=("k1", "k2"),
+        reason="Selection ('<full-suite>',) calibrated at exit 1 ...")
+    report = MutationReport(seed=1, budget=2, generated=2, records=(),
+                            calibration_void=(void,))
+    pair = _pair_with_mutation(report)
+
+    result = t2_mutation.run(pair)
+
+    assert result.status == "not_applicable"
+    assert result.evidence == ()
+    artifact = _artifact(pair, result.artifact)
+    assert "zero mutants" not in artifact["reason"]
+    assert "2" in artifact["reason"]
+    assert artifact["calibration_void"] == [void.model_dump(mode="json")]
 
 
 def test_unobserved_mutation_is_infra():

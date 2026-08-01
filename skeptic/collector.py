@@ -86,6 +86,14 @@ _MUT_ORIGINALS = "originals"
 _MUT_MUTANTS = "mutants"
 _MUT_CALIBRATION = "calibration"
 
+# Sentinels the batch script writes to a mutant's own `exit` file in place of
+# a real exit code, when the cp that was supposed to run before or after that
+# mutant's test command failed (DECISIONS row 121). Distinct strings, never
+# valid `int()` input, so they cannot collide with any real exit code and are
+# checked for before `_read_mutation_int` ever tries to parse one.
+_CP_INSTALL_FAILED = "cp-install-failed"
+_CP_RESTORE_FAILED = "cp-restore-failed"
+
 # Timeout caps (DECISIONS row 112): 3x the calibration measurement, floor 5s,
 # ceiling 60s. The ceiling doubles as the calibration run's own bound, since a
 # hung baseline suite needs a cap too.
@@ -799,9 +807,23 @@ def _mutation_script(
     batch on a nonzero one, since a selection that is already red on the
     unmutated candidate would make every mutant on it read `killed`
     regardless of what it changed.
+
+    `install.ok` is written first, the same marker and the same reason
+    `_unit_script` writes one: `RunContainer.run` guards the overlay install
+    with `&&` ahead of this whole script, so the marker's absence after the
+    run means the install failed rather than anything in here (`observe_mutation`
+    reads it back). Each mutant's own install copy (mutated source into
+    `/workspace`) is guarded by `if`: on failure the mutant's `exit` file gets
+    the `_CP_INSTALL_FAILED` sentinel instead of running the timed command
+    against whichever unmutated source happens to already be sitting there,
+    an exit 0 that would otherwise manufacture `survived` for a mutant that
+    never actually ran (DECISIONS row 121). The restore copy back is guarded
+    too, with its own `_CP_RESTORE_FAILED` sentinel, because a failed restore
+    leaves that file mutated for every mutant the batch runs after this one:
+    `observe_mutation` maps either sentinel to a whole-observation INFRA.
     """
     distinct = sorted({selections[m.mutant_id] for m in mutants})
-    lines: list[str] = []
+    lines: list[str] = [f"echo ok > {ARTIFACTS}/{_INSTALL_OK}"]
     for selection in distinct:
         key = _selection_key(selection)
         cal_dir = f"{ARTIFACTS}/{_MUT_CALIBRATION}/{key}"
@@ -827,13 +849,16 @@ def _mutation_script(
         workspace_path = shlex.quote(f"/workspace/{m.path}")
         original = shlex.quote(f"{ARTIFACTS}/{_MUT_ORIGINALS}/{m.path}")
         lines.append(f"CAP=$(cat {ARTIFACTS}/{_MUT_CALIBRATION}/{key}/cap)")
-        lines.append(f"cp {source} {workspace_path}")
-        lines.append("MSTART=$(date +%s%N)")
-        lines.append(f'timeout "$CAP" {shlex.join(argv)} > {mdir}/out 2> {mdir}/err')
-        lines.append(f"echo $? > {mdir}/exit")
-        lines.append("MEND=$(date +%s%N)")
-        lines.append(f"echo $(( (MEND - MSTART) / 1000000 )) > {mdir}/dur_ms")
-        lines.append(f"cp {original} {workspace_path}")
+        lines.append(f"if cp {source} {workspace_path}; then")
+        lines.append("  MSTART=$(date +%s%N)")
+        lines.append(f'  timeout "$CAP" {shlex.join(argv)} > {mdir}/out 2> {mdir}/err')
+        lines.append(f"  echo $? > {mdir}/exit")
+        lines.append("  MEND=$(date +%s%N)")
+        lines.append(f"  echo $(( (MEND - MSTART) / 1000000 )) > {mdir}/dur_ms")
+        lines.append("else")
+        lines.append(f"  echo {_CP_INSTALL_FAILED} > {mdir}/exit")
+        lines.append("fi")
+        lines.append(f"cp {original} {workspace_path} || echo {_CP_RESTORE_FAILED} > {mdir}/exit")
     return "\n".join(lines)
 
 
@@ -845,16 +870,21 @@ def _mutation_host_budget(n_runnable: int, n_distinct: int) -> int:
     return (n_runnable + n_distinct) * _MUT_CAP_CEILING_S + _MUT_SLACK_S
 
 
-def _status_for_exit(code: int) -> MutantStatus:
+_KNOWN_MUTATION_EXITS: dict[int, MutantStatus] = {
+    0: "survived", 1: "killed", 124: "timeout",
+    2: "import_failed", 3: "import_failed", 4: "import_failed", 5: "import_failed",
+}
+
+
+def _status_for_exit(code: int) -> MutantStatus | None:
     """The exit-code contract (DECISIONS row 112): 0 survived, 1 killed, 124
-    (GNU `timeout`'s own sentinel) timeout, everything else import_failed."""
-    if code == 0:
-        return "survived"
-    if code == 1:
-        return "killed"
-    if code == 124:
-        return "timeout"
-    return "import_failed"
+    (GNU `timeout`'s own sentinel) timeout, 2-5 import_failed. `None` for any
+    other code (125 a docker/exec failure, 127 command not found, 137 SIGKILL,
+    or anything else this contract never named): DECISIONS row 122 makes
+    those a whole-observation INFRA in `observe_mutation` rather than folding
+    a container or process death into the same bucket as a legitimate pytest
+    exit."""
+    return _KNOWN_MUTATION_EXITS.get(code)
 
 
 def _read_mutation_int(path: Path, what: str) -> int:
@@ -953,11 +983,19 @@ def observe_mutation(
     Every runnable mutant's exit file is required after the run; a missing
     one is INFRA for the whole batch (`observe_variant`'s `_read_exit`
     pattern), since a partial batch says nothing trustworthy about any
-    mutant in it, run or not. The one exception is a mutant whose own
-    selection's calibration came back red over `FULL_SUITE` (DECISIONS row
-    119): `_guard_calibration` names it voided rather than INFRA, and this
-    function excludes it from both container read-back and `records`
-    entirely, carrying it instead in the returned report's
+    mutant in it, run or not. `_INSTALL_OK`'s own absence is checked first,
+    the way `observe_variant` checks it for the unit script, so a failed
+    overlay install reads as exactly that rather than as a mid-batch death
+    pointing at exit files that were never written (DECISIONS row 121). A
+    mutant's own `exit` file can also carry `_CP_INSTALL_FAILED` or
+    `_CP_RESTORE_FAILED` instead of a real exit code, when the script's own
+    cp into or out of `/workspace` failed; either sentinel is a
+    whole-observation INFRA too, naming the mutant and which copy failed. The
+    one exception to "missing or bad reads INFRA the whole batch" is a
+    mutant whose own selection's calibration came back red over `FULL_SUITE`
+    (DECISIONS row 119): `_guard_calibration` names it voided rather than
+    INFRA, and this function excludes it from both container read-back and
+    `records` entirely, carrying it instead in the returned report's
     `calibration_void`.
 
     The candidate tree is left byte-identical to how it started: every
@@ -1010,6 +1048,20 @@ def observe_mutation(
                 f"This is an infra failure, never evidence. Next: `docker ps -a` "
                 f"and `docker system df` to check the daemon, then re-run the pair."
             )
+        if not (artifacts / _INSTALL_OK).is_file():
+            raise SkepticInfraError(
+                f"The mutation batch of {len(runnable)} mutant(s) over {len(distinct)} "
+                f"selection set(s) never reached its first step (container exit "
+                f"{result.exit_code}): the overlay install failed, or the container "
+                f"did not start. The batch script writes {_INSTALL_OK} before any "
+                f"calibration or mutant runs, the way observe_variant's own unit "
+                f"script does, so its absence here means none of this batch's "
+                f"calibration or per-mutant exit files exist either, not that the "
+                f"container died partway through them. This is an infra failure, "
+                f"never evidence. Next: `docker run --rm {image_tag} true`, then "
+                f"re-run the pair.\n"
+                f"stderr tail:\n{result.stderr[-1500:]}"
+            )
         voided = _guard_calibration(artifacts, distinct)
         for m in runnable:
             if selected[m.mutant_id] in voided:
@@ -1025,12 +1077,50 @@ def observe_mutation(
                     f"failure for the whole mutation observation, never evidence. "
                     f"Next: read {mdir}/err, then re-run the pair."
                 )
+            raw_exit = exit_path.read_text().strip()
+            if raw_exit == _CP_INSTALL_FAILED:
+                raise SkepticInfraError(
+                    f"Mutant {m.mutant_id} ({m.path}:{m.line})'s install copy (its "
+                    f"mutated source into /workspace) failed before its test "
+                    f"command ran. Running the selection anyway would have scored "
+                    f"it against whatever unmutated source was already sitting "
+                    f"there instead, an exit 0 that would silently manufacture "
+                    f"`survived` for a mutant that never actually ran. This is an "
+                    f"infra failure for the whole mutation observation, never "
+                    f"evidence. Next: read {mdir}/err, then re-run the pair."
+                )
+            if raw_exit == _CP_RESTORE_FAILED:
+                raise SkepticInfraError(
+                    f"Mutant {m.mutant_id} ({m.path}:{m.line})'s restore copy (the "
+                    f"original source back into /workspace) failed after its test "
+                    f"command ran. {m.path} is left mutated for every mutant the "
+                    f"batch runs after this one, so their own exit codes are no "
+                    f"longer trustworthy either. This is an infra failure for the "
+                    f"whole mutation observation, never evidence. Next: read "
+                    f"{mdir}/err, then re-run the pair."
+                )
             code = _read_mutation_int(exit_path, "an exit code")
+            status = _status_for_exit(code)
+            if status is None:
+                raise SkepticInfraError(
+                    f"Mutant {m.mutant_id} ({m.path}:{m.line}) exited {code}, a "
+                    f"code observe_mutation's exit-code contract (DECISIONS row "
+                    f"112, extended by row 122) does not name: 0, 1, 124, and 2-5 "
+                    f"are the only exits a `timeout`-wrapped test process leaves "
+                    f"behind on purpose. {code} is the shape a container-level "
+                    f"death takes instead (125 docker could not exec the command, "
+                    f"127 the shell could not find it, 137 SIGKILL), and filing it "
+                    f"under `import_failed` would credit a random process or "
+                    f"container failure with the same meaning as a legitimate "
+                    f"pytest internal error. This is an infra failure for the "
+                    f"whole mutation observation, never evidence. Next: read "
+                    f"{mdir}/err, then re-run the pair."
+                )
             dur_path = mdir / "dur_ms"
             dur_ms = _read_mutation_int(dur_path, "a duration in ms") if dur_path.is_file() else None
             records[m.mutant_id] = MutantRecord(
                 mutant_id=m.mutant_id, path=m.path, line=m.line, operator=m.operator,
-                population=m.population, status=_status_for_exit(code),
+                population=m.population, status=status,
                 tests_run=selected[m.mutant_id], dur_ms=dur_ms)
 
     calibration_void = tuple(

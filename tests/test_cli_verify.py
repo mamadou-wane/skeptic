@@ -372,6 +372,47 @@ def test_verify_cache_hit_skips_collection_and_replays_the_banner(tmp_path, monk
     assert "stage_cached" in [e["event"] for e in events]
 
 
+def test_mutation_batch_trace_event_carries_the_voided_count(tmp_path, monkeypatch):
+    """m4-followups batch 1, item 5: `mutation_batch`'s summary payload has to
+    let a trace reader reconcile `generated` against the `mutant_result`
+    events actually emitted for records; a calibration-voided mutant leaves
+    no `mutant_result` event at all (Task 9's own contract), so without a
+    `voided` count the arithmetic silently does not close."""
+    from skeptic import collector as collector_mod
+    from skeptic import mutation as mutation_mod
+    from skeptic.checks.observations import CalibrationVoid, MutationReport
+
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    spec = find_task("click-0001", Path("tasks"))
+    pair = _fake_pair(spec)
+    calls: list[int] = []
+    _fake_heavy_stages(monkeypatch, pair, calls)
+
+    dummy_mutant = mutation_mod.Mutant(
+        mutant_id="k1", path="src/click/termui.py", line=1, operator="off_by_one",
+        function="f", population="caller", mutated_source="x = 2\n", valid=True)
+    monkeypatch.setattr(mutation_mod, "generate_mutants", lambda pair: (dummy_mutant,))
+    monkeypatch.setattr(mutation_mod, "sample_mutants", lambda mutants, budget, seed: mutants)
+    void = CalibrationVoid(
+        selection=mutation_mod.FULL_SUITE, calibration_exit=1,
+        excluded_mutant_ids=("k1",), reason="calibrated at exit 1")
+    report = MutationReport(
+        seed=spec.verification.mutation.seed, budget=spec.verification.mutation.budget_mutants,
+        generated=1, records=(), calibration_void=(void,))
+    monkeypatch.setattr(collector_mod, "observe_mutation", lambda *a, **k: report)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    events, _ = read_trace(workdir / "click-0001" / "verify" / "gold" / "trace.jsonl")
+    batch = next(e for e in events if e["event"] == "mutation_batch")
+    assert batch["payload"]["generated"] == 1
+    assert [e for e in events if e["event"] == "mutant_result"] == []
+    assert batch["payload"]["voided"] == 1
+
+
 def test_verify_cache_key_changes_with_patch_bytes_and_source_and_config(tmp_path, monkeypatch):
     spec = make_task_spec()
     variant = spec.evaluation.variants[0]

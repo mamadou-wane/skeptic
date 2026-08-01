@@ -502,12 +502,13 @@ def verify(
                         variant=variant_spec.id, dur_ms=record.dur_ms,
                         payload={"mutant_id": record.mutant_id, "status": record.status,
                                 "tests_run": len(record.tests_run)})
+                voided = sum(len(v.excluded_mutant_ids) for v in mutation_report.calibration_void)
                 trace.event(
                     stage="VERIFY", actor="checks.t2_mutation", event="mutation_batch",
                     variant=variant_spec.id,
                     dur_ms=int((time.monotonic() - mutation_started) * 1000),
                     payload={"seed": mutation_report.seed, "budget": mutation_report.budget,
-                            "generated": mutation_report.generated})
+                            "generated": mutation_report.generated, "voided": voided})
                 pair = pair.model_copy(update={
                     "candidate": pair.candidate.model_copy(
                         update={"mutation": mutation_report})})

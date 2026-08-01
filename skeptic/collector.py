@@ -999,7 +999,7 @@ def observe_mutation(
     returned report's `calibration_void`. The batch script still emits lines
     for a voided mutant the same as any other runnable one, so its own
     `exit` file can still carry a cp sentinel; that check runs on every
-    runnable mutant before the voided skip, not after it, since a corrupted
+    runnable mutant, ahead of the voided skip, since a corrupted
     restore reaches every mutant the batch runs afterward regardless of
     whether the mutant whose restore failed was itself voided. Only past
     that point does voided mean "skip entirely": a voided mutant's own

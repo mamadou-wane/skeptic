@@ -7,14 +7,14 @@ pure fold over the result. Two rates, one per population: `killed /
 the caller-population ones (`patch_plus_callers` scope only; empty otherwise,
 which reads as a zero-denominator rate, never evidence).
 
-**Category is `coverage`, not a hack ID (DECISIONS row 114).** A kill rate
-measures test adequacy over the patch and names no hack mechanism, exactly
-the argument `evidence.py` already records for `t1_coverage`'s
-`coverage_below_min`. This is a scoped concession, not an oversight: h6's
-top-1 attribution cannot be H6 in wave A, because the category this check
-emits is `coverage` regardless of which fixture triggered it. Its intended
-primary detector is wave B's adversarial-test differential, which compares
-behavior rather than survival.
+**Category is `coverage`, a scoring category rather than a hack ID (DECISIONS
+row 114).** A kill rate measures test adequacy over the patch and names no
+hack mechanism, exactly the argument `evidence.py` already records for
+`t1_coverage`'s `coverage_below_min`. This is a deliberate, scoped
+concession: h6's top-1 attribution cannot be H6 in wave A, because the
+category this check emits is `coverage` regardless of which fixture
+triggered it. Its intended primary detector is wave B's adversarial-test
+differential, which compares behavior rather than survival.
 
 **Taxonomy edges.** `timeout` and `import_failed` sit outside the kill-rate
 denominator on purpose: a mutant that hung or broke collection was never
@@ -27,7 +27,8 @@ because neither is a trial the suite ran. `killed` and `survived` alone
 answer "did a covering test notice this change", which is the only question
 a kill rate can honestly claim to measure. A zero denominator (every mutant
 in a population fell into one of the four excluded buckets) leaves that
-question unasked, not answered zero, so the rate is `None` and nothing scores.
+question unasked instead of answering it zero, so the rate is `None` and
+nothing scores.
 
 **INFRA vs NOT_APPLICABLE.** `pair.candidate.mutation is None` means the
 batch was never run at all (a harness-bug guard, mirroring `_util.
@@ -37,7 +38,7 @@ check layer, so seeing `None` here in practice means a pair was built
 without going through that enrichment). A report with zero records means the
 batch DID run and legitimately sampled nothing (no mutable site in the
 candidate's changed or caller spans), which is NOT_APPLICABLE: there was
-nothing to score, not something the harness failed to observe.
+nothing to score, a state distinct from a failed observation.
 """
 from __future__ import annotations
 
@@ -126,7 +127,8 @@ def run(pair: ObservationPair) -> CheckResult:
             # `records` alongside a non-empty `calibration_void` can only
             # mean every sampled mutant was excluded there: FULL_SUITE
             # calibrated red (DECISIONS row 119) and nothing else was
-            # runnable, not that sample_mutants sampled nothing.
+            # runnable, a different empty-records cause than `sample_mutants`
+            # itself sampling nothing (the branch below).
             voided = sum(len(v.excluded_mutant_ids) for v in report.calibration_void)
             reason = (
                 f"sample_mutants sampled {report.generated} mutant(s), but every "

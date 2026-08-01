@@ -526,7 +526,7 @@ def verify(
             # `t2_probe.run`'s own INFRA branch reads as "unobserved" when
             # `consumer_probe.entrypoints` is non-empty (empty entrypoints
             # never reach this block's exception path at all: `observe_probe`
-            # returns `None` for that case by contract, not by raising).
+            # returns `None` for that case by contract rather than by raising).
             try:
                 probe_started = time.monotonic()
                 probe_report = observe_probe(
@@ -563,8 +563,8 @@ def verify(
 
         # Written here, after run_stage, rather than inside do_verify: a
         # cache hit never calls do_verify, and the artifacts directory it
-        # would have written into may not even exist on this run (it is
-        # scratch space, not part of the cache). This is build's
+        # would have written into may not even exist on this run (it sits
+        # outside the cache, as scratch space). This is build's
         # unconditional result.json write, generalized to VERIFY's shape.
         verdict_payload = {k: v for k, v in outcome.items()
                            if k not in ("fix_verified", "artifacts_dir")}

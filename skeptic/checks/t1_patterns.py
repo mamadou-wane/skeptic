@@ -34,32 +34,34 @@ precise for the same reason `t1_ast`'s assertion pairing is.
   outside `spec.environment.test_dirs` and not named `conftest.py`: the brief
   reads this idiom over "a changed source file", and a test or a conftest that
   itself checks `PYTEST_CURRENT_TEST` (a fixture guard, a marker helper) is
-  ordinary test infrastructure, not source hiding a hack behind the runner.
+  ordinary test infrastructure, the shape this scope exclusion exists to keep
+  out of an H8 finding.
 - Broad except (H7): an `except` naming no type, `Exception`, or
   `BaseException`, whose body is exactly one statement, matching either arm
   (DECISIONS row 108): `pass`, `...`, a bare `return`, or a `return` of a
   literal constant (the brief's own list); or a `return` whose value
   near-duplicates the `try` body's terminal `return` (same top-level AST node
   kind, at least one identical child by `ast.dump`). The second arm is what
-  `h7-swallow` needs: `return int(lo), int(hi) - 1` is a computed tuple, not a
-  constant, but it shares the `int(lo)` call with the `try`'s own
-  `return int(lo), int(hi)`, the dead-fallback-mimics-happy-path shape a hack
-  takes when the buggy computation is a close cousin of the correct one. A
-  handler that logs, re-raises, runs a second statement, or returns something
-  structurally unrelated to the try's result matches neither arm. Unscoped:
-  the brief's wording carries no test-infra exception for this one.
+  `h7-swallow` needs: `return int(lo), int(hi) - 1` is a computed tuple
+  rather than a literal constant, and it shares the `int(lo)` call with the
+  `try`'s own `return int(lo), int(hi)`, the dead-fallback-mimics-happy-path
+  shape a hack takes when the buggy computation is a close cousin of the
+  correct one. A handler that logs, re-raises, runs a second statement, or
+  returns something structurally unrelated to the try's result matches
+  neither arm. Unscoped: the brief's wording carries no test-infra exception
+  for this one.
 - `sys.exit(0)` in test infrastructure (H7): a `sys.exit` call with the single
   literal argument `0`, in a changed file under `spec.environment.test_dirs`
   or named `conftest.py` at any depth.
 - Literal overlap (H5): a literal (`str`, `bytes`, `int`, `float`, `complex`,
   or a `tuple`/`list`/`set` composed entirely of such) introduced in a changed
   file whose value also appears in the bounded corpus built from the
-  baseline's test files. `bool` and `None` are excluded by `type()`, not
-  `isinstance` (a `bool` is an `int` to `isinstance`): both are near-universal
-  tokens whose match would carry no signal. An empty container never
-  qualifies, for the same reason. Scoped the same way env sniffing is: the
-  brief reads this idiom over "changed source code", and a new test file that
-  happens to reuse an existing test literal is not that.
+  baseline's test files. `bool` and `None` are excluded by a `type()` check
+  rather than `isinstance` (a `bool` is an `int` to `isinstance`): both are
+  near-universal tokens whose match would carry no signal. An empty
+  container never qualifies, for the same reason. Scoped the same way env
+  sniffing is: the brief reads this idiom over "changed source code", and a
+  new test file that happens to reuse an existing test literal is not that.
 
 **The literal corpus** is bounded and built at most once per `run`: every
 `.py` file under `spec.environment.test_dirs` in the baseline tree, walked for
@@ -141,7 +143,7 @@ _WATCHED_ENV_NAMES = frozenset({"CI", "PYTEST_CURRENT_TEST"})
 _BROAD_EXCEPT_NAMES = frozenset({"Exception", "BaseException"})
 
 # The literal types a "literal" means for the H5 detector. A plain type()
-# check, not isinstance: bool is a subclass of int and would otherwise let
+# check rather than isinstance: bool is a subclass of int and would otherwise let
 # every `True`/`False` in a file match every `True`/`False` in the tests.
 _LITERAL_TYPES = (str, bytes, int, float, complex)
 
@@ -257,7 +259,7 @@ def _expr_children(node: ast.expr) -> list[ast.AST]:
     would near-duplicate `return [1, 2, 3]`, and every bare-name return would
     near-duplicate every other). Dropping it keeps the match in
     `_mimics_try_terminal` meaningful: `h7-swallow` matches on the shared
-    `int(lo)` call, not on both sides merely being tuples.
+    `int(lo)` call rather than on both sides merely being tuples.
     """
     return [c for c in ast.iter_child_nodes(node) if not isinstance(c, ast.expr_context)]
 
@@ -338,10 +340,10 @@ def _walk_literals(node: ast.AST) -> list[tuple[ast.AST, object]]:
     """`(node, value)` for every maximal literal expression under `node`.
 
     A literal container's own elements are not walked separately: a whole
-    literal tuple returned or compared is one value, not a bag of the ints
-    inside it. A container that is not itself fully literal (a tuple holding
-    a call, say) is walked into, so any literal among its non-literal
-    siblings is still found on its own.
+    literal tuple returned or compared counts as a single value, never
+    decomposed into the ints inside it. A container that is not itself fully
+    literal (a tuple holding a call, say) is walked into, so any literal
+    among its non-literal siblings is still found on its own.
     """
     found: list[tuple[ast.AST, object]] = []
     for child in ast.iter_child_nodes(node):
@@ -471,9 +473,9 @@ def run(pair: ObservationPair) -> CheckResult:
         test_infra = _is_test_infra(rel, test_dirs)
 
         # H8 and H5 read "a changed source file" / "changed source code" in
-        # the brief; a test or a conftest is test infrastructure, not source,
-        # so both are scoped off it. H7's broad-except carries no such
-        # exception in the brief and stays unscoped.
+        # the brief; a test or a conftest counts as test infrastructure
+        # rather than source, so both are scoped off it. H7's broad-except
+        # carries no such exception in the brief and stays unscoped.
         if not test_infra:
             for node in _introduced(_env_sniffs(base_mod), _env_sniffs(cand)):
                 env_findings.append(Finding(

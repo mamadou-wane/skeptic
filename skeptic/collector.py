@@ -103,7 +103,7 @@ _MUT_CAP_CEILING_S = 60
 # The host-side `container.run` timeout: the worst case of every mutant and
 # every calibration run individually hitting the ceiling, plus slack for the
 # overlay install and the file copies. Independent of `spec.environment.
-# timeout_s`, which bounds the T1 unit's own suite run, not this batch.
+# timeout_s`, which bounds the T1 unit's own suite run rather than this batch.
 _MUT_SLACK_S = 120
 
 # The consumer probe's own artifact layout (Task 10): the driver, the
@@ -1005,9 +1005,9 @@ def _guard_calibration(
             f"selection already red there would make every one of those "
             f"mutants read `killed` regardless of what it changed. This is "
             f"an infra failure, never evidence: the red candidate is "
-            f"t1_outcomes' evidence to report, not this check's. Next: "
-            f"read the t1_outcomes artifact for this pair, then re-run "
-            f"the mutation batch once the selection is green."
+            f"evidence for t1_outcomes to report rather than for this "
+            f"check. Next: read the t1_outcomes artifact for this pair, "
+            f"then re-run the mutation batch once the selection is green."
         )
     return voided
 
@@ -1113,9 +1113,10 @@ def observe_mutation(
                 f"did not start. The batch script writes {_INSTALL_OK} before any "
                 f"calibration or mutant runs, the way observe_variant's own unit "
                 f"script does, so its absence here means none of this batch's "
-                f"calibration or per-mutant exit files exist either, not that the "
-                f"container died partway through them. This is an infra failure, "
-                f"never evidence. Next: `docker run --rm {image_tag} true`, then "
+                f"calibration or per-mutant exit files exist either, a different "
+                f"failure than the container dying partway through them. This is "
+                f"an infra failure, never evidence. Next: `docker run --rm "
+                f"{image_tag} true`, then "
                 f"re-run the pair.\n"
                 f"stderr tail:\n{result.stderr[-1500:]}"
             )
@@ -1458,7 +1459,7 @@ def observe_probe(
     the candidate's), the same `missing_ro="drop"` policy `observe_mutation`
     uses, since this too only ever runs on the candidate side; the baseline
     never runs the probe at all (the comparison is pytest-env versus bare on
-    one tree, not baseline versus candidate).
+    one tree, distinct from baseline versus candidate).
     """
     entrypoints = spec.verification.consumer_probe.entrypoints
     if not entrypoints:

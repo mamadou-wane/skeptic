@@ -284,9 +284,9 @@ class CalibrationVoid(_Model):
     exits nonzero over an environmentally red full suite (a documented,
     permanent gap the candidate did not introduce, DECISIONS row 73), every
     mutant sampled onto it would read `killed` regardless of what it
-    changed: exit-code kill detection is void, not evidence, so
-    `observe_mutation` excludes those mutants from `MutationReport.records`
-    entirely (DECISIONS row 119) instead of scoring them. A per-line
+    changed, a void result rather than evidence, so `observe_mutation`
+    excludes those mutants from `MutationReport.records` entirely (DECISIONS
+    row 119) instead of scoring them. A per-line
     selection's own nonzero calibration stays `SkepticInfraError`
     unconditionally; this model exists for `FULL_SUITE` alone.
     """

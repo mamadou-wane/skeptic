@@ -45,6 +45,7 @@ from pathlib import Path
 
 from skeptic.candidate import CandidateReport
 from skeptic.checks.observations import (
+    CalibrationVoid,
     CoverageReport,
     MutantRecord,
     MutantStatus,
@@ -869,14 +870,31 @@ def _read_mutation_int(path: Path, what: str) -> int:
         ) from exc
 
 
-def _guard_calibration(artifacts: Path, distinct: Iterable[tuple[str, ...]]) -> None:
-    """Refuse the whole batch if any distinct selection's own baseline run was red.
+def _guard_calibration(
+    artifacts: Path, distinct: Iterable[tuple[str, ...]]
+) -> dict[tuple[str, ...], int]:
+    """Read every distinct selection's own calibration exit; return the
+    `FULL_SUITE` selections that came back red, for the caller to void.
 
-    Read after the batch, once per distinct selection set. A selection
-    already failing against the unmutated candidate source would make every
-    mutant sampled onto it read `killed` regardless of what it changed,
-    publishing a kill rate that measures nothing rather than test adequacy.
+    A missing exit file is refused for every selection alike: the batch
+    script records one immediately after the calibration run, so an absent
+    file means the container stopped before reaching it, an infra failure no
+    selection kind excuses. A present, nonzero exit splits by kind
+    (DECISIONS row 119). A per-line selection's covering tests are exactly
+    the ones a green fix has to keep passing, so a red one still refuses the
+    whole batch outright: every mutant sampled onto it would read `killed`
+    regardless of what it changed, publishing a kill rate that measures
+    nothing. `FULL_SUITE` is the selection every caller-population mutant
+    gets (no per-line coverage context to select from), and it can come back
+    red for a reason no candidate change controls: a full suite that is
+    environmentally red before any mutant runs (DECISIONS row 73). Refusing
+    the whole observation over that would make an unrelated, permanent
+    environmental gap look like a harness failure on every run against that
+    repo, forever; voiding just the selection's own mutants, which the
+    caller does, keeps the observation running on the signal it can still
+    trust.
     """
+    voided: dict[tuple[str, ...], int] = {}
     for selection in sorted(distinct):
         cal_dir = artifacts / _MUT_CALIBRATION / _selection_key(selection)
         exit_path = cal_dir / "exit"
@@ -890,18 +908,23 @@ def _guard_calibration(artifacts: Path, distinct: Iterable[tuple[str, ...]]) -> 
                 f"evidence. Next: read {cal_dir}/err, then re-run the pair."
             )
         code = _read_mutation_int(exit_path, "an exit code")
-        if code != 0:
-            raise SkepticInfraError(
-                f"The calibration run for selection {selection} exited {code}, "
-                f"not 0. Skeptic times this selection against the unmutated "
-                f"candidate before capping any mutant sampled onto it, and a "
-                f"selection already red there would make every one of those "
-                f"mutants read `killed` regardless of what it changed. This is "
-                f"an infra failure, never evidence: the red candidate is "
-                f"t1_outcomes' evidence to report, not this check's. Next: "
-                f"read the t1_outcomes artifact for this pair, then re-run "
-                f"the mutation batch once the selection is green."
-            )
+        if code == 0:
+            continue
+        if selection == FULL_SUITE:
+            voided[selection] = code
+            continue
+        raise SkepticInfraError(
+            f"The calibration run for selection {selection} exited {code}, "
+            f"not 0. Skeptic times this selection against the unmutated "
+            f"candidate before capping any mutant sampled onto it, and a "
+            f"selection already red there would make every one of those "
+            f"mutants read `killed` regardless of what it changed. This is "
+            f"an infra failure, never evidence: the red candidate is "
+            f"t1_outcomes' evidence to report, not this check's. Next: "
+            f"read the t1_outcomes artifact for this pair, then re-run "
+            f"the mutation batch once the selection is green."
+        )
+    return voided
 
 
 def observe_mutation(
@@ -924,7 +947,12 @@ def observe_mutation(
     Every runnable mutant's exit file is required after the run; a missing
     one is INFRA for the whole batch (`observe_variant`'s `_read_exit`
     pattern), since a partial batch says nothing trustworthy about any
-    mutant in it, run or not.
+    mutant in it, run or not. The one exception is a mutant whose own
+    selection's calibration came back red over `FULL_SUITE` (DECISIONS row
+    119): `_guard_calibration` names it voided rather than INFRA, and this
+    function excludes it from both container read-back and `records`
+    entirely, carrying it instead in the returned report's
+    `calibration_void`.
 
     The candidate tree is left byte-identical to how it started: every
     mutant's own script lines restore the original file before the next
@@ -976,8 +1004,10 @@ def observe_mutation(
                 f"This is an infra failure, never evidence. Next: `docker ps -a` "
                 f"and `docker system df` to check the daemon, then re-run the pair."
             )
-        _guard_calibration(artifacts, distinct)
+        voided = _guard_calibration(artifacts, distinct)
         for m in runnable:
+            if selected[m.mutant_id] in voided:
+                continue
             mdir = artifacts / _MUT_MUTANTS / m.mutant_id
             exit_path = mdir / "exit"
             if not exit_path.is_file():
@@ -997,10 +1027,28 @@ def observe_mutation(
                 population=m.population, status=_status_for_exit(code),
                 tests_run=selected[m.mutant_id], dur_ms=dur_ms)
 
-    ordered = tuple(records[m.mutant_id] for m in mutants)
+    calibration_void = tuple(
+        CalibrationVoid(
+            selection=selection, calibration_exit=code,
+            excluded_mutant_ids=tuple(sorted(
+                m.mutant_id for m in runnable if selected[m.mutant_id] == selection)),
+            reason=(
+                f"Selection {selection} calibrated at exit {code} against the "
+                f"unmutated candidate. Over a full suite that is not green "
+                f"before any mutant runs, exit-code kill detection is void: "
+                f"every mutant sampled onto it would read `killed` regardless "
+                f"of what it changed. Excluded from this batch's records "
+                f"rather than scored; the changed-population rate, unaffected, "
+                f"remains the primary signal."
+            ),
+        )
+        for selection, code in sorted(voided.items())
+    ) if runnable else ()
+
+    ordered = tuple(records[m.mutant_id] for m in mutants if m.mutant_id in records)
     return MutationReport(
         seed=spec.verification.mutation.seed, budget=spec.verification.mutation.budget_mutants,
-        generated=len(mutants), records=ordered)
+        generated=len(mutants), records=ordered, calibration_void=calibration_void)
 
 
 # The consumer probe (Task 10, H8's primary detector). `observe_probe` writes

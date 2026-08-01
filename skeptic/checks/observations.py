@@ -275,12 +275,40 @@ class MutantRecord(_Model):
     dur_ms: int | None
 
 
+class CalibrationVoid(_Model):
+    """One `FULL_SUITE` selection whose own calibration run came back red.
+
+    A caller-population mutant has no per-line coverage context to select
+    tests from, so it always lands on `mutation.FULL_SUITE`
+    (`("<full-suite>",)`). If that selection's unmutated-candidate timing run
+    exits nonzero over an environmentally red full suite (a documented,
+    permanent gap the candidate did not introduce, DECISIONS row 73), every
+    mutant sampled onto it would read `killed` regardless of what it
+    changed: exit-code kill detection is void, not evidence, so
+    `observe_mutation` excludes those mutants from `MutationReport.records`
+    entirely (DECISIONS row 119) instead of scoring them. A per-line
+    selection's own nonzero calibration stays `SkepticInfraError`
+    unconditionally; this model exists for `FULL_SUITE` alone.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    selection: tuple[str, ...]
+    calibration_exit: int
+    excluded_mutant_ids: tuple[str, ...]
+    reason: str
+
+
 class MutationReport(_Model):
     """One candidate's mutation batch: the config it ran under, plus every record.
 
-    `generated` is the count of mutants this report covers (`len(records)`),
-    which is `sample_mutants`'s output count and can be smaller than `budget`
+    `generated` is the count of mutants this batch sampled
+    (`sample_mutants`'s output count), which can be smaller than `budget`
     when the candidate's changed spans do not carry that many mutable sites.
+    `records` covers every sampled mutant except the ones named in
+    `calibration_void`'s `excluded_mutant_ids`, which never ran at all and
+    carry no record of any status, existing or new: `len(records) +
+    sum(len(v.excluded_mutant_ids) for v in calibration_void) == generated`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -289,6 +317,7 @@ class MutationReport(_Model):
     budget: int
     generated: int
     records: tuple[MutantRecord, ...]
+    calibration_void: tuple[CalibrationVoid, ...] = ()
 
 
 class ProbeCall(_Model):

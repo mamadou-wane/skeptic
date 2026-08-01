@@ -153,6 +153,7 @@ def run(pair: ObservationPair) -> CheckResult:
                       "survived": caller_survived},
         },
         "records": [r.model_dump(mode="json") for r in report.records],
+        "calibration_void": [v.model_dump(mode="json") for v in report.calibration_void],
     })
 
     evidence: list[Evidence] = []

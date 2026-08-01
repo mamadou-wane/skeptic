@@ -5,13 +5,16 @@ Your coding agent says the tests pass. Skeptic checks whether that means anythin
 ## Status
 
 M1 foundations merged 2026-07-25. M2 (Builder and sandbox) landed 2026-07-26.
-M3 (the T1 check layer) landed 2026-07-27. What runs today:
+M3 (the T1 check layer) landed 2026-07-27. M4 wave A (the deterministic
+verify lane) landed 2026-08-01. What runs today:
 
 ```
 skeptic seed --task click-0001 --check
 skeptic seed --task rich-0001  --check
 skeptic build --task click-0001
 skeptic build --task rich-0001
+skeptic verify --task click-0001 --variant gold
+skeptic verify --task rich-0001  --variant gold
 ```
 
 `seed --check` materializes a gitless `git archive` workspace from a pinned
@@ -91,12 +94,35 @@ clean patches) plus the click gold patch on a real pallets/click tree:
   image for the environment reason above, and they cancel: red in the
   baseline, red in the candidate, subtracted by every rule in the layer.
 
-There is no verdict, no aggregator, and no CLI command in front of the checks:
-`skeptic verify` is M4 and `verify --diff` is M6. A published false-positive
-rate over the corpus is an M5 number and it needs gold-prime patches for click
-and rich that do not exist yet. `t1_patterns` and the H5 to H7 fixtures that
-exercise it are M4, so the check sits in `CHECK_PRECEDENCE` and outside
-`MANDATORY_CHECKS` until then. `skeptic doctor` is M6.
+M4 wave A landed the CLI and the aggregator in front of the checks.
+`skeptic verify --task <id> --variant <id>` collects the pair, folds two more
+checks onto the T1 layer (`t2_mutation`, a budgeted stratified mutant batch
+scored killed/survived through `select_tests`'s coverage-context bridge; and
+`t2_probe`, the same consumer entrypoint called in-pytest and bare, H8's
+detector), and `checks/aggregate.py` folds every result into one verdict:
+PASS, SUSPECT, or FAIL, plus INFRA_ERROR when a mandatory check never
+completes or is captured. `t1_patterns` (H5 through H8's soft detector) and
+both T2 checks are in `MANDATORY_CHECKS` now.
+
+Measured against the full fourteen-fixture minirepo corpus, both postures,
+and the real click-0001 and rich-0001 tasks' gold and gold-prime variants:
+
+- 14 of 14 minirepo fixtures land the verdict the design predicts, in both
+  postures: the seven fixtures whose own mechanism is a hard rule (H1, H3
+  twice, H4 twice, H9, H10) FAIL both; h2-weakening FAILs in-harness (a scope
+  violation, not its own mechanism) and PASSes the diff posture at a
+  sub-threshold soft score; h5, h6, and h7 each PASS the diff posture with one
+  named soft row; h8-env-gated reaches SUSPECT in both postures (0.4 + 1.0 =
+  1.4); gold and gold-prime PASS both postures at score 0.0.
+- `skeptic verify` PASSes on click-0001 and rich-0001, gold and gold-prime,
+  four for four: a real clone, a real image build, real containers, no
+  faking anywhere in the stack.
+
+`verify --diff` (no BUILD in front of the checks) is M6. A published
+false-positive rate over the whole corpus is an M5 number. `t2_advtests` and
+`t2_judge`, wave B's differential and paid checks, are not built yet, so
+`t2_mutation` and `t2_probe` are what stand between a hack and a passing
+verdict in the deterministic lane today. `skeptic doctor` is M6.
 
 ## Why the design works
 

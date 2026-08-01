@@ -22,7 +22,12 @@ import pytest
 
 from skeptic import collector, mutation
 from skeptic.checks import t2_mutation
-from skeptic.checks.observations import CoverageReport, MutantRecord, MutationReport
+from skeptic.checks.observations import (
+    CalibrationVoid,
+    CoverageReport,
+    MutantRecord,
+    MutationReport,
+)
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import ExecResult
 from tests.helpers import make_observed_pair, make_task_spec
@@ -160,6 +165,7 @@ def fake_mutation_run(
     monkeypatch, exits: dict[str, int],
     selections: dict[str, tuple[str, ...]] | None = None, *,
     write_exit: bool = True, calibration_exit: int = 0,
+    calibration_exits: dict[tuple[str, ...], int] | None = None,
 ):
     """Answer one `docker run` by writing the exit files the batch script
     would have written for the mutants named in `exits`, ignoring the actual
@@ -170,8 +176,11 @@ def fake_mutation_run(
     `selections` (when given) also writes a healthy calibration exit for
     every distinct selection in it, since `observe_mutation` now refuses the
     whole batch on a missing or nonzero calibration exit before it ever reads
-    a mutant's own: `calibration_exit` overrides that value for the tests
-    pinning the calibration-guard contract itself.
+    a mutant's own: `calibration_exit` overrides that value for every
+    selection uniformly, for the tests pinning the calibration-guard contract
+    itself; `calibration_exits` overrides it per selection instead, for a
+    batch that needs one selection green and another red in the same run
+    (DECISIONS row 119's `FULL_SUITE`-voids-not-INFRAs split).
     """
     calls: list[list[str]] = []
 
@@ -181,7 +190,8 @@ def fake_mutation_run(
         for selection in {selections[mid] for mid in selections} if selections else ():
             cal_dir = artifacts / "calibration" / collector._selection_key(selection)
             cal_dir.mkdir(parents=True, exist_ok=True)
-            (cal_dir / "exit").write_text(f"{calibration_exit}\n")
+            code = (calibration_exits or {}).get(selection, calibration_exit)
+            (cal_dir / "exit").write_text(f"{code}\n")
         if write_exit:
             for mutant_id, code in exits.items():
                 mdir = artifacts / "mutants" / mutant_id
@@ -307,6 +317,60 @@ def test_calibration_missing_exit_file_is_also_infra(tmp_path, monkeypatch):
     with pytest.raises(SkepticInfraError, match=re.escape(str(selection))) as exc:
         collector.observe_mutation(
             make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+    assert "infra failure" in str(exc.value)
+
+
+def test_full_suite_calibration_exit_voids_the_caller_population_not_infra(
+    tmp_path, monkeypatch
+):
+    """DECISIONS row 119: unlike a per-line selection (still INFRA, the test
+    above), a red `FULL_SUITE` calibration excludes the mutants sampled onto
+    it from `records` entirely rather than refusing the whole observation.
+    `FULL_SUITE` can come back red for a reason no candidate change controls
+    (an environmentally red full suite, DECISIONS row 73), so voiding just
+    that selection's mutants keeps the rest of the batch's signal trustworthy
+    instead of throwing it all away."""
+    tree = _tree(tmp_path)
+    changed = _mutant("c1", population="changed")
+    caller = _mutant("k1", population="caller")
+    selections = {"c1": ("tests/test_a.py::test_x",), "k1": mutation.FULL_SUITE}
+    fake_mutation_run(
+        monkeypatch, {"c1": 1, "k1": 0}, selections,
+        calibration_exits={mutation.FULL_SUITE: 1})
+
+    report = collector.observe_mutation(
+        make_task_spec(), "img", tree, tmp_path / "artifacts", [changed, caller], selections)
+
+    # k1 never reaches records at all: no status, existing or new, invented for it.
+    assert [r.mutant_id for r in report.records] == ["c1"]
+    assert report.generated == 2
+    assert len(report.calibration_void) == 1
+    void = report.calibration_void[0]
+    assert void.selection == mutation.FULL_SUITE
+    assert void.calibration_exit == 1
+    assert void.excluded_mutant_ids == ("k1",)
+    assert "exit 1" in void.reason
+    assert "killed" in void.reason
+
+
+def test_per_line_calibration_exit_still_infras_even_with_a_voided_full_suite(
+    tmp_path, monkeypatch
+):
+    """The split is by selection kind, not all-or-nothing per batch: a red
+    per-line selection still refuses the whole observation even when a
+    different, `FULL_SUITE` selection in the same batch is voided instead."""
+    tree = _tree(tmp_path)
+    changed = _mutant("c1", population="changed")
+    caller = _mutant("k1", population="caller")
+    selection = ("tests/test_a.py::test_x",)
+    selections = {"c1": selection, "k1": mutation.FULL_SUITE}
+    fake_mutation_run(
+        monkeypatch, {"c1": 1, "k1": 0}, selections,
+        calibration_exits={selection: 1, mutation.FULL_SUITE: 1})
+
+    with pytest.raises(SkepticInfraError, match=re.escape(str(selection))) as exc:
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [changed, caller], selections)
     assert "infra failure" in str(exc.value)
 
 
@@ -447,6 +511,34 @@ def test_zero_denominator_scores_nothing():
     artifact = _artifact(pair, result.artifact)
     assert artifact["rates"]["changed"]["rate"] is None
     assert artifact["rates"]["caller"]["rate"] is None
+
+
+def test_calibration_void_completes_with_the_caller_rate_null():
+    """DECISIONS row 119, the check side: a voided `FULL_SUITE` selection's
+    mutants never reach `records` at all, so the caller population's own
+    rate falls out through the existing zero-denominator path rather than a
+    new one; the changed population, which the void never touches, keeps its
+    own rate unaffected. The artifact carries the void entry for a human to
+    read, and it scores nothing on its own (it is not a rule id in `RULES`)."""
+    records = (_record("c1", "killed"), _record("c2", "survived"))
+    void = CalibrationVoid(
+        selection=mutation.FULL_SUITE, calibration_exit=1,
+        excluded_mutant_ids=("k1", "k2"),
+        reason="Selection ('<full-suite>',) calibrated at exit 1 ...")
+    report = MutationReport(seed=1, budget=4, generated=4, records=records,
+                            calibration_void=(void,))
+    pair = _pair_with_mutation(report)
+
+    result = t2_mutation.run(pair)
+
+    assert result.status == "completed"
+    artifact = _artifact(pair, result.artifact)
+    # changed: 1 killed, 1 survived -> 0.5, at CHANGED_THRESHOLD exactly, not below it.
+    assert artifact["rates"]["changed"] == {"rate": pytest.approx(0.5), "killed": 1,
+                                            "survived": 1}
+    assert artifact["rates"]["caller"] == {"rate": None, "killed": 0, "survived": 0}
+    assert artifact["calibration_void"] == [void.model_dump(mode="json")]
+    assert result.evidence == ()
 
 
 def test_report_with_no_records_is_not_applicable():

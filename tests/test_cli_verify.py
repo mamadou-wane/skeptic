@@ -59,7 +59,12 @@ def _fake_heavy_stages(monkeypatch, pair, calls):
     `selections` map, and `observe_mutation` never touches `pair.candidate.
     tree` when its own `mutants` argument is empty), so the CLI plumbing this
     test exercises stays exercised without needing a real tree or container
-    for the mutation batch specifically.
+    for the mutation batch specifically. `observe_probe` (Task 10) is faked to
+    a bare `None` for the same reason: its own enrichment block runs before
+    `run_verify_layer` too, and the real function would otherwise try to
+    mount `pair.candidate.tree`, a path nothing ever created, into a
+    container. `run_verify_layer` is faked here regardless, so the returned
+    `None` is never read by a real `t2_probe.run`.
     """
     from skeptic import candidate, checks, collector, mutation, workspace
 
@@ -79,6 +84,7 @@ def _fake_heavy_stages(monkeypatch, pair, calls):
 
     monkeypatch.setattr(collector, "collect_pair", fake_collect_pair)
     monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
+    monkeypatch.setattr(collector, "observe_probe", lambda *a, **k: None)
     monkeypatch.setattr(checks, "run_verify_layer", lambda p: _pass_layer_outcome())
 
 
@@ -141,8 +147,23 @@ def _would_be_pass_pair():
 
 def _fake_heavy_stages_dead_enrichment(monkeypatch, pair, enrichment_error: Exception):
     """Like `_fake_heavy_stages`, but `run_verify_layer` is left real and
-    `generate_mutants` raises `enrichment_error` instead of degrading to `()`."""
+    `generate_mutants` raises `enrichment_error` instead of degrading to `()`.
+
+    `observe_probe` is faked to a harmless, real `ProbeReport(calls=())`
+    rather than left real: `pair` here is a tree-backed `make_pure_pair`
+    fixture (a real minirepo tree), but the outer `spec` `do_verify` reads for
+    the probe's own image tag and budget is click-0001's (the CLI invocation
+    below always asks for `--task click-0001`), and click's image is never
+    built in this test. Left real, the probe enrichment would try to run a
+    real container against a real tree but a nonexistent click image tag,
+    which is either a slow local failure or a network-dependent one,
+    completely unrelated to what these two tests pin (mutation-enrichment
+    isolation specifically). A non-`None` report keeps `t2_probe` completed
+    and silent, which is what isolates the probe from mutation's own faulted
+    `generate_mutants` in both tests below.
+    """
     from skeptic import candidate, collector, mutation, workspace
+    from skeptic.checks.observations import ProbeReport
 
     monkeypatch.setattr(workspace, "clone_pinned", lambda url, commit, cache: cache)
     monkeypatch.setattr(workspace, "materialize", lambda repo, commit, dest: dest.mkdir(parents=True))
@@ -156,6 +177,7 @@ def _fake_heavy_stages_dead_enrichment(monkeypatch, pair, enrichment_error: Exce
     monkeypatch.setattr(
         collector, "collect_pair",
         lambda spec, repo_dir, report, workdir, baseline_cache=None: pair)
+    monkeypatch.setattr(collector, "observe_probe", lambda *a, **k: ProbeReport(calls=()))
 
     def _boom(_pair):
         raise enrichment_error
@@ -308,7 +330,7 @@ def test_verify_writes_verdict_json_and_prints_the_banner(tmp_path, monkeypatch)
     assert result.exit_code == 0, result.output
     assert "VERDICT PASS" in result.output
     assert "score 0.00" in result.output
-    assert "checks: 8 completed · 0 n/a · 0 infra" in result.output
+    assert "checks: 9 completed · 0 n/a · 0 infra" in result.output
     assert "fix_verified: True" in result.output
     assert "profile deterministic · isolation docker-run" in result.output
     assert calls == [1]

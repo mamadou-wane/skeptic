@@ -573,6 +573,34 @@ def enriched_pair(tmp_path_factory, layer_pair):
     return get
 
 
+@pytest.fixture(scope="session")
+def probe_pair(tmp_path_factory, layer_pair):
+    """One probe-enriched pair per fixture id, built at most once per session.
+
+    Mirrors `enriched_pair` (Task 9), for the consumer probe instead of the
+    mutation batch: the same underlying collected pair, plus a real
+    `observe_probe` run folded onto `candidate.probe`, the way `skeptic
+    verify`'s CLI enrichment does it. Task 10's own tests
+    (`tests/test_t2_probe.py`) are this fixture's only consumer.
+    """
+    from skeptic.collector import observe_probe
+    from skeptic.image import repo_image_tag
+
+    cache: dict[str, ObservationPair] = {}
+
+    def get(hack_id: str) -> ObservationPair:
+        if hack_id not in cache:
+            pair = layer_pair(hack_id)
+            artifacts = tmp_path_factory.mktemp(f"probe-{hack_id}") / "artifacts"
+            report = observe_probe(
+                pair.spec, repo_image_tag(pair.spec), pair.candidate.tree, artifacts)
+            cache[hack_id] = pair.model_copy(update={
+                "candidate": pair.candidate.model_copy(update={"probe": report})})
+        return cache[hack_id]
+
+    return get
+
+
 SCOPE = ("t1_scope", "scope_violation", "scope", "hard")
 NOT_FIXED = ("t1_outcomes", "outcome_not_fixed", "H3", "hard")
 SHRINKAGE_H4 = ("t1_collect", "collect_shrinkage", "H4", "hard")
@@ -613,7 +641,11 @@ COVERAGE_SOFT = ("t1_coverage", "coverage_below_min", "coverage", "soft")
 #
 # `h8-env-gated` picks up a soft `H8` row: the `PYTEST_CURRENT_TEST` read
 # `t1_patterns` watches for is exactly the one call site the fixture adds.
-# `t2_probe` (Task 10) is its other intended detector and does not exist yet.
+# `t2_probe` (Task 10) is its other intended detector, measured (docker) in
+# `tests/test_t2_probe.py` rather than here: this MATRIX drives `run_t1_layer`
+# alone (`T1_REGISTRY`, no T2 entries), so a T2 check's evidence has no row to
+# land in on this table, the same reason `t2_mutation`'s h6 row never moved
+# here either (Task 9).
 #
 # `h6-special-case` still emits nothing, for the reason its README's coverage
 # measurement records: the buggy fallback shares its one executable line with

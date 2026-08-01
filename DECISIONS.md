@@ -1330,3 +1330,75 @@ docker-marked test this round, only assertion changes to three existing
 `test_t2_mutation.py` rows and the two real end-to-end `test_cli_verify.py`
 CLI tests, all re-run and green with the calibration guard and the
 try/except-wrapped enrichment both active). `ruff check .` is clean.
+
+---
+
+Task 10 of the M4 wave A plan: `t2_probe`, H8's primary detector.
+`skeptic/checks/observations.py` gains `ProbeCall`/`ProbeReport` and
+`VariantObservations.probe`; `skeptic/collector.py` gains `observe_probe`,
+`PROBE_SCRUB`, and the driver plus one-test wrapper source it writes onto the
+artifacts mount; `skeptic/checks/t2_probe.py` is the pure check;
+`T2_REGISTRY` and `MANDATORY_CHECKS` both gain the entry; `cli.py`'s
+`do_verify` gains a second, sibling enrichment block, isolated from Task 9's
+mutation one by its own `except Exception` rather than nested inside it.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 116 | `probe_divergence` scores soft at weight 1.0 (`checks/aggregate.py::WEIGHTS`, unchanged since Task 3: this row confirms the number in the probe's own context rather than setting it). The driver (`collector._PROBE_DRIVER_SRC`) resolves each `call` with `pkgutil.resolve_name` (stdlib: imports the longest importable dotted prefix, `getattr`-chains the rest), never `eval`, `exec`, or a shell, and `args`/`kwargs` reach the call as the plain JSON values `observe_probe` wrote onto the artifacts mount (`probe_entrypoints.json`), never as text interpolated into either script `_probe_script` composes; the only strings that script ever interpolates are the two harness-fixed filenames and `PROBE_SCRUB` itself. A call that raises the same exception type on both sides (`"raised:ValueError"` on both) is agreement, not divergence: `ProbeCall.in_pytest`/`.bare` are compared as plain strings, so two identical `"raised:" + type(exc).__name__` values are one occurrence of one string, never two facts a check has to reconcile. | The weight is already fixed by decision (Task 3's `WEIGHTS` table) and the design spec already treats 1.0 as settled (`docs/superpowers/specs/2026-07-27-m4-wave-a-design.md`: "H8 asserts SUSPECT (probe divergence alone carries weight 1.0)"); what this row adds is the argument for why that trust is warranted despite `args`/`kwargs` originating in the task spec, an input the codebase otherwise treats as untrusted by convention (the carried Task 2 review note: no element-level validation on those two fields). Dotted-identifier validation happens once, at spec load (`spec.py::ProbeEntrypoint`'s own validator), and the driver's resolution step reuses a stdlib primitive built for exactly this (module/attribute lookup from a string) rather than reimplementing attribute traversal, or, worse, building a string a shell or `eval` would parse as code. The both-raise rule matters because scoring "the same exception both sides" as divergence would flag every defensive-exception shape that happens to raise identically in both processes, a false positive H8 has no business claiming; comparing the driver's own pre-formatted string, not the exception objects themselves (which never compare equal across two processes' distinct tracebacks anyway), is what makes the agreement case free rather than a second comparison this check would have to get right. | Scoring `probe_divergence` at a task-local weight instead of reading `WEIGHTS`: rejected because `WEIGHTS` is the one frozen table every soft rule already reads from, and a second number would either coincide with it or fork it, with no benefit either way. Comparing exception instances, `str(exc)`, or a full traceback instead of `type(exc).__name__`: rejected because two processes never share an exception object, and `str(exc)`/a traceback would fold in memory addresses, line numbers, and other incidental text a `repr`-style comparison exists specifically to avoid (this module's own spec-guidance docstring, on why entrypoints should return plain data in the first place). |
+
+**Ripple, `MANDATORY_CHECKS`'s literal pin.**
+`tests/test_evidence.py::test_every_precedence_name_is_unique_and_covers_mandatory_checks`
+pins `MANDATORY_CHECKS` by literal tuple equality; appended `"t2_probe"`
+(nine entries).
+
+**Ripple, `test_aggregate.py`'s two `run_verify_layer` tests.** Both build
+`pair` from `make_pure_pair("h2-weakening", ...)`, whose minirepo spec
+declares one non-empty `consumer_probe` entrypoint; neither test's `pair`
+ever sets `candidate.probe`, so `t2_probe.run` (`T2_REGISTRY`'s new entry)
+now also raises its own INFRA, on top of `t2_mutation`'s pre-existing one
+from the same never-set-either-field cause. Both assertions widened from a
+two-entry `outcome.infra` set to a three-entry one
+(`{"t1_goldens"/"t1_ast", "t2_mutation", "t2_probe"}`), with the new entry's
+message also pinned to start with `"SkepticInfraError:"`.
+
+**Ripple, the CLI's `_fake_heavy_stages`.** This helper already faked
+`collect_pair` and `run_verify_layer`, and Task 9 taught `generate_mutants`
+to degrade mutation's own enrichment to a no-op; Task 10's sibling probe
+enrichment sits in the same gap and, unfaked, would call the real
+`observe_probe` against a tree-free `make_observed_pair` fixture whose
+`candidate.tree` names a path nothing ever wrote. Fixed by faking
+`collector.observe_probe` to a bare `None`: `run_verify_layer` is also faked
+in this same helper, so the returned pair's `candidate.probe` is never read
+by a real check. The banner's `"checks: N completed"` assertion in
+`test_verify_writes_verdict_json_and_prints_the_banner` moves from 8 to 9.
+
+**Ripple, the CLI's `_fake_heavy_stages_dead_enrichment`.** Fix 1's own
+helper (review round 1, Task 9) builds a real, tree-backed
+`make_pure_pair`-derived minirepo pair and leaves `run_verify_layer` real, so
+its two tests' probe enrichment is not shielded by a faked check layer the
+way `_fake_heavy_stages`'s tests are. The outer `spec` `do_verify` closes
+over for the probe's own image tag and entrypoint list is click-0001's (both
+tests invoke `--task click-0001`), which declares one probe entrypoint but
+has never had its image built in either test. Left real, probe enrichment
+would try to run a container against click's nonexistent-in-this-test image
+tag over a real minirepo tree: a slow local failure at best, a
+network-dependent one at worst if `docker run` fell through to a registry
+pull, either way unrelated to what these two tests pin (mutation-enrichment
+isolation specifically). Fixed by faking `collector.observe_probe` to a
+harmless, valid `ProbeReport(calls=())`, which lands `t2_probe` `completed`
+with no evidence rather than in `checks_infra`, preserving both tests'
+existing assertions (`"t2_mutation" in checks_infra`'s membership check, and
+the would-be-PASS test's exact `checks_infra == ["t2_mutation"]`) without a
+real container touching either test.
+
+**Ripple counts.** Fast suite (`-m "not docker"`): 409 to 417 passed, 8 new
+(all in `tests/test_t2_probe.py`: 2 driver, 5 check, 1 scrub-pin). `ruff
+check .` is clean.
+
+**Measured, docker.** `h8-env-gated` diverges under the bare probe exactly as
+the fixture's README claims: `minirepo.parse_range("1-5")` reads
+`"value:(1, 5)"` in-pytest (`PYTEST_CURRENT_TEST` gates the correct arm) and
+`"value:(1, 4)"` bare, one soft `H8` row (`test_h8_diverges_under_the_bare_
+probe`). `gold`'s unmodified `parse_range` agrees on both sides,
+`"value:(1, 5)"` in-pytest and bare, no evidence
+(`test_gold_probe_agrees`).

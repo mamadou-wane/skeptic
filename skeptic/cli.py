@@ -386,7 +386,7 @@ def verify(
     from skeptic.checks.aggregate import aggregate, exit_code
     from skeptic.checks.evidence import Verdict
     from skeptic.checks.t1_outcomes import compute_fix_verified
-    from skeptic.collector import collect_pair, observe_mutation
+    from skeptic.collector import collect_pair, observe_mutation, observe_probe
     from skeptic.image import repo_image_tag
     from skeptic.mutation import FULL_SUITE, generate_mutants, sample_mutants, select_tests
     from skeptic.orchestrator import StageCache, run_stage
@@ -515,6 +515,34 @@ def verify(
                 trace.event(
                     stage="VERIFY", actor="checks.t2_mutation",
                     event="mutation_enrichment_failed", variant=variant_spec.id,
+                    payload={"error": f"{type(exc).__name__}: {exc}"})
+
+            # Probe enrichment: its own isolation block, parallel to the
+            # mutation one above and never nested inside it (DECISIONS row
+            # 116), so a dead mutation batch and a dead probe run degrade
+            # independently rather than one taking the other down. On
+            # capture, `candidate.probe` stays `None`, which is exactly what
+            # `t2_probe.run`'s own INFRA branch reads as "unobserved" when
+            # `consumer_probe.entrypoints` is non-empty (empty entrypoints
+            # never reach this block's exception path at all: `observe_probe`
+            # returns `None` for that case by contract, not by raising).
+            try:
+                probe_started = time.monotonic()
+                probe_report = observe_probe(
+                    spec, repo_image_tag(spec), pair.candidate.tree,
+                    pair.artifacts_dir / "probe")
+                trace.event(
+                    stage="VERIFY", actor="checks.t2_probe", event="probe_batch",
+                    variant=variant_spec.id,
+                    dur_ms=int((time.monotonic() - probe_started) * 1000),
+                    payload={"entrypoints": len(spec.verification.consumer_probe.entrypoints),
+                            "calls": len(probe_report.calls) if probe_report else 0})
+                pair = pair.model_copy(update={
+                    "candidate": pair.candidate.model_copy(update={"probe": probe_report})})
+            except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
+                trace.event(
+                    stage="VERIFY", actor="checks.t2_probe",
+                    event="probe_enrichment_failed", variant=variant_spec.id,
                     payload={"error": f"{type(exc).__name__}: {exc}"})
 
             layer = run_verify_layer(pair)

@@ -293,9 +293,12 @@ def test_exit_code_mapping():
 def test_layer_captures_a_raising_check_and_siblings_survive(monkeypatch):
     """One registry entry raises; the rest of the layer still reports.
 
-    `pair` never sets `candidate.mutation`, so `t2_mutation.run` (Task 9's
-    entry in `T2_REGISTRY`) raises its own INFRA for every case here on top
-    of whichever T1 entry this test patches; both land in `outcome.infra`.
+    `pair` never sets `candidate.mutation` or `candidate.probe`, and the
+    minirepo spec `make_pure_pair` builds against declares one
+    `consumer_probe` entrypoint, so both `t2_mutation.run` and `t2_probe.run`
+    (`T2_REGISTRY`, Tasks 9 and 10) raise their own INFRA for every case here
+    on top of whichever T1 entry this test patches; all three land in
+    `outcome.infra`.
     """
     pair = make_pure_pair("h2-weakening", observed=GREENED)
 
@@ -312,19 +315,21 @@ def test_layer_captures_a_raising_check_and_siblings_survive(monkeypatch):
 
     assert outcome.infra["t1_goldens"] == "RuntimeError: synthetic failure"
     assert outcome.infra["t2_mutation"].startswith("SkepticInfraError:")
-    assert set(outcome.infra) == {"t1_goldens", "t2_mutation"}
+    assert outcome.infra["t2_probe"].startswith("SkepticInfraError:")
+    assert set(outcome.infra) == {"t1_goldens", "t2_mutation", "t2_probe"}
     names = [r.check for r in outcome.results]
     assert "t1_goldens" not in names
     assert "t2_mutation" not in names
+    assert "t2_probe" not in names
     assert set(names) == {
         name for name, _ in patched if name != "t1_goldens"
     } | {"t1_ast"}
 
 
 def test_layer_annotate_failure_degrades_to_unannotated_results(monkeypatch):
-    """`pair` never sets `candidate.mutation` either, so `t2_mutation` is
-    captured alongside the patched `annotate` failure; see the sibling test's
-    docstring above."""
+    """`pair` never sets `candidate.mutation` or `candidate.probe` either, so
+    both `t2_mutation` and `t2_probe` are captured alongside the patched
+    `annotate` failure; see the sibling test's docstring above."""
     pair = make_pure_pair("h2-weakening", observed=GREENED)
 
     def _boom(_pair, _results):
@@ -336,7 +341,8 @@ def test_layer_annotate_failure_degrades_to_unannotated_results(monkeypatch):
 
     assert outcome.infra["t1_ast"] == "RuntimeError: annotate blew up"
     assert outcome.infra["t2_mutation"].startswith("SkepticInfraError:")
-    assert set(outcome.infra) == {"t1_ast", "t2_mutation"}
+    assert outcome.infra["t2_probe"].startswith("SkepticInfraError:")
+    assert set(outcome.infra) == {"t1_ast", "t2_mutation", "t2_probe"}
     names = [r.check for r in outcome.results]
     assert "t1_ast" in names  # t1_ast.run itself still succeeded
 

@@ -291,13 +291,42 @@ class MutationReport(_Model):
     records: tuple[MutantRecord, ...]
 
 
+class ProbeCall(_Model):
+    """One `consumer_probe` entrypoint's two readings: same call, two processes.
+
+    `in_pytest` and `bare` are each `"value:" + repr(result)` or `"raised:" +
+    type(exc).__name__`, never anything else: the driver
+    (`collector.observe_probe`) never records a raw traceback, an argument, or
+    any other entrypoint-controlled text into these two fields, which is what
+    lets `t2_probe` compare them with plain string inequality. Equal strings
+    is agreement, including the both-raised case (`"raised:ValueError"` on
+    both sides), and unequal is `H8` divergence.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    call: str
+    in_pytest: str
+    bare: str
+
+
+class ProbeReport(_Model):
+    """One candidate's consumer-probe batch: one `ProbeCall` per spec entrypoint,
+    in `spec.verification.consumer_probe.entrypoints` order."""
+
+    model_config = ConfigDict(frozen=True)
+
+    calls: tuple[ProbeCall, ...]
+
+
 class VariantObservations(_Model):
     """One side of the comparison: what one tree collected, ran, and covered.
 
     Everything from `collected` through `coverage` is `None` when it was not
-    observed. See the module docstring. `mutation` is collector-side machinery
-    recorded onto the candidate side only (Task 9); the baseline is never
-    mutation-tested, so it stays `None` there by construction.
+    observed. See the module docstring. `mutation` and `probe` are
+    collector-side machinery recorded onto the candidate side only (Tasks 9
+    and 10); the baseline is never mutation-tested or probed, so both stay
+    `None` there by construction.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -326,6 +355,7 @@ class VariantObservations(_Model):
     the field on both sides would otherwise expect the baseline to fill it.
     """
     mutation: MutationReport | None = None
+    probe: ProbeReport | None = None
 
 
 class ObservationPair(_Model):

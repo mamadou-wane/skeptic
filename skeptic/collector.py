@@ -50,6 +50,8 @@ from skeptic.checks.observations import (
     MutantStatus,
     MutationReport,
     ObservationPair,
+    ProbeCall,
+    ProbeReport,
     Side,
     VariantObservations,
     parse_collect_manifest,
@@ -59,7 +61,7 @@ from skeptic.image import ensure_repo_image
 from skeptic.mutation import FULL_SUITE, Mutant
 from skeptic.sandbox import RunContainer
 from skeptic.seedcheck import parse_junit
-from skeptic.spec import TaskSpec
+from skeptic.spec import ProbeEntrypoint, TaskSpec
 from skeptic.trace import config_hash
 from skeptic.workspace import apply_candidate, apply_patch, materialize
 
@@ -94,6 +96,25 @@ _MUT_CAP_CEILING_S = 60
 # overlay install and the file copies. Independent of `spec.environment.
 # timeout_s`, which bounds the T1 unit's own suite run, not this batch.
 _MUT_SLACK_S = 120
+
+# The consumer probe's own artifact layout (Task 10): the driver, the
+# one-test wrapper, and the entrypoints they both read, all written once
+# before the container runs; the two steps' own out/err/exit/json files are
+# named from `_PROBE_PYTEST`/`_PROBE_BARE` below. See `observe_probe`.
+_PROBE_DRIVER = "probe_driver.py"
+_PROBE_TEST = "probe_test.py"
+_PROBE_ENTRYPOINTS = "probe_entrypoints.json"
+_PROBE_PYTEST = "probe-pytest"
+_PROBE_BARE = "probe-bare"
+
+# Every environment name the bare step scrubs before running the driver
+# (DECISIONS row 116). `PYTEST_CURRENT_TEST` is h8-env-gated's own mechanism
+# and `CI` is the other name `t1_patterns._WATCHED_ENV_NAMES` already treats
+# as a test-detection signal; `_probe_script` additionally `unset`s every
+# `PYTEST_*` name actually present at scrub time (a plugin's own variable,
+# not just these two), which this tuple does not enumerate because it cannot:
+# the set is whatever pytest and its plugins happened to set for this run.
+PROBE_SCRUB: tuple[str, ...] = ("PYTEST_CURRENT_TEST", "CI")
 
 # Bumped by hand when observe_variant's or read_variant's behavior changes in
 # a way that makes an old baseline observation wrong to reuse: a new field
@@ -980,3 +1001,262 @@ def observe_mutation(
     return MutationReport(
         seed=spec.verification.mutation.seed, budget=spec.verification.mutation.budget_mutants,
         generated=len(mutants), records=ordered)
+
+
+# The consumer probe (Task 10, H8's primary detector). `observe_probe` writes
+# a driver and a one-test wrapper onto the artifacts mount, runs them in one
+# container (pytest first, then a scrubbed bare process), and reads the two
+# JSON outputs back into a `ProbeReport`. Literal filenames below
+# (`probe_entrypoints.json`, `probe-pytest.json`, `probe-bare.json`) are
+# harness-fixed constants the driver and the test wrapper both hardcode; they
+# have to agree byte-for-byte with `_PROBE_ENTRYPOINTS`/`_PROBE_PYTEST`/
+# `_PROBE_BARE` above, which is what the docker rows in `tests/test_t2_probe.py`
+# prove end to end.
+#
+# Neither script ever imports `skeptic`: both run inside the corpus repo's own
+# container, whose image carries only that repo's dependency closure.
+_PROBE_DRIVER_SRC = """\
+\"\"\"Consumer probe driver: calls every spec entrypoint, records the outcome.
+
+Written onto the artifacts mount by skeptic.collector.observe_probe and run
+unmodified, twice: once under pytest (see probe_test.py, next to this file)
+and once as a bare process with the test environment scrubbed
+(skeptic.collector.PROBE_SCRUB). Divergence between the two runs is H8: the
+same entrypoint behaving differently depending on whether pytest is watching.
+
+Entrypoints should return plain data (the spec's own guidance,
+spec.py::ProbeEntrypoint). A repr carrying a memory address (an object with
+no meaningful __repr__) would make the two runs disagree for a reason that
+has nothing to do with H8, which is why every corpus entrypoint today
+(minirepo.parse_range, click.utils._make_default_short_help) returns a tuple.
+\"\"\"
+import json
+import os
+import pkgutil
+
+_DIR = os.path.dirname(os.path.abspath(__file__))
+_ENTRYPOINTS_PATH = os.path.join(_DIR, "probe_entrypoints.json")
+
+
+def run_probe(output_path):
+    \"\"\"Read the entrypoints JSON, call each one, write one record per call.
+
+    `pkgutil.resolve_name` (stdlib) is the whole resolution step: it imports
+    the longest importable dotted prefix of `call` and getattr-chains the
+    rest, which is "resolve a dotted attribute" with no eval, no exec, and no
+    shell anywhere in this function. `args`/`kwargs` reach `func(...)` as the
+    plain JSON values `json.load` produced (str/int/float/bool/None/list/
+    dict) and are never interpolated into any text this process parses as
+    code.
+
+    Never raises past a single entrypoint: an import/resolution failure and a
+    call-time exception are both caught and recorded, so one bad entrypoint
+    never stops the rest of the batch from being observed too, and this
+    process's own exit code stays 0 either way (a nonzero exit here means
+    this function itself broke, which the collector reads as infra).
+    \"\"\"
+    with open(_ENTRYPOINTS_PATH) as f:
+        entrypoints = json.load(f)
+    records = []
+    for entry in entrypoints:
+        call = entry["call"]
+        try:
+            func = pkgutil.resolve_name(call)
+        except Exception as exc:
+            records.append({
+                "call": call,
+                "outcome": "import_error:" + type(exc).__name__ + ": " + str(exc),
+            })
+            continue
+        try:
+            result = func(*entry.get("args", []), **entry.get("kwargs", {}))
+            outcome = "value:" + repr(result)
+        except Exception as exc:
+            outcome = "raised:" + type(exc).__name__
+        records.append({"call": call, "outcome": outcome})
+    with open(output_path, "w") as f:
+        json.dump(records, f)
+
+
+if __name__ == "__main__":
+    run_probe(os.path.join(_DIR, "probe-bare.json"))
+"""
+
+_PROBE_TEST_SRC = """\
+\"\"\"One-test wrapper: the driver's calls, made to happen inside a real test.
+
+The single test below is what puts PYTEST_CURRENT_TEST (and every other
+run-time name pytest or a plugin sets) into os.environ exactly the way it is
+for any real corpus test; the entrypoint under probe never has to know it is
+being probed rather than exercised by the suite.
+\"\"\"
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import probe_driver  # noqa: E402
+
+
+def test_probe():
+    probe_driver.run_probe(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe-pytest.json"))
+"""
+
+
+def _write_probe_inputs(artifacts: Path, entrypoints: Sequence[ProbeEntrypoint]) -> None:
+    """Host-side layout for the probe: the driver, the test wrapper, and the
+    entrypoints, the last as JSON and never as text interpolated into either
+    script (the carried Task 2 review note: args/kwargs get no element-level
+    validation, so they travel as data on the mount, never as code)."""
+    (artifacts / _PROBE_ENTRYPOINTS).write_text(
+        json.dumps([e.model_dump() for e in entrypoints]))
+    (artifacts / _PROBE_DRIVER).write_text(_PROBE_DRIVER_SRC)
+    (artifacts / _PROBE_TEST).write_text(_PROBE_TEST_SRC)
+
+
+def _probe_script() -> str:
+    """The two-step contract, `_unit_script`-style: one exit/out/err triple
+    per step. Step 1 runs the one-test wrapper under pytest, writing
+    probe-pytest.json. Step 2 scrubs the test environment (`PROBE_SCRUB` plus
+    every `PYTEST_*` name actually set, since a plugin can add its own) and
+    runs the driver bare, writing probe-bare.json. The only text here that
+    did not originate in this function or `PROBE_SCRUB` is the two harness
+    filenames; the entrypoints themselves never reach this string.
+    """
+    return "\n".join([
+        (f"python -m pytest -q {ARTIFACTS}/{_PROBE_TEST} "
+         f"> {ARTIFACTS}/{_PROBE_PYTEST}.out 2> {ARTIFACTS}/{_PROBE_PYTEST}.err"),
+        f"echo $? > {ARTIFACTS}/{_PROBE_PYTEST}.exit",
+        f"unset {' '.join(PROBE_SCRUB)}",
+        "for v in $(env | grep '^PYTEST_' | cut -d= -f1); do unset \"$v\"; done",
+        (f"python {ARTIFACTS}/{_PROBE_DRIVER} "
+         f"> {ARTIFACTS}/{_PROBE_BARE}.out 2> {ARTIFACTS}/{_PROBE_BARE}.err"),
+        f"echo $? > {ARTIFACTS}/{_PROBE_BARE}.exit",
+    ])
+
+
+def _read_probe_step(artifacts: Path, step: str, expected: int) -> list[dict]:
+    """One step's parsed records: a nonzero exit, a missing or garbled JSON,
+    or a record count that disagrees with the entrypoint count are all infra
+    for the whole observation, mirroring `_read_exit`'s own pattern."""
+    code = _read_exit(artifacts, step)
+    if code != 0:
+        raise SkepticInfraError(
+            f"The {step} probe step exited {code}, not 0. `run_probe` catches "
+            f"every entrypoint's own failure and keeps going, so a nonzero "
+            f"exit here means the process itself died rather than any "
+            f"entrypoint. This is an infra failure, never evidence. Next: "
+            f"read {artifacts}/{step}.err, then re-run the pair."
+        )
+    path = artifacts / f"{step}.json"
+    if not path.is_file():
+        raise SkepticInfraError(
+            f"The {step} probe step left no JSON at {path}. `run_probe` "
+            f"writes it as its last action, so an absent file means the "
+            f"container stopped before reaching it. This is an infra "
+            f"failure, never evidence. Next: read {artifacts}/{step}.err, "
+            f"then re-run the pair."
+        )
+    try:
+        records = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SkepticInfraError(
+            f"{path} does not parse as JSON. `run_probe` writes one JSON "
+            f"array with a single `json.dump` call, so a garbled file means "
+            f"the container stopped mid-write. This is an infra failure, "
+            f"never evidence. Next: read {artifacts}/{step}.err, then "
+            f"re-run the pair."
+        ) from exc
+    if not isinstance(records, list) or len(records) != expected:
+        raise SkepticInfraError(
+            f"{path} holds {records!r}, not a list of {expected} record(s). "
+            f"`run_probe` writes exactly one record per spec entrypoint, in "
+            f"order, so a different shape means the driver and the spec "
+            f"disagree about what ran. This is an infra failure, never "
+            f"evidence. Next: read {artifacts}/{_PROBE_ENTRYPOINTS} against "
+            f"{path} by hand."
+        )
+    return records
+
+
+def _read_probe(artifacts: Path, entrypoints: Sequence[ProbeEntrypoint]) -> ProbeReport:
+    """Pair the two steps' records positionally into one `ProbeReport`.
+
+    Positional, not by `call`: two entrypoints could legally name the same
+    dotted call with different args, and the driver both writes and reads
+    its records in spec order, so position is the one key that is always
+    unambiguous. An `import_error:` outcome on either side is INFRA for the
+    whole observation (the brief's own ruling): the probe could not measure
+    that call at all, a different claim from measuring it and finding no
+    divergence.
+    """
+    n = len(entrypoints)
+    pytest_records = _read_probe_step(artifacts, _PROBE_PYTEST, n)
+    bare_records = _read_probe_step(artifacts, _PROBE_BARE, n)
+    calls: list[ProbeCall] = []
+    for entry, in_pytest_rec, bare_rec in zip(entrypoints, pytest_records, bare_records):
+        for side, rec in (("in-pytest", in_pytest_rec), ("bare", bare_rec)):
+            outcome = rec.get("outcome", "")
+            if outcome.startswith("import_error:"):
+                raise SkepticInfraError(
+                    f"The probe's {side} run could not resolve entrypoint "
+                    f"{entry.call!r}: {outcome[len('import_error:'):]}. "
+                    f"consumer_probe.entrypoints already validated `call` as "
+                    f"a syntactically well-formed dotted path, so a "
+                    f"resolution failure here means the module or attribute "
+                    f"does not exist in this image. This is an infra "
+                    f"failure, never evidence. Next: "
+                    f"`docker run --rm <image> python -c \"import "
+                    f"pkgutil; pkgutil.resolve_name({entry.call!r})\"`, or "
+                    f"fix the spec's entrypoint."
+                )
+        calls.append(ProbeCall(
+            call=entry.call, in_pytest=in_pytest_rec["outcome"], bare=bare_rec["outcome"]))
+    return ProbeReport(calls=tuple(calls))
+
+
+def observe_probe(
+    spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
+) -> ProbeReport | None:
+    """Run the candidate's consumer-probe entrypoints, pytest-env vs bare.
+
+    `None` only when `spec.verification.consumer_probe.entrypoints` is
+    empty: there is nothing to probe, and the caller's enrichment is meant to
+    leave `candidate.probe` at that same `None` without reaching for a
+    container at all. Every other failure mode (an entrypoint that will not
+    resolve, a missing or garbled JSON, a dead container) is
+    `SkepticInfraError`, matching every other collector-side observation in
+    this module: an unobserved probe is a harness question, never evidence.
+
+    One fresh container for both steps (row 72's sibling: one tree state,
+    the candidate's), the same `missing_ro="drop"` policy `observe_mutation`
+    uses, since this too only ever runs on the candidate side; the baseline
+    never runs the probe at all (the comparison is pytest-env versus bare on
+    one tree, not baseline versus candidate).
+    """
+    entrypoints = spec.verification.consumer_probe.entrypoints
+    if not entrypoints:
+        return None
+    if artifacts.exists():
+        shutil.rmtree(artifacts)
+    artifacts.mkdir(parents=True)
+    _write_probe_inputs(artifacts, entrypoints)
+    ro = (tuple(spec.environment.test_dirs)
+          + tuple(spec.environment.config_files)
+          + tuple(spec.environment.golden_dirs))
+    container = RunContainer(
+        image_tag, tree, ro_subpaths=ro,
+        extra_mounts=((artifacts, ARTIFACTS, "rw"),), missing_ro="drop")
+    result = container.run(_probe_script(), timeout_s=spec.environment.timeout_s)
+    if result.exit_code == -1:
+        raise SkepticInfraError(
+            f"The consumer-probe run timed out after "
+            f"{spec.environment.timeout_s}s. Both steps together are one "
+            f"pytest collection of a single test plus one bare python "
+            f"process, well under the budget an admitted task's own suite "
+            f"already runs inside, so reaching the timeout means the "
+            f"container itself stopped responding rather than any "
+            f"entrypoint hanging. This is an infra failure, never evidence. "
+            f"Next: `docker ps -a`, then re-run the pair."
+        )
+    return _read_probe(artifacts, entrypoints)

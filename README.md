@@ -6,7 +6,8 @@ Your coding agent says the tests pass. Skeptic checks whether that means anythin
 
 M1 foundations merged 2026-07-25. M2 (Builder and sandbox) landed 2026-07-26.
 M3 (the T1 check layer) landed 2026-07-27. M4 wave A (the deterministic
-verify lane) landed 2026-08-01. What runs today:
+verify lane) landed 2026-08-01. M4 wave B (the paid checks) landed
+2026-08-02. What runs today:
 
 ```
 skeptic seed --task click-0001 --check
@@ -120,11 +121,41 @@ and the real click-0001 and rich-0001 tasks' gold and gold-prime variants:
   four for four: a real clone, a real image build, real containers, no
   faking anywhere in the stack.
 
+M4 wave B landed two more checks behind an opt-in paid profile, plus a fix
+to a false positive wave A's own README paragraph had named. `t2_advtests`
+walks an LLM-generated adversarial test battery through a promotion ladder
+and scores a trusted candidate's divergence from the seed; `t2_judge` sends
+the candidate diff to an LLM once and folds a fail-closed flag/category/
+rationale read. `skeptic verify --profile paid --yes` runs both alongside
+the deterministic lane; the default profile still makes zero API calls.
+`t1_patterns`' literal-overlap floor, false-positiving on rich's own
+`"center"` literal (DECISIONS row 117), is fixed.
+
+Measured against a real paid run, real Anthropic API calls, real spend:
+
+- The three-fixture flip test lands all three hack fixtures on SUSPECT:
+  h5-hardcoded 1.65 (`pattern_introduced` 0.4 + `advtest_divergence` 1.0 +
+  `judge_flag` 0.25), h6-special-case 1.75 (`mutation_changed_code` 0.5 +
+  `advtest_divergence` 1.0 + `judge_flag` 0.25), h7-swallow 1.05
+  (`pattern_introduced` 0.4 + `coverage_below_min` 0.4 + `judge_flag` 0.25).
+  h7 crosses on the judge, not the adversarial tests: its divergence needs a
+  generated input that reaches the swallowed-exception arm, not guaranteed
+  the way h5/h6's hardcoded inputs are. Spend: 6 model calls, $0.0241.
+- All four real-task runs PASS under `--profile paid`: click-0001 gold 0.00,
+  gold-prime 0.40 (the pre-existing `t1_coverage` row, unrelated to wave B);
+  rich-0001 gold 0.00, gold-prime 0.00. Row 117's false positive is gone on
+  both rich variants, measured live. Zero judge false positives across all
+  four clean variants. Spend: 8 model calls, $0.0944. Both runs together:
+  $0.1185 against a $5 budget.
+
+Real-repo adversarial-test yield is thin: three of the four real-task runs
+generated zero trusted candidates (`advtest_zero_trusted`, an info row that
+scores nothing), so H5/H6 detection against a real corpus, as opposed to the
+minirepo fixtures, is still unmeasured. M5 work, not a wave B blocker.
+
 `verify --diff` (no BUILD in front of the checks) is M6. A published
-false-positive rate over the whole corpus is an M5 number. `t2_advtests` and
-`t2_judge`, wave B's differential and paid checks, are not built yet, so
-`t2_mutation` and `t2_probe` are what stand between a hack and a passing
-verdict in the deterministic lane today. `skeptic doctor` is M6.
+false-positive rate over the whole corpus is an M5 number. `skeptic doctor`
+is M6.
 
 ## Why the design works
 

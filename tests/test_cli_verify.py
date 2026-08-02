@@ -398,7 +398,7 @@ def test_verify_exit_codes_follow_the_verdict(
     workdir = tmp_path.resolve()
     spec = find_task("click-0001", Path("tasks"))
     variant_spec = spec.evaluation.variants[0]
-    cache_key = _verify_cache_key(spec, variant_spec)
+    cache_key = _verify_cache_key(spec, variant_spec, "deterministic")
     verify_dir = workdir / spec.task_id / "verify" / variant_spec.id
     fake = {
         "schema_version": 1, "run_id": "r", "task_id": spec.task_id,
@@ -519,17 +519,17 @@ def test_mutation_batch_trace_event_carries_the_voided_count(tmp_path, monkeypat
 def test_verify_cache_key_changes_with_patch_bytes_and_source_and_config(tmp_path, monkeypatch):
     spec = make_task_spec()
     variant = spec.evaluation.variants[0]
-    base = _verify_cache_key(spec, variant)
+    base = _verify_cache_key(spec, variant, "deterministic")
 
     # 1. the variant's patch bytes change (same path family, different tmp file)
     patch_copy = tmp_path / "variant.diff"
     patch_copy.write_bytes(Path(variant.patch).read_bytes() + b"\n# extra\n")
     changed_patch = variant.model_copy(update={"patch": str(patch_copy)})
-    assert _verify_cache_key(spec, changed_patch) != base
+    assert _verify_cache_key(spec, changed_patch, "deterministic") != base
 
     # 2. the detector source moves (verifier_revision)
     monkeypatch.setattr("skeptic.orchestrator.verifier_revision", lambda: "deadbeefcafe")
-    assert _verify_cache_key(spec, variant) != base
+    assert _verify_cache_key(spec, variant, "deterministic") != base
     monkeypatch.undo()
 
     # 3. a verification config field changes
@@ -537,7 +537,7 @@ def test_verify_cache_key_changes_with_patch_bytes_and_source_and_config(tmp_pat
         "verification": spec.verification.model_copy(
             update={"patch_coverage_min": spec.verification.patch_coverage_min + 0.05}),
     })
-    assert _verify_cache_key(edited_spec, variant) != base
+    assert _verify_cache_key(edited_spec, variant, "deterministic") != base
 
     # 4. the seed sub-spec changes: t1_outcomes reads failing_tests/quarantine
     # directly, and t1_collect reads quarantine, so the key has to move even
@@ -547,39 +547,39 @@ def test_verify_cache_key_changes_with_patch_bytes_and_source_and_config(tmp_pat
             update={"failing_tests": [*spec.seed.failing_tests,
                                       "tests/test_extra.py::test_new"]}),
     })
-    assert _verify_cache_key(reseeded_spec, variant) != base
+    assert _verify_cache_key(reseeded_spec, variant, "deterministic") != base
 
 
 def _flip_commit(tmp_path: Path) -> tuple[str, str]:
     spec = make_task_spec()
     variant = spec.evaluation.variants[0]
-    base = _verify_cache_key(spec, variant)
+    base = _verify_cache_key(spec, variant, "deterministic")
     flipped = spec.model_copy(update={
         "repo": spec.repo.model_copy(update={"commit": "1" * 40}),
     })
-    return base, _verify_cache_key(flipped, variant)
+    return base, _verify_cache_key(flipped, variant, "deterministic")
 
 
 def _flip_environment(tmp_path: Path) -> tuple[str, str]:
     spec = make_task_spec()
     variant = spec.evaluation.variants[0]
-    base = _verify_cache_key(spec, variant)
+    base = _verify_cache_key(spec, variant, "deterministic")
     flipped = spec.model_copy(update={
         "environment": spec.environment.model_copy(
             update={"timeout_s": spec.environment.timeout_s + 1}),
     })
-    return base, _verify_cache_key(flipped, variant)
+    return base, _verify_cache_key(flipped, variant, "deterministic")
 
 
 def _flip_builder_input(tmp_path: Path) -> tuple[str, str]:
     spec = make_task_spec()
     variant = spec.evaluation.variants[0]
-    base = _verify_cache_key(spec, variant)
+    base = _verify_cache_key(spec, variant, "deterministic")
     flipped = spec.model_copy(update={
         "builder_input": spec.builder_input.model_copy(
             update={"allowed_paths": [*spec.builder_input.allowed_paths, "extra/"]}),
     })
-    return base, _verify_cache_key(flipped, variant)
+    return base, _verify_cache_key(flipped, variant, "deterministic")
 
 
 def _flip_seed_patch_bytes(tmp_path: Path) -> tuple[str, str]:
@@ -600,9 +600,9 @@ def _flip_seed_patch_bytes(tmp_path: Path) -> tuple[str, str]:
     pinned = spec.model_copy(update={
         "seed": spec.seed.model_copy(update={"bug_patch": str(seed_copy)}),
     })
-    base = _verify_cache_key(pinned, variant)
+    base = _verify_cache_key(pinned, variant, "deterministic")
     seed_copy.write_bytes(original + b"\n# extra\n")
-    return base, _verify_cache_key(pinned, variant)
+    return base, _verify_cache_key(pinned, variant, "deterministic")
 
 
 @pytest.mark.parametrize("flip", [
@@ -668,13 +668,15 @@ def test_paid_requires_a_pricing_row(tmp_path, monkeypatch):
 
 def test_paid_confirm_declined_exits_infra_without_spend(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    called = []
+    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--profile", "paid",
                                  "--workdir", str(tmp_path)], input="n\n")
     assert result.exit_code == 3
     assert "Declined" in result.output
     assert "--yes" in result.output
+    assert called == []          # declined before _docker_available(): no image work
 
 
 def test_paid_yes_skips_the_confirm(tmp_path, monkeypatch):
@@ -866,6 +868,41 @@ def test_enrichment_failure_surfaces_as_check_infra_not_crash(tmp_path, monkeypa
     assert saved["status"] == "INFRA_ERROR"
     assert "t2_advtests" in saved["checks_infra"]
     assert "t2_judge" in saved["checks_completed"]
+
+
+def test_client_construction_failure_infra_lists_both_paid_checks(tmp_path, monkeypatch):
+    """Review round 1, finding 1: a non-`SkepticInfraError` raise out of
+    `anthropic.Anthropic()` must not escape both isolation blocks and kill
+    the run with a traceback. `client` is built lazily inside each block's
+    own `try`, so a dead constructor is captured by the advtests block's
+    `except` first and then by the judge block's `except` when it tries
+    again from scratch: both paid checks land in `checks_infra`, and the run
+    still ends in a full, cleanly-reported INFRA_ERROR verdict rather than
+    an uncaught exception."""
+    import anthropic
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+
+    def _boom():
+        raise RuntimeError("no credentials configured")
+
+    monkeypatch.setattr(anthropic, "Anthropic", _boom)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 3, result.output
+    assert "INFRA ERROR" in result.output
+
+    saved = json.loads((pair.artifacts_dir / "verdict.json").read_text())
+    assert saved["status"] == "INFRA_ERROR"
+    assert "t2_advtests" in saved["checks_infra"]
+    assert "t2_judge" in saved["checks_infra"]
 
 
 def test_cache_key_differs_by_profile():

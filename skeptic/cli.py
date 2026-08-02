@@ -332,9 +332,7 @@ def build(
         raise typer.Exit(EXIT_INFRA) from exc
 
 
-def _verify_cache_key(
-    spec: TaskSpec, variant: VariantSpec, profile: str = "deterministic"
-) -> str:
+def _verify_cache_key(spec: TaskSpec, variant: VariantSpec, profile: str) -> str:
     """VERIFY stage cache key.
 
     Every input that shapes an observation or a check belongs here: the
@@ -350,7 +348,11 @@ def _verify_cache_key(
     budgets, seeds), `verifier_revision()`, and `profile`: the paid profile
     runs two more checks over the same pair (wave B, task 9), so a cached
     deterministic verdict must never serve a `--profile paid` request, and
-    vice versa.
+    vice versa. `profile` has no default (review round 1, finding 2): every
+    caller has to say which lane it means, on purpose, because a default
+    that silently answered `"deterministic"` is exactly the shape that lets
+    a future caller forget to pass the live profile and mis-key a paid run
+    into the deterministic bucket without ever raising.
 
     This is the VERIFY half of the two-key design (plan decision 5); the other
     half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
@@ -435,6 +437,21 @@ def verify(
         # way.
         spec = find_task(task, tasks_dir)
 
+        # Variant validation also moves ahead of the paid preflight (review
+        # round 1, minor 2): it only needs `spec`, already loaded above, and
+        # a typo'd --variant should never reach the spend confirm.
+        known = sorted(v.id for v in spec.evaluation.variants)
+        if variant not in known:
+            typer.echo(
+                f"No variant named {variant!r} in {spec.task_id}'s "
+                f"evaluation.variants (known: {known or 'none'}). Skeptic "
+                f"resolves --variant to one of the ids listed there. Next: "
+                f"pick one of the known ids, or add a new entry to "
+                f"evaluation.variants in the task spec."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
+
         if profile == "paid":
             # Key, then pricing row, then the cost confirmation: all three
             # ahead of the docker-daemon check and every later image/
@@ -505,18 +522,6 @@ def verify(
             run_id=f"verify-{config_hash({'task': spec.task_id, 'variant': variant})}",
             task_id=spec.task_id)
         trace.event(stage="LOAD", actor="orchestrator", event="spec_loaded")
-
-        known = sorted(v.id for v in spec.evaluation.variants)
-        if variant not in known:
-            typer.echo(
-                f"No variant named {variant!r} in {spec.task_id}'s "
-                f"evaluation.variants (known: {known or 'none'}). Skeptic "
-                f"resolves --variant to one of the ids listed there. Next: "
-                f"pick one of the known ids, or add a new entry to "
-                f"evaluation.variants in the task spec."
-            )
-            raise typer.Exit(EXIT_INFRA)
-        variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
 
         cache_key = _verify_cache_key(spec, variant_spec, profile)
 
@@ -626,16 +631,26 @@ def verify(
             # structured the same way: each check gets its own isolation
             # block rather than one wrapping both (DECISIONS row 116), so a
             # dead advtests batch cannot take a healthy judge call down with
-            # it or vice versa. `client` is constructed once, host-side, and
-            # shared by both calls: both are LLM reads over the same pair
-            # under one paid run (build's `do_build` does the same one-
-            # client-per-run construction, cli.py's own do_build closure).
+            # it or vice versa. `client` is host-side and shared once built,
+            # but built lazily inside whichever block reaches it first
+            # (`client is None`) rather than ahead of both: constructing it
+            # outside both `try`s would let a non-`SkepticInfraError` raise
+            # from `anthropic.Anthropic()` (a bad key, a broken install)
+            # escape both isolation blocks and kill the run with a
+            # traceback instead of degrading to two INFRA rows plus a full
+            # T1 verdict, the exact property decision 8/row 116 exist to
+            # hold (review round 1, finding 1). If the advtests block's own
+            # attempt fails, `client` stays `None` and the judge block
+            # tries again from scratch, so a dead client is reported by
+            # both blocks' own `except`, not just the first one to reach it.
             if profile == "paid":
-                import anthropic
-
-                client = anthropic.Anthropic()
+                client = None
 
                 try:
+                    if client is None:
+                        import anthropic
+
+                        client = anthropic.Anthropic()
                     # generate_candidates needs the pristine (pre-seed,
                     # spec.repo.commit) body of every file the candidate
                     # changed. observe_advtests below materializes that same
@@ -684,6 +699,10 @@ def verify(
                         payload={"error": f"{type(exc).__name__}: {exc}"})
 
                 try:
+                    if client is None:
+                        import anthropic
+
+                        client = anthropic.Anthropic()
                     diff_text = pair.candidate_diff.diff_path.read_text()
                     judge_report, judge_io = judge_diff(client, diff_text, trace)
                     # Persisted before the fold: judge_diff's own docstring

@@ -22,10 +22,12 @@ GREEN_RULE_VERSION = "differential-1"
 # Sonnet 5's introductory discount ($2/$10 through 2026-08-31) is ignored on
 # purpose: estimating at the standard rate keeps the enforced ceiling
 # conservative. The cost ceiling stops the loop, so these numbers are
-# budget-enforcing.
+# budget-enforcing. Haiku 4.5 row: source Anthropic model pricing, confirmed
+# 2026-08-01 at wave B task 4: $1/$5, standard rates, no active discount.
 PRICING: dict[str, dict[str, float]] = {
     "claude-opus-5": {"in": 5.00, "out": 25.00},
     "claude-sonnet-5": {"in": 3.00, "out": 15.00},
+    "claude-haiku-4-5": {"in": 1.00, "out": 5.00},
 }
 
 SYSTEM_PROMPT = """\

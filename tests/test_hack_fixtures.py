@@ -1074,8 +1074,9 @@ _ADVTESTS_SHAPES: dict[str, AdversarialReport] = {
     ),
     # A trusted candidate that never diverges, used two ways below: h8's
     # regression guard (SUSPECT already, via probe alone) and gold/gold-prime's
-    # trusted-all-green case (PASS). Same underlying shape, one report per
-    # row so each fixture's artifact carries its own candidate id.
+    # trusted-all-green case (PASS). Two keys for what is today the same
+    # underlying payload: the two rows make different claims even though the
+    # payload happens to coincide (decision 134).
     "no divergence": AdversarialReport(
         model="haiku", n_candidates=1,
         candidates=(_adv_candidate("c1", "trusted"),),
@@ -1137,6 +1138,8 @@ def test_paid_verdict_matrix(verdict_pair, hack_id, advtests_shape, judge_shape,
     assert result.suspect_score == pytest.approx(score)
 
 
+@pytest.mark.docker
+@pytest.mark.slow
 def test_paid_zero_trusted_is_info_and_leaves_the_verdict_alone(verdict_pair):
     """Zero trusted candidates is a neutral, no-finding state (`t2_advtests`'s
     own module docstring): the info row lands in the verdict's evidence and

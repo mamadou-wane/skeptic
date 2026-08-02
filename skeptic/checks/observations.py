@@ -39,7 +39,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from skeptic.candidate import CandidateReport
 from skeptic.errors import SkepticInfraError
@@ -348,14 +348,121 @@ class ProbeReport(_Model):
     calls: tuple[ProbeCall, ...]
 
 
+AdvRung = Literal[
+    "generation", "import_screen", "reference", "target_coverage",
+    "seeded_green", "gold_prime",
+]
+
+
+class AdvCandidate(_Model):
+    """One adversarial-test candidate's disposition after the promotion ladder.
+
+    `rejected_at` names the rung that dropped the candidate, `None` iff
+    `status` is `"trusted"`: a candidate that cleared every rung carries no
+    rejection rung, and one that did not carries exactly one. `source` is the
+    full candidate file text, kept so a rejected candidate's disposition is
+    auditable without re-running the ladder.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_id: str
+    source: str
+    status: Literal["trusted", "rejected"]
+    rejected_at: AdvRung | None
+    detail: str
+
+
+class AdvDivergence(_Model):
+    """One trusted candidate's red set: the nodeids that failed against it.
+
+    Recorded only for a candidate the ladder promoted to `trusted`; a
+    rejected candidate's own `detail` already says why it produced no tests
+    to run.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_id: str
+    nodeids: tuple[str, ...]
+
+
+class AdversarialReport(_Model):
+    """One candidate's adversarial-test batch: every generated test and which
+    of them the ladder trusted.
+
+    `n_candidates` is the spec value the batch was generated against, the
+    denominator of the yield stat; it can exceed `len(candidates)` when
+    generation itself returns fewer than requested. `trusted` must be a
+    subset of the ids in `candidates` whose own `status` is `"trusted"`, and
+    every `divergences` entry's `candidate_id` must be one of those ids: a
+    model validator enforces both, so a report that disagrees with itself
+    about which candidates were promoted never round-trips. `candidates=()`
+    is a real observation (generation yielded nothing), not "unobserved";
+    unobserved is the field being `None` on `VariantObservations`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    n_candidates: int
+    candidates: tuple[AdvCandidate, ...]
+    trusted: tuple[str, ...]
+    divergences: tuple[AdvDivergence, ...]
+
+    @model_validator(mode="after")
+    def _trusted_and_divergences_agree_with_candidates(self) -> AdversarialReport:
+        trusted_status = {c.candidate_id for c in self.candidates if c.status == "trusted"}
+        untrusted_names = [cid for cid in self.trusted if cid not in trusted_status]
+        if untrusted_names:
+            raise ValueError(
+                f"AdversarialReport.trusted names {untrusted_names!r}, which "
+                f"is not a candidate with status 'trusted'. trusted must be a "
+                f"subset of the candidate ids whose own status already says "
+                f"trusted, so a mismatch means the report disagrees with "
+                f"itself about which candidates were promoted."
+            )
+        trusted_ids = set(self.trusted)
+        orphaned = [d.candidate_id for d in self.divergences if d.candidate_id not in trusted_ids]
+        if orphaned:
+            raise ValueError(
+                f"AdversarialReport.divergences names {orphaned!r}, which is "
+                f"not in trusted. A divergence is red-set evidence for a "
+                f"candidate the ladder promoted; an untrusted candidate's own "
+                f"rejection already explains why it produced no divergence."
+            )
+        return self
+
+
+class JudgeReport(_Model):
+    """One candidate's LLM-judge read: whether the diff looks hack-shaped.
+
+    `category` is `"H1"` through `"H10"` when `flagged` and the judge's own
+    output parsed onto the taxonomy, else `None`. Left as a plain `str |
+    None` rather than the `Category` literal: a judge that names a category
+    outside the taxonomy, or returns something unparseable, still flagged,
+    and this model records what the judge said rather than deciding whether
+    it fits. The check applying the taxonomy at that boundary fails closed
+    (spec decision 8), not this model.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    model: str
+    flagged: bool
+    category: str | None
+    rationale: str
+
+
 class VariantObservations(_Model):
     """One side of the comparison: what one tree collected, ran, and covered.
 
     Everything from `collected` through `coverage` is `None` when it was not
-    observed. See the module docstring. `mutation` and `probe` are
-    collector-side machinery recorded onto the candidate side only (Tasks 9
-    and 10); the baseline is never mutation-tested or probed, so both stay
-    `None` there by construction.
+    observed. See the module docstring. `mutation`, `probe`, `advtests`, and
+    `judge` are collector-side machinery recorded onto the candidate side
+    only (Tasks 9, 10, 7, and 8); the baseline is never mutation-tested,
+    probed, adversarially tested, or judged, so all four stay `None` there by
+    construction.
     """
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
@@ -385,6 +492,8 @@ class VariantObservations(_Model):
     """
     mutation: MutationReport | None = None
     probe: ProbeReport | None = None
+    advtests: AdversarialReport | None = None
+    judge: JudgeReport | None = None
 
 
 class ObservationPair(_Model):

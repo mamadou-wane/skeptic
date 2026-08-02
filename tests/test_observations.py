@@ -8,11 +8,21 @@ patches were produced by `git diff -R` and open `--- b/`, so a parser keying on
 `+++ b/` returns nothing for them, and every downstream false-positive test
 passes vacuously.
 """
+import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from skeptic.checks.observations import parse_collect_manifest, parse_unified_diff
+from skeptic.checks.observations import (
+    AdvCandidate,
+    AdvDivergence,
+    AdversarialReport,
+    JudgeReport,
+    VariantObservations,
+    parse_collect_manifest,
+    parse_unified_diff,
+)
 from skeptic.errors import SkepticInfraError
 
 SAMPLES = Path(__file__).parent / "fixtures" / "pytest-output"
@@ -186,3 +196,116 @@ def test_parse_unified_diff_handles_the_reversed_prefix_order():
 def test_parse_unified_diff_raises_on_a_rename():
     with pytest.raises(SkepticInfraError, match="rename"):
         parse_unified_diff(RENAME_DIFF)
+
+
+def _adv_candidate(candidate_id, status="trusted", rejected_at=None, detail="promoted"):
+    return AdvCandidate(
+        candidate_id=candidate_id,
+        source="def test_extra():\n    assert parse_range('1-5') == (1, 5)\n",
+        status=status,
+        rejected_at=rejected_at,
+        detail=detail,
+    )
+
+
+def test_adv_candidate_round_trips_through_json():
+    trusted = _adv_candidate("c1")
+    rejected = _adv_candidate(
+        "c2", status="rejected", rejected_at="import_screen",
+        detail="candidate module failed to import",
+    )
+    for candidate in (trusted, rejected):
+        assert AdvCandidate.model_validate(json.loads(candidate.model_dump_json())) == candidate
+
+
+def test_adv_divergence_round_trips_through_json():
+    divergence = AdvDivergence(
+        candidate_id="c1",
+        nodeids=("tests/test_minirepo.py::test_parse_range_basic",),
+    )
+    assert AdvDivergence.model_validate(json.loads(divergence.model_dump_json())) == divergence
+
+
+def test_adversarial_report_round_trips_through_json():
+    report = AdversarialReport(
+        model="claude-haiku-4-5",
+        n_candidates=3,
+        candidates=(
+            _adv_candidate("c1"),
+            _adv_candidate(
+                "c2", status="rejected", rejected_at="generation",
+                detail="malformed source, dropped at generation",
+            ),
+            _adv_candidate("c3"),
+        ),
+        trusted=("c1", "c3"),
+        divergences=(
+            AdvDivergence(candidate_id="c1", nodeids=("tests/test_a.py::test_one",)),
+        ),
+    )
+    assert AdversarialReport.model_validate(json.loads(report.model_dump_json())) == report
+
+
+def test_judge_report_round_trips_through_json():
+    flagged = JudgeReport(
+        model="claude-haiku-4-5", flagged=True, category="H8",
+        rationale="candidate special-cases the probe's literal input",
+    )
+    clean = JudgeReport(
+        model="claude-haiku-4-5", flagged=False, category=None,
+        rationale="no hack-shaped reasoning found",
+    )
+    for report in (flagged, clean):
+        assert JudgeReport.model_validate(json.loads(report.model_dump_json())) == report
+
+
+def test_adversarial_report_rejects_a_trusted_id_that_is_not_a_trusted_candidate():
+    with pytest.raises(ValidationError, match="trusted"):
+        AdversarialReport(
+            model="claude-haiku-4-5",
+            n_candidates=1,
+            candidates=(
+                _adv_candidate("c1", status="rejected", rejected_at="generation",
+                                detail="dropped at generation"),
+            ),
+            trusted=("c1",),
+            divergences=(),
+        )
+
+
+def test_adversarial_report_rejects_a_divergence_for_an_untrusted_candidate():
+    with pytest.raises(ValidationError, match="divergences"):
+        AdversarialReport(
+            model="claude-haiku-4-5",
+            n_candidates=1,
+            candidates=(_adv_candidate("c1"),),
+            trusted=(),
+            divergences=(
+                AdvDivergence(candidate_id="c1", nodeids=("tests/test_a.py::test_one",)),
+            ),
+        )
+
+
+def test_variant_observations_default_advtests_and_judge_to_none():
+    variant = VariantObservations(
+        side="candidate", tree=Path("unmaterialized"),
+        artifacts=Path("unmaterialized/artifacts"),
+        collected=None, collect_exit=None, outcomes=None,
+        collection_errors=None, suite_exit=None, coverage=None,
+    )
+    assert variant.advtests is None
+    assert variant.judge is None
+
+
+def test_new_observation_models_reject_unknown_fields():
+    candidate = _adv_candidate("c1")
+    divergence = AdvDivergence(candidate_id="c1", nodeids=())
+    report = AdversarialReport(
+        model="claude-haiku-4-5", n_candidates=1, candidates=(candidate,),
+        trusted=("c1",), divergences=(divergence,),
+    )
+    judge = JudgeReport(model="claude-haiku-4-5", flagged=False, category=None,
+                         rationale="clean")
+    for model in (candidate, divergence, report, judge):
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            type(model).model_validate({**dict(model), "bogus": 1})

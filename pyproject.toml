@@ -31,6 +31,7 @@ testpaths = ["tests"]
 markers = [
   "docker: requires a running Docker daemon (auto-skipped otherwise)",
   "slow: builds a real venv and installs pytest from PyPI (network)",
+  "paid: makes real Anthropic API calls (SKEPTIC_PAID_TESTS=1 + ANTHROPIC_API_KEY required)",
 ]
 
 [tool.ruff]

@@ -18,9 +18,12 @@ import pytest
 from skeptic.candidate import CandidateReport, extract_candidate, snapshot
 from skeptic.checks.observations import AdvCandidate, VariantObservations
 from skeptic.collector import (
+    _ADV_CP_FAILED,
+    _LADDER_EXIT_DETAIL,
     _advtest_reference_script,
     _advtest_script,
     _collect_argv,
+    _coverage_report_step_detail,
     _gold_prime_rung_detail,
     _read_ladder_exit,
     _reference_outcome_detail,
@@ -40,7 +43,14 @@ from skeptic.image import ImageRef
 from skeptic.sandbox import ExecResult
 from skeptic.spec import TaskSpec
 from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
-from tests.helpers import BUGGY, PRISTINE, apply_fixture, make_minirepo_task, make_task_spec
+from tests.helpers import (
+    BUGGY,
+    FIXTURE,
+    PRISTINE,
+    apply_fixture,
+    make_minirepo_task,
+    make_task_spec,
+)
 
 NODE_A = "tests/test_x.py::test_a"
 NODE_B = "tests/test_x.py::test_b"
@@ -649,16 +659,15 @@ def test_advtest_script_copies_candidates_in_and_removes_scratch_last():
     script = _advtest_script(make_task_spec(), "seeded", ["c1", "c2"])
     lines = script.splitlines()
 
-    copy_c1 = next(i for i, ln in enumerate(lines) if "test_c1.py" in ln and ln.startswith("cp "))
-    copy_c2 = next(i for i, ln in enumerate(lines) if "test_c2.py" in ln and ln.startswith("cp "))
-    run_c1 = next(i for i, ln in enumerate(lines) if ln.startswith("timeout") and "test_c1.py" in ln)
-    run_c2 = next(i for i, ln in enumerate(lines) if ln.startswith("timeout") and "test_c2.py" in ln)
-
-    # Both candidates copied in before either one runs.
-    assert copy_c1 < run_c1
-    assert copy_c2 < run_c1
-    assert copy_c1 < run_c2
-    assert copy_c2 < run_c2
+    # The shared scratch dir is set up once, before either candidate's own
+    # guarded copy.
+    assert lines[2] == "mkdir -p .skeptic-advtests"
+    for cid in ("c1", "c2"):
+        copy_i = next(i for i, ln in enumerate(lines)
+                      if ln.strip().startswith("if cp") and f"test_{cid}.py" in ln)
+        run_i = next(i for i, ln in enumerate(lines)
+                    if ln.strip().startswith("timeout") and f"test_{cid}.py" in ln)
+        assert copy_i < run_i
     # The scratch dir comes off last, after every candidate has run.
     assert lines[-1] == "rm -rf .skeptic-advtests"
     assert lines.count("rm -rf .skeptic-advtests") == 1
@@ -667,21 +676,38 @@ def test_advtest_script_copies_candidates_in_and_removes_scratch_last():
 def test_advtest_script_never_touches_paths_outside_scratch():
     script = _advtest_script(make_task_spec(), "gold", ["c1"])
 
-    for line in script.splitlines():
-        if line.startswith("cp "):
-            _, src, dest = line.split()
+    for raw in script.splitlines():
+        line = raw.strip()
+        if line.startswith("if cp "):
+            tokens = line.split()
+            src, dest = tokens[2], tokens[3].rstrip(";")
             assert src.startswith("/artifacts/")
             assert dest.startswith(".skeptic-advtests/")
+        elif line in ("else", "fi"):
+            continue
         elif ">" in line:
-            # Every redirect target (`> x`, `2> y`) sits under /artifacts.
+            # Every redirect target (`> x`, `2> y`) sits under /artifacts,
+            # whether it is the timeout-wrapped run or the guard's own
+            # `echo cp-failed > .../exit` line.
             targets = re.findall(r"[12]?>\s*(\S+)", line)
             assert targets, line
             assert all(t.startswith("/artifacts/") for t in targets)
         elif line.startswith(("mkdir -p", "rm -rf")):
             target = line.split(None, 2)[-1]
             assert target.startswith("/artifacts/") or target == ".skeptic-advtests"
-        elif line.startswith("echo $?"):
-            assert line.split()[-1].startswith("/artifacts/")
+
+
+def test_advtest_script_guards_the_copy_in_with_a_cp_failed_sentinel():
+    script = _advtest_script(make_task_spec(), "gold", ["c1"])
+    lines = script.splitlines()
+
+    guard_i = next(i for i, ln in enumerate(lines) if ln.strip().startswith("if cp "))
+    assert lines[guard_i].strip().endswith("; then")
+    assert lines[guard_i + 1].strip().startswith("timeout")
+    else_i = next(i for i, ln in enumerate(lines) if ln.strip() == "else")
+    assert else_i > guard_i
+    assert lines[else_i + 1].strip() == f"echo {_ADV_CP_FAILED} > /artifacts/gold/c1/exit"
+    assert lines[else_i + 2].strip() == "fi"
 
 
 def test_advtest_reference_script_wraps_coverage_and_junit():
@@ -695,7 +721,17 @@ def test_advtest_reference_script_wraps_coverage_and_junit():
     assert "--show-contexts" in report_line
     assert "--include=src/click/mod.py" in report_line
     assert "-o /artifacts/reference/c1/coverage.json" in report_line
+    # The report step reads already-collected data rather than running
+    # candidate code, so only the suite step carries its own timeout: with
+    # both capped, the tree's own worst case would double what the shared
+    # `n * 60 + 120` host-budget formula accounts for.
+    assert "timeout" not in report_line
+    suite_line = next(ln for ln in script.splitlines() if "--junitxml" in ln)
+    assert suite_line.strip().startswith("COVERAGE_RCFILE=/artifacts/reference/c1/coveragerc timeout")
     assert script.splitlines()[-1] == "rm -rf .skeptic-advtests"
+    # Guarded the same way the plain script's copy-in is.
+    assert any(ln.strip().startswith("if cp ") for ln in script.splitlines())
+    assert f"echo {_ADV_CP_FAILED} > /artifacts/reference/c1/exit" in script
 
 
 def test_advtest_reference_script_skips_the_report_step_with_no_measurable_file():
@@ -788,6 +824,29 @@ def test_advtest_coverage_rung_requires_changed_file_context(tmp_path):
     assert _target_coverage_rung_detail(report2) is None
 
 
+def test_advtest_coverage_report_step_exit_disambiguates_no_data_from_other_failures():
+    # Exit 1 is `coverage json`'s own "No data to report".
+    assert _coverage_report_step_detail(1) == (
+        "the coverage report recorded no data for the changed files")
+    # Every other code in the ladder's exit contract is a different finding
+    # (DECISIONS row 124's own distinction for _guard_calibration, restated):
+    # conflating a timeout with "no data" sends the next reader to the wrong
+    # artifact.
+    assert _coverage_report_step_detail(124) == _LADDER_EXIT_DETAIL[124]
+    assert "timeout" in _coverage_report_step_detail(124)
+    for code in (2, 3, 4, 5):
+        assert _coverage_report_step_detail(code) == _LADDER_EXIT_DETAIL[code]
+        assert "no data" not in _coverage_report_step_detail(code)
+
+
+def test_advtest_cp_failed_sentinel_routes_to_whole_observation_infra(tmp_path):
+    exit_path = tmp_path / "exit"
+    exit_path.write_text(f"{_ADV_CP_FAILED}\n")
+
+    with pytest.raises(SkepticInfraError, match="copy from the shared mount"):
+        _read_ladder_exit(exit_path, who="candidate c1 on the reference tree")
+
+
 def test_advtest_tree_allowed_packages_finds_a_flat_module_the_basename_heuristic_misses(tmp_path):
     tasks_dir, task_id = make_minirepo_task(tmp_path)
     from skeptic.spec import find_task
@@ -802,6 +861,25 @@ def test_advtest_tree_allowed_packages_finds_a_flat_module_the_basename_heuristi
     assert packages == {"minirepo"}
     assert "tests" not in packages  # excluded via environment.test_dirs
     assert "conftest" not in packages
+
+
+def test_advtest_tree_allowed_packages_root_src_dir_never_names_the_tree_directory(tmp_path):
+    """`src_dirs: ["."]` whose root DOES carry `__init__.py` must not read
+    back this function's own materialization directory name: `Path / "."`
+    normalizes away, so `root.name` would otherwise be an artifact of
+    wherever the caller happened to put the tree (reviewer Minor 3).
+    """
+    tree = tmp_path / "some-materialization-dir-name"
+    tree.mkdir()
+    (tree / "__init__.py").write_text("")
+    (tree / "mod.py").write_text("x = 1\n")
+    spec = make_task_spec().model_copy(update={
+        "environment": make_task_spec().environment.model_copy(update={"src_dirs": ["."]})})
+
+    packages = _tree_allowed_packages(tree, spec)
+
+    assert "some-materialization-dir-name" not in packages
+    assert packages == {"mod"}
 
 
 def test_advtest_rescreen_recovers_a_basename_false_rejection():
@@ -921,6 +999,71 @@ def test_advtest_report_orders_trusted_and_divergences_by_candidate(tmp_path, mo
     assert report.divergences[0].candidate_id == "c2"
     assert report.divergences[0].nodeids == (".skeptic-advtests/test_c2.py::test_b",)
     assert report.n_candidates == spec.verification.adversarial_tests.n_candidates
+    # Task 3's forward requirement, restated as the literal invariant: the
+    # model validator only checks trusted is a subset of trusted-status ids;
+    # producer correctness (the equality) is this function's to pin.
+    assert report.trusted == tuple(
+        c.candidate_id for c in report.candidates if c.status == "trusted")
+
+
+def test_advtest_gold_prime_rung_short_circuits_after_the_first_rejected_variant(
+    tmp_path, monkeypatch
+):
+    """Two clean variants (`gold`, `gold2`): `gold` rejects c1 and the loop
+    never reads a second exit file for it against `gold2`; c2 passes `gold`
+    but fails `gold2`, proving the loop keeps checking later variants for a
+    candidate that has not failed yet; c3 clears both.
+    """
+    pristine_source = (FIXTURE / "minirepo.py").read_text()
+    tasks_dir, task_id = make_minirepo_task(
+        tmp_path, extra_variants=[("gold2", "clean", {"minirepo.py": pristine_source})])
+    from skeptic.spec import find_task
+    spec = find_task(task_id, tasks_dir)
+    repo = clone_pinned(spec.repo.url, spec.repo.commit, tmp_path / "cache")
+
+    covered = {"minirepo.py": {"executed_lines": [1, 6], "missing_lines": [],
+                               "excluded_lines": [], "contexts": {"1": [""], "6": ["t.x"]}}}
+    candidates = tuple(
+        AdvCandidate(candidate_id=cid, source=f"def test_{cid}():\n    pass\n",
+                     status="trusted", rejected_at=None, detail="provisional")
+        for cid in ("c1", "c2", "c3")
+    )
+    reference_plan = {
+        cid: {"exit": 0, "outcomes": {f".skeptic-advtests/test_{cid}.py::test_x": "passed"},
+             "coverage_exit": 0, "covered": covered}
+        for cid in ("c1", "c2", "c3")
+    }
+    seeded_plan = {cid: {"exit": 1} for cid in ("c1", "c2", "c3")}
+    gold_plan = {"c1": {"exit": 1}, "c2": {"exit": 0}, "c3": {"exit": 0}}
+    # c1 is deliberately absent from gold2's plan: the loop must reject c1 at
+    # "gold" and never attempt to read a second exit file for it.
+    gold2_plan = {"c2": {"exit": 1}, "c3": {"exit": 0}}
+    candidate_plan = {"c3": {"exit": 0}}
+    _advtest_fake_runs(
+        monkeypatch, [reference_plan, seeded_plan, gold_plan, gold2_plan, candidate_plan])
+
+    from tests.helpers import make_observed_pair
+    pair = make_observed_pair(baseline={}, spec=spec)
+    pair = pair.model_copy(update={
+        "candidate_diff": CandidateReport(
+            diff_path=pair.candidate_diff.diff_path, changed_files=["minirepo.py"],
+            out_of_scope=[], is_empty=False)})
+
+    report = observe_advtests(
+        spec, "img", repo, pair, tmp_path / "artifacts", candidates, model="test-model")
+
+    by_id = {c.candidate_id: c for c in report.candidates}
+    assert by_id["c1"].status == "rejected"
+    assert by_id["c1"].rejected_at == "gold_prime"
+    assert "gold" in by_id["c1"].detail
+    assert "gold2" not in by_id["c1"].detail
+    assert by_id["c2"].status == "rejected"
+    assert by_id["c2"].rejected_at == "gold_prime"
+    assert "gold2" in by_id["c2"].detail
+    assert by_id["c3"].status == "trusted"
+    assert report.trusted == ("c3",)
+    assert report.trusted == tuple(
+        c.candidate_id for c in report.candidates if c.status == "trusted")
 
 
 @pytest.mark.docker
@@ -1087,6 +1230,38 @@ def test_advtests_ladder_end_to_end_on_the_minirepo(tmp_path, minirepo_spec_and_
     assert by_id["c3"].status == "rejected"
     assert by_id["c3"].rejected_at == "reference"
     assert "skipped" in by_id["c3"].detail
+    assert report.trusted == tuple(
+        c.candidate_id for c in report.candidates if c.status == "trusted")
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_advtests_reference_tree_isolates_coverage_between_candidates_in_one_batch(
+    tmp_path, minirepo_spec_and_repo
+):
+    """Two candidates share the reference tree's one container: one that
+    executes `minirepo.parse_range` (rung `target_coverage` passes) and one
+    that asserts something trivial without touching `minirepo` at all (rung
+    `target_coverage` has to reject it). A shared, unscoped data file would
+    let either candidate's result leak into the other's; a fresh,
+    per-candidate `coveragerc`/data-file pair is what keeps them apart.
+    """
+    from skeptic.image import repo_image_tag
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pair = collect_pair(spec, repo_dir, _gold_candidate(spec), tmp_path / "work")
+    covers_target = _hand_built("c1", _ADV_GOOD_SOURCE)
+    covers_nothing = _hand_built(
+        "c2", "def test_unrelated():\n    assert 1 + 1 == 2\n")
+
+    report = observe_advtests(
+        spec, repo_image_tag(spec), repo_dir, pair, tmp_path / "advtests-artifacts",
+        (covers_target, covers_nothing), model="test-model")
+
+    by_id = {c.candidate_id: c for c in report.candidates}
+    assert by_id["c1"].status == "trusted"
+    assert by_id["c2"].status == "rejected"
+    assert by_id["c2"].rejected_at == "target_coverage"
 
 
 @pytest.mark.docker
@@ -1117,3 +1292,5 @@ def test_advtests_divergence_fires_on_h5_variant(tmp_path, minirepo_spec_and_rep
     assert len(report.divergences) == 1
     assert report.divergences[0].candidate_id == "c1"
     assert report.divergences[0].nodeids != ()
+    assert report.trusted == tuple(
+        c.candidate_id for c in report.candidates if c.status == "trusted")

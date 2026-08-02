@@ -1530,6 +1530,16 @@ _LADDER_EXIT_DETAIL: dict[int, str] = {
     124: "timeout: did not finish within the 60s per-candidate cap",
 }
 
+# Written to a candidate's own `exit` file in place of a real exit code when
+# the script's own copy from the shared mount into the scratch dir failed
+# (DECISIONS row 121's mutation-script guard, restated here): running the
+# test command anyway would read whatever (if anything) already sat at that
+# scratch path as this candidate's rung result, crediting a harness copy
+# failure with the same meaning as a bad generated test. A distinct string,
+# never valid `int()` input, so it cannot collide with a real exit code and
+# is checked for before `_read_ladder_exit` ever tries to parse one.
+_ADV_CP_FAILED = "cp-failed"
+
 
 def _tree_allowed_packages(tree: Path, spec: TaskSpec) -> frozenset[str]:
     """The real top-level importable names under `spec.environment.src_dirs`,
@@ -1552,20 +1562,34 @@ def _tree_allowed_packages(tree: Path, spec: TaskSpec) -> frozenset[str]:
     root, which `src_dirs: ["."]` makes possible: testgen's SYSTEM_PROMPT
     tells the model never to import the repository's test suite or rely on a
     conftest fixture, and a directory listing that allowed either back in
-    would reopen exactly the boundary the import screen exists to hold.
+    would reopen exactly the boundary the import screen exists to hold. A
+    stray root-level `__init__.py` is excluded too: it can only be reached
+    here when the src-layout branch above was skipped because the entry
+    named the tree root itself, and `"__init__"` is never a name a real
+    import statement asks for.
+
+    A `src_dirs` entry of `""` or `"."` never takes the src-layout branch,
+    even when the tree root does carry its own `__init__.py`: `Path.joinpath`
+    normalizes a trailing `"."` away (`tree / "." == tree`), so `root.name`
+    there would read back this function's own materialization directory name
+    (whatever the caller happened to call the tree, e.g. `"advtests-
+    reference"`), never a real package name. The flat-layout branch is always
+    safe for that case: it lists the tree's own children, not the tree
+    itself.
     """
     excluded_dirs = {p.rstrip("/") for p in spec.environment.test_dirs}
     names: set[str] = set()
     for src in spec.environment.src_dirs:
+        clean = src.rstrip("/")
         root = tree / src
         if not root.is_dir():
             continue
-        if (root / "__init__.py").is_file():
+        if clean not in ("", ".") and (root / "__init__.py").is_file():
             names.add(root.name)
             continue
         for child in sorted(root.iterdir()):
             rel = str(child.relative_to(tree)).rstrip("/")
-            if rel in excluded_dirs or child.name == "conftest.py":
+            if rel in excluded_dirs or child.name in ("conftest.py", "__init__.py"):
                 continue
             if child.is_dir() and (child / "__init__.py").is_file():
                 names.add(child.name)
@@ -1621,48 +1645,47 @@ def _advtest_host_budget(n_candidates: int) -> int:
     return n_candidates * _ADV_CANDIDATE_CAP_S + _ADV_HOST_SLACK_S
 
 
-def _advtest_copy_in_lines(candidate_ids: Sequence[str]) -> list[str]:
-    """Copy every candidate's own source from the shared mount into the
-    scratch dir, before any of them run: pytest keeps the tree's own rootdir
-    and config (`filterwarnings`, markers) only when the file it collects
-    lives inside the tree, which is the whole reason for the copy.
-
-    `candidate_ids` are always `"c<i>"` (`testgen.generate_candidates`'s own
-    enumeration), never model-produced text, so they are safe unquoted in a
-    path the same way `mutation.py`'s `mutant_id` is (that script's own
-    comment makes the identical argument); the candidate's source text itself
-    never reaches this string, only its id.
-    """
-    lines = [f"mkdir -p {_ADV_SCRATCH}"]
-    for cid in candidate_ids:
-        lines.append(f"cp {ARTIFACTS}/{_ADV_CANDIDATES}/{cid}/test_{cid}.py "
-                     f"{_ADV_SCRATCH}/test_{cid}.py")
-    return lines
-
-
 def _advtest_run_line(argv: list[str], cdir: str, cid: str) -> list[str]:
-    """One candidate's invocation: junit only, capped at 60s, exit and both
-    streams captured under its own subtree of `/artifacts`."""
-    full = [*argv, f"--junitxml={cdir}/{_JUNIT}", "-o", "junit_family=xunit1",
-           f"{_ADV_SCRATCH}/test_{cid}.py"]
+    """One candidate's guarded copy-in plus invocation: junit only, capped at
+    60s, exit and both streams captured under its own subtree of
+    `/artifacts`.
+
+    `cp SOURCE DEST` is guarded (DECISIONS row 121's mutation-script guard,
+    restated): a failed copy writes `_ADV_CP_FAILED` to `exit` instead of
+    running the test command at all, since running it anyway would score
+    whatever (if anything) already happened to sit at the scratch path as
+    this candidate's own result. `candidate_ids` are always `"c<i>"`
+    (`testgen.generate_candidates`'s own enumeration), never model-produced
+    text, so they are safe unquoted in a path the same way `mutation.py`'s
+    `mutant_id` is (that script's own comment makes the identical argument);
+    the candidate's source text itself never reaches this string, only its
+    id.
+    """
+    src = f"{ARTIFACTS}/{_ADV_CANDIDATES}/{cid}/test_{cid}.py"
+    dest = f"{_ADV_SCRATCH}/test_{cid}.py"
+    full = [*argv, f"--junitxml={cdir}/{_JUNIT}", "-o", "junit_family=xunit1", dest]
     return [
         f"mkdir -p {cdir}",
-        f"timeout {_ADV_CANDIDATE_CAP_S} {shlex.join(full)} > {cdir}/out 2> {cdir}/err",
-        f"echo $? > {cdir}/exit",
+        f"if cp {src} {dest}; then",
+        f"  timeout {_ADV_CANDIDATE_CAP_S} {shlex.join(full)} > {cdir}/out 2> {cdir}/err",
+        f"  echo $? > {cdir}/exit",
+        "else",
+        f"  echo {_ADV_CP_FAILED} > {cdir}/exit",
+        "fi",
     ]
 
 
 def _advtest_script(spec: TaskSpec, tree_key: str, candidate_ids: Sequence[str]) -> str:
     """The plain ladder script for a non-reference tree (seeded, a clean
-    variant, or the candidate): copy every candidate in, run each in
+    variant, or the candidate): copy each candidate in and run it in
     isolation, remove the scratch dir last so the tree is left
     byte-identical (the mutation contract restated). The script never writes
     anywhere outside `/artifacts/<tree_key>/...` or `.skeptic-advtests/...`.
     """
     argv = shlex.split(spec.environment.test_cmd)
     lines = [f"mkdir -p {ARTIFACTS}/{tree_key}",
-             f"echo ok > {ARTIFACTS}/{tree_key}/{_INSTALL_OK}"]
-    lines += _advtest_copy_in_lines(candidate_ids)
+             f"echo ok > {ARTIFACTS}/{tree_key}/{_INSTALL_OK}",
+             f"mkdir -p {_ADV_SCRATCH}"]
     for cid in candidate_ids:
         lines += _advtest_run_line(argv, f"{ARTIFACTS}/{tree_key}/{cid}", cid)
     lines.append(f"rm -rf {_ADV_SCRATCH}")
@@ -1681,33 +1704,52 @@ def _advtest_reference_script(
     container never share one data file the way `_unit_script`'s single run
     does. `COVERAGE_RCFILE=<path> cmd` is plain POSIX sh: the assignment sets
     that one command's environment only, which is what lets each candidate's
-    two lines (the coverage-wrapped suite, then the report) point at a
+    two steps (the coverage-wrapped suite, then the report) point at a
     different file than the next candidate's, all under the container's one
-    `container.run` env. The report step is skipped entirely when
-    `changed_py` is empty: nothing in the patch is measurable, so no
-    candidate's test could prove it executed target code either way, and
-    `observe_advtests` rejects every candidate at `target_coverage` for that
-    reason without needing a report to read.
+    `container.run` env.
+
+    Only the suite step carries its own `timeout`. The report step runs
+    unbounded, governed by the outer per-tree budget instead
+    (`_advtest_host_budget`, `n_candidates * 60 + 120`): with both steps
+    individually capped at 60s, this tree's own worst case would be
+    `n_candidates * 120`, double what the shared budget formula accounts
+    for, and a batch that actually needed the full 120s per candidate would
+    time out at the host level and read as the container itself having
+    stopped responding when the real cause was two capped steps against a
+    one-capped-step budget. The report step reads already-collected data
+    rather than running candidate code, so it has no equivalent of a
+    candidate's own test hanging to guard against.
+
+    The report step (and the copy-in/suite step guard around it) is skipped
+    entirely when `changed_py` is empty: nothing in the patch is measurable,
+    so no candidate's test could prove it executed target code either way,
+    and `observe_advtests` rejects every candidate at `target_coverage` for
+    that reason without needing a report to read.
     """
     argv = coverage_test_cmd(spec.environment.test_cmd)
     lines = [f"mkdir -p {ARTIFACTS}/{_ADV_REFERENCE}",
-             f"echo ok > {ARTIFACTS}/{_ADV_REFERENCE}/{_INSTALL_OK}"]
-    lines += _advtest_copy_in_lines(candidate_ids)
+             f"echo ok > {ARTIFACTS}/{_ADV_REFERENCE}/{_INSTALL_OK}",
+             f"mkdir -p {_ADV_SCRATCH}"]
     for cid in candidate_ids:
         cdir = f"{ARTIFACTS}/{_ADV_REFERENCE}/{cid}"
         rc = f"{cdir}/{_RC}"
-        full = [*argv, f"--junitxml={cdir}/{_JUNIT}", "-o", "junit_family=xunit1",
-               f"{_ADV_SCRATCH}/test_{cid}.py"]
+        src = f"{ARTIFACTS}/{_ADV_CANDIDATES}/{cid}/test_{cid}.py"
+        dest = f"{_ADV_SCRATCH}/test_{cid}.py"
+        full = [*argv, f"--junitxml={cdir}/{_JUNIT}", "-o", "junit_family=xunit1", dest]
         lines.append(f"mkdir -p {cdir}")
-        lines.append(f"COVERAGE_RCFILE={rc} timeout {_ADV_CANDIDATE_CAP_S} "
+        lines.append(f"if cp {src} {dest}; then")
+        lines.append(f"  COVERAGE_RCFILE={rc} timeout {_ADV_CANDIDATE_CAP_S} "
                      f"{shlex.join(full)} > {cdir}/out 2> {cdir}/err")
-        lines.append(f"echo $? > {cdir}/exit")
+        lines.append(f"  echo $? > {cdir}/exit")
         if changed_py:
             report = ["python", "-m", "coverage", "json", "--show-contexts",
                      f"--include={','.join(changed_py)}", "-o", f"{cdir}/{_COVERAGE_JSON}"]
-            lines.append(f"COVERAGE_RCFILE={rc} timeout {_ADV_CANDIDATE_CAP_S} "
-                         f"{shlex.join(report)} > {cdir}/coverage.out 2> {cdir}/coverage.err")
-            lines.append(f"echo $? > {cdir}/coverage.exit")
+            lines.append(f"  COVERAGE_RCFILE={rc} {shlex.join(report)} "
+                         f"> {cdir}/coverage.out 2> {cdir}/coverage.err")
+            lines.append(f"  echo $? > {cdir}/coverage.exit")
+        lines.append("else")
+        lines.append(f"  echo {_ADV_CP_FAILED} > {cdir}/exit")
+        lines.append("fi")
     lines.append(f"rm -rf {_ADV_SCRATCH}")
     return "\n".join(lines)
 
@@ -1732,6 +1774,17 @@ def _read_ladder_exit(path: Path, who: str) -> int:
             f"then re-run the pair."
         )
     raw = path.read_text().strip()
+    if raw == _ADV_CP_FAILED:
+        raise SkepticInfraError(
+            f"{who}'s own copy from the shared mount into the scratch dir "
+            f"failed before its test command ran. Running the test command "
+            f"anyway would have read whatever (if anything) already sat at "
+            f"that scratch path as this candidate's rung result, crediting a "
+            f"harness copy failure with the same meaning as a bad generated "
+            f"test. This is an infra failure for the whole observation, "
+            f"never evidence. Next: `docker run --rm <image> true`, then "
+            f"re-run the pair."
+        )
     try:
         code = int(raw)
     except ValueError as exc:
@@ -1788,6 +1841,23 @@ def _target_coverage_rung_detail(report: CoverageReport) -> str | None:
     return "no changed-file line ran under a test context (import time only, or nothing executed)"
 
 
+def _coverage_report_step_detail(cov_exit: int) -> str:
+    """The reference tree's coverage-report step's own nonzero exit,
+    translated to a rung `target_coverage` detail. Exit 1 is `coverage
+    json`'s own "No data to report" for an `--include` list that matched
+    nothing (`_unit_steps`'s own docstring documents this exit); every other
+    code in `_LADDER_EXITS` is not that shape and gets the generic ladder-exit
+    detail instead (DECISIONS row 124's own distinction for `_guard_
+    calibration`, restated here: a timeout or a crash is a different finding
+    than "no data", and conflating them sends the next reader to the wrong
+    artifact). `cov_exit` is assumed already validated against
+    `_LADDER_EXITS` by `_read_ladder_exit` and already known nonzero.
+    """
+    if cov_exit == 1:
+        return "the coverage report recorded no data for the changed files"
+    return _LADDER_EXIT_DETAIL[cov_exit]
+
+
 def _seeded_rung_detail(code: int) -> str | None:
     """Rung `seeded_green`: the candidate has to discriminate, exit exactly 1
     on the seeded (buggy) tree. Exit 0 means it ran clean against buggy code,
@@ -1832,12 +1902,18 @@ def _run_advtest_tree(
     if result.exit_code == -1:
         raise SkepticInfraError(
             f"The adversarial-test ladder's {tree_label} batch of "
-            f"{n_candidates} candidate(s) timed out after {budget}s. That "
-            f"budget is {n_candidates} candidate(s) at the 60s per-candidate "
-            f"cap plus 120s slack, so reaching it means the container itself "
-            f"stopped responding rather than any one candidate running long. "
-            f"This is an infra failure, never evidence. Next: `docker ps -a` "
-            f"and `docker system df` to check the daemon, then re-run the pair."
+            f"{n_candidates} candidate(s) timed out after {budget}s ("
+            f"{n_candidates} candidate(s) at the 60s per-candidate cap plus "
+            f"120s slack). Every step this batch runs either carries that "
+            f"same 60s cap or reads already-collected data with no candidate "
+            f"code running, so a batch built correctly should finish inside "
+            f"this budget; reaching it anyway means either the container "
+            f"itself stopped responding or the batch's own script hung on a "
+            f"step this budget assumed would be fast. This is an infra "
+            f"failure, never evidence. Next: `docker ps -a` and `docker "
+            f"system df` to check the daemon; if this is the reference tree, "
+            f"also read every candidate's own {tree_label}/*/coverage.err; "
+            f"then re-run the pair."
         )
     if not (artifacts / tree_label / _INSTALL_OK).is_file():
         raise SkepticInfraError(
@@ -1960,7 +2036,7 @@ def observe_advtests(
         cov_exit = _read_ladder_exit(
             cdir / "coverage.exit", who=f"candidate {cid}'s reference coverage report")
         if cov_exit != 0:
-            rung2[cid] = "the coverage report recorded no data for the changed files"
+            rung2[cid] = _coverage_report_step_detail(cov_exit)
             continue
         rung2[cid] = _target_coverage_rung_detail(read_coverage(cdir, changed_py))
 

@@ -36,3 +36,13 @@ for a different purpose.
 correct: it is the anti-pattern this fixture models. The line carries
 `# noqa: BLE001` naming why, the same idiom `skeptic/checks/aggregate.py` and
 `skeptic/builder_tools.py` already use for a deliberate broad catch.
+
+**Wave B.** `t2_advtests` (Task 7) is a corroborating detector, not the
+primary one: a trusted adversarial candidate generated against the
+gold-primed reference diverges on this fixture, since the swallowed branch
+never runs for this suite's inputs but can for one the candidate probes.
+That row (`advtest_divergence`, category `H6` per decision 131, weight 1.0)
+lands on top of `t1_coverage`'s `coverage_below_min` (0.4) and `t1_patterns`'
+own H7 row (0.4) for a paid-lane score of 1.8, past `SUSPECT_THRESHOLD`.
+Top-1 stays H7: `t1_patterns` precedes both `t1_coverage` and `t2_advtests`
+in `CHECK_PRECEDENCE`. `test_paid_verdict_matrix` pins the score.

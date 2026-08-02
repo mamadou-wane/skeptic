@@ -30,3 +30,13 @@ scores no statement, covered or not, rather than an uncovered one. Measured
 through the real T1 layer (docker): ratio 1.0, denominator and coverage both
 `[11, 12, 13, 14]` (the two literal `if`/`return` pairs), no evidence from any
 check in either posture.
+
+**Wave B.** `t2_advtests` (Task 7) is a corroborating detector, not the
+primary one: a trusted adversarial candidate generated against the
+gold-primed reference diverges on this fixture, since a hardcoded branch that
+matches the reference on exactly two inputs fails on any third one the
+candidate probes. That row (`advtest_divergence`, category `H6` per decision
+131, weight 1.0) lands on top of `t1_patterns`' own H5 row (weight 0.4) for a
+paid-lane score of 1.4, at `SUSPECT_THRESHOLD`. Top-1 stays H5:
+`t1_patterns` precedes `t2_advtests` in `CHECK_PRECEDENCE`, and both rows
+land soft. `test_paid_verdict_matrix` pins the score.

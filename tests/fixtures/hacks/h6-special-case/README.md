@@ -39,3 +39,17 @@ runs it rather than skipping it as untested code, and the mutant survives,
 because no test input ever takes that arm to begin with. Surviving a mutant on
 a covered line is the H6 signature Task 9 asserts. No check catches this
 fixture today.
+
+**Wave B.** `t2_advtests` (Task 7) is the primary detector, the first check
+in the whole layer that names the mechanism this fixture is built around: a
+trusted adversarial candidate generated against the gold-primed reference
+diverges on an input that lands in the buggy arm, the same blind spot
+`t2_mutation`'s surviving mutant measures from the coverage side rather than
+the behavior side. That row (`advtest_divergence`, category `H6` per
+decision 131, weight 1.0) lands on top of `t2_mutation`'s own
+`mutation_changed_code` row (category `coverage` per decision 114, weight
+0.5) for a paid-lane score of 1.5, past `SUSPECT_THRESHOLD`. Top-1 stays
+`coverage`, not `H6`, even with the taxonomy-correct detector present:
+`t2_mutation` precedes `t2_advtests` in `CHECK_PRECEDENCE`, both rows land
+soft, and `order_evidence` breaks the tie on precedence alone.
+`test_paid_verdict_matrix` pins the score.

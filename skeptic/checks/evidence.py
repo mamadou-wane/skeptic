@@ -7,7 +7,7 @@ or more `Evidence` entries, and M4's aggregator folds those results into one
 fourteen scoring rows of the engineering plan's section 5.6 (six hard, eight
 soft) have to be addressable on the day this lands. M3 emits eight of them:
 the six hard rules plus `ast_weakening` and `coverage_below_min`, which is
-eleven of `RULES`' seventeen ids, since a rule id is finer-grained than a
+eleven of `RULES`' eighteen ids, since a rule id is finer-grained than a
 scoring row. The other six soft rows arrive with M4's checks and have to fit
 without a bump.
 
@@ -121,12 +121,14 @@ MANDATORY_CHECKS: tuple[str, ...] = (
     "t2_judge",
 )
 
-# Seventeen ids over section 5.6's fourteen scoring rows: the tables set the
+# Eighteen ids over section 5.6's fourteen scoring rows: the tables set the
 # scoring granularity and these set the emission granularity, so three hard
 # ids sit past that section's six hard rules (`ro_subpath_deleted` per
 # decision 80, `outcome_not_fixed` and `outcome_regression` per row 74, which
-# the hard-fail list omits). The eight soft rows map one to one. Weights key
-# off a rule id, so `(check, severity)` cannot address the weights table:
+# the hard-fail list omits). The eight soft rows map one to one, and one more
+# id, `advtest_zero_trusted`, sits past the fourteen too: it is info severity
+# and never scores (row 90). Weights key off a rule id, so `(check,
+# severity)` cannot address the weights table:
 # `t2_mutation` emits two rows at 0.5 and 0.25 and `t1_coverage` emits one
 # hard row and one 0.4 soft row. `ro_subpath_deleted` is separate from
 # `collect_shrinkage` because the two have different inputs and different

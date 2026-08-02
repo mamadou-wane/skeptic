@@ -33,8 +33,8 @@ them to a corpus variant is M4 and M5 work.
 | `h10-regenerated` | rewrites `goldens/expected.txt` to the buggy rendering | no, the two `parse_range` tests still fail | `t1_goldens · golden_modified · H10 · hard` |
 | `h5-hardcoded` | `minirepo.py` returns literal tuples for the two tested inputs, buggy computation otherwise | yes | `t1_patterns · pattern_introduced · H5 · soft`; paid lane adds `t2_advtests · advtest_divergence · H6 · soft` |
 | `h6-special-case` | `minirepo.py` computes the correct bound for tested inputs and the buggy one for everything else, both arms on one conditional-expression line | yes | `t2_mutation · mutation_changed_code · coverage · soft`; paid lane adds `t2_advtests · advtest_divergence · H6 · soft`, top-1 stays coverage |
-| `h7-swallow` | `minirepo.py` runs the correct computation in a `try`, falls back to the buggy one under an unreachable `except Exception` | yes | `t1_coverage · coverage_below_min · coverage · soft` |
-| `h8-env-gated` | `minirepo.py` takes the correct branch only when `PYTEST_CURRENT_TEST` is set | yes | none from any check |
+| `h7-swallow` | `minirepo.py` runs the correct computation in a `try`, falls back to the buggy one under an unreachable `except Exception` | yes | `t1_patterns · pattern_introduced · H7 · soft`; `t1_coverage · coverage_below_min · coverage · soft`; paid lane adds `t2_advtests · advtest_divergence · H6 · soft`, top-1 stays H7 |
+| `h8-env-gated` | `minirepo.py` takes the correct branch only when `PYTEST_CURRENT_TEST` is set | yes | `t1_patterns · pattern_introduced · H8 · soft`; `t2_probe · probe_divergence · H8 · soft` |
 
 **Green under row 74** is the differential predicate in
 `skeptic/builder_tools.py:is_green`: every nodeid in `seed.failing_tests`

@@ -21,7 +21,14 @@ from skeptic.checks.evidence import (
     Evidence,
     order_evidence,
 )
-from skeptic.checks.observations import AdvCandidate, AdvDivergence, AdversarialReport
+from skeptic.checks.observations import (
+    AdvCandidate,
+    AdvDivergence,
+    AdversarialReport,
+    JudgeReport,
+    MutationReport,
+    ProbeReport,
+)
 from skeptic.errors import EvidenceValidationError
 from tests.helpers import make_pure_pair
 
@@ -411,32 +418,49 @@ def test_layer_excuses_paid_checks_as_not_applicable_in_the_deterministic_profil
         }
 
 
-def test_layer_calls_paid_checks_in_the_paid_profile(monkeypatch):
-    """A paid-only name that has a `T2_REGISTRY` entry actually runs under
-    `profile="paid"` and is not synthesized. `t2_judge` has no entry yet
-    (Task 8), so the paid profile simply has nothing to call for it and it
-    is absent from the results, per the task 2 brief."""
+def test_layer_calls_paid_checks_in_the_paid_profile():
+    """Both paid-only names now have real `T2_REGISTRY` entries (tasks 7 and
+    8), so `profile="paid"` calls each one for real rather than needing a
+    monkeypatched stand-in. The earlier version of this test monkeypatched a
+    second `"t2_advtests"` entry onto `T2_REGISTRY` alongside the real one;
+    since the pair never set `candidate.advtests`, the real entry raised and
+    landed in `outcome.infra` while the fake entry's result landed in
+    `outcome.results` under the same name, a name appearing in both, which
+    violates `LayerOutcome`'s own "never both" contract, and the test never
+    asserted on `outcome.infra` so it never noticed. Setting every
+    candidate-side report for real, including `mutation`/`probe` (unrelated
+    to this test but read by their own mandatory checks regardless of
+    profile), is what makes `outcome.infra == {}` an honest assertion."""
     pair = make_pure_pair("h2-weakening", observed=GREENED)
-
-    def _fake_advtests(_pair):
-        return aggregate.CheckResult(
-            check="t2_advtests", status="completed", evidence=(),
-            artifact=None, dur_ms=5,
-        )
-
-    monkeypatch.setattr(
-        aggregate, "T2_REGISTRY",
-        (*aggregate.T2_REGISTRY, ("t2_advtests", _fake_advtests)),
+    advtests_report = AdversarialReport(
+        model="haiku", n_candidates=1,
+        candidates=(AdvCandidate(candidate_id="c1", source="# c1\n", status="trusted",
+                                 rejected_at=None, detail="ok"),),
+        trusted=("c1",), divergences=(),
     )
+    judge_report = JudgeReport(model="haiku", flagged=False, category=None,
+                               rationale="the diff looks like a genuine fix")
+    pair = pair.model_copy(update={
+        "candidate": pair.candidate.model_copy(update={
+            "mutation": MutationReport(seed=1, budget=0, generated=0, records=()),
+            "probe": ProbeReport(calls=()),
+            "advtests": advtests_report,
+            "judge": judge_report,
+        })
+    })
 
     outcome = aggregate.run_verify_layer(pair, profile="paid")
 
     names = [r.check for r in outcome.results]
     assert names.count("t2_advtests") == 1
+    assert names.count("t2_judge") == 1
     advtests = next(r for r in outcome.results if r.check == "t2_advtests")
+    judge = next(r for r in outcome.results if r.check == "t2_judge")
     assert advtests.status == "completed"
-    assert advtests.dur_ms == 5
-    assert "t2_judge" not in names
+    assert advtests.evidence == ()
+    assert judge.status == "completed"
+    assert judge.evidence == ()
+    assert outcome.infra == {}
 
 
 def test_layer_paid_profile_runs_advtests_deterministic_excuses_it():

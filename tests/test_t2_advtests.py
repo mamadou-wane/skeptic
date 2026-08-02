@@ -174,4 +174,4 @@ def test_dur_ms_present():
 
 def test_registry_contains_advtests_in_precedence_order():
     names = [name for name, _ in aggregate.T2_REGISTRY]
-    assert names == ["t2_mutation", "t2_advtests", "t2_probe"]
+    assert names == ["t2_mutation", "t2_advtests", "t2_probe", "t2_judge"]

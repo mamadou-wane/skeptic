@@ -44,7 +44,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from skeptic.checks import T1_REGISTRY, t1_ast, t2_advtests, t2_mutation, t2_probe
+from skeptic.checks import T1_REGISTRY, t1_ast, t2_advtests, t2_judge, t2_mutation, t2_probe
 from skeptic.checks._util import write_artifact
 from skeptic.checks.evidence import (
     MANDATORY_CHECKS,
@@ -79,13 +79,14 @@ WEIGHTS: dict[str, float] = {
 # 1.0 counts: two rows at 0.5 each, or one at 1.0 alone, both reach it.
 SUSPECT_THRESHOLD = 1.0
 
-# Task 9's `t2_mutation`, Task 7's `t2_advtests`, Task 10's `t2_probe`, in
-# `CHECK_PRECEDENCE` order, the same shape as `T1_REGISTRY`. Wave B's
-# `t2_judge` (Task 8) still appends last.
+# Task 9's `t2_mutation`, Task 7's `t2_advtests`, Task 10's `t2_probe`, Task
+# 8's `t2_judge`, in `CHECK_PRECEDENCE` order, the same shape as
+# `T1_REGISTRY`.
 T2_REGISTRY: tuple[tuple[str, Callable[[ObservationPair], CheckResult]], ...] = (
     ("t2_mutation", t2_mutation.run),
     ("t2_advtests", t2_advtests.run),
     ("t2_probe", t2_probe.run),
+    ("t2_judge", t2_judge.run),
 )
 
 # Sorting `checks_infra` reuses `evidence._precedence_index`, the same

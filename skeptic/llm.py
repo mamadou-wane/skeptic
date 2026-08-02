@@ -11,18 +11,17 @@ SKEPTIC_MODEL = "claude-haiku-4-5"
 
 def call_with_retry(client, *, model: str, max_tokens: int, system: str,
                     messages: list, trace: TraceWriter, stage: str,
-                    actor: str):
+                    actor: str, temperature: float | None = None):
     import anthropic
 
     delays = [2, 8, 30]
     for attempt in range(4):
         try:
-            response = client.messages.create(
-                model=model,
-                max_tokens=max_tokens,
-                system=system,
-                messages=messages,
-            )
+            kwargs = {"model": model, "max_tokens": max_tokens, "system": system,
+                     "messages": messages}
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            response = client.messages.create(**kwargs)
         except (anthropic.RateLimitError, anthropic.APITimeoutError,
                 anthropic.APIConnectionError, anthropic.InternalServerError,
                 anthropic.OverloadedError) as exc:

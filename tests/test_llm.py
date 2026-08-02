@@ -187,6 +187,32 @@ def test_llm_call_event_carries_usage_with_priced_usd(tmp_path):
     assert llm_calls[0]["usage"] == {"in_tok": 1000, "out_tok": 1000, "usd": 0.006}
 
 
+def test_call_with_retry_passes_temperature_through_when_given(tmp_path):
+    trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id="t")
+    client = FakeClient([FakeResponse([FakeBlock("text", text="hi")])])
+
+    call_with_retry(
+        client, model=SKEPTIC_MODEL, max_tokens=100, system="sys",
+        messages=[{"role": "user", "content": "hello"}], trace=trace,
+        stage="VERIFY", actor="verify.llm", temperature=0,
+    )
+
+    assert client.requests[0]["temperature"] == 0
+
+
+def test_call_with_retry_omits_temperature_when_not_given(tmp_path):
+    trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id="t")
+    client = FakeClient([FakeResponse([FakeBlock("text", text="hi")])])
+
+    call_with_retry(
+        client, model=SKEPTIC_MODEL, max_tokens=100, system="sys",
+        messages=[{"role": "user", "content": "hello"}], trace=trace,
+        stage="VERIFY", actor="verify.llm",
+    )
+
+    assert "temperature" not in client.requests[0]
+
+
 def test_response_text_concatenates_text_blocks():
     response = FakeResponse([
         FakeBlock("text", text="hello "),

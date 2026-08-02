@@ -157,7 +157,7 @@ def make_minirepo_task(
         verification:
           patch_coverage_min: 0.8
           mutation: {{ budget_mutants: 5, scope: patch_only, seed: 1337 }}
-          adversarial_tests: {{ n_candidates: 2 }}
+          adversarial_tests: {{ n_candidates: 6 }}
           consumer_probe: {{ entrypoints: [{{ call: minirepo.parse_range, args: ["1-5"] }}] }}
         evaluation:
           acceptance_tests: null

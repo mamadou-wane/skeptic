@@ -21,6 +21,7 @@ from skeptic.checks.evidence import (
     Evidence,
     order_evidence,
 )
+from skeptic.checks.observations import AdvCandidate, AdvDivergence, AdversarialReport
 from skeptic.errors import EvidenceValidationError
 from tests.helpers import make_pure_pair
 
@@ -436,3 +437,29 @@ def test_layer_calls_paid_checks_in_the_paid_profile(monkeypatch):
     assert advtests.status == "completed"
     assert advtests.dur_ms == 5
     assert "t2_judge" not in names
+
+
+def test_layer_paid_profile_runs_advtests_deterministic_excuses_it():
+    """Task 7's real `T2_REGISTRY` entry, exercised without a monkeypatch.
+    The default (`"deterministic"`) profile excuses `t2_advtests` before any
+    check name is called, so a pair whose candidate already carries a report
+    that would otherwise score a soft row still lands `not_applicable`: the
+    excusal happens ahead of the call, not because the report was empty."""
+    pair = make_pure_pair("h2-weakening", observed=GREENED)
+    report = AdversarialReport(
+        model="haiku", n_candidates=1,
+        candidates=(AdvCandidate(candidate_id="c1", source="# c1\n", status="trusted",
+                                 rejected_at=None, detail="ok"),),
+        trusted=("c1",),
+        divergences=(AdvDivergence(candidate_id="c1",
+                                   nodeids=("tests/test_x.py::test_one",)),),
+    )
+    pair = pair.model_copy(update={
+        "candidate": pair.candidate.model_copy(update={"advtests": report})})
+
+    outcome = aggregate.run_verify_layer(pair)
+
+    result = next(r for r in outcome.results if r.check == "t2_advtests")
+    assert result.status == "not_applicable"
+    assert result.evidence == ()
+    assert "t2_advtests" not in outcome.infra

@@ -4,8 +4,13 @@ from pathlib import Path
 import typer
 
 import skeptic
+from skeptic.builder import PRICING, _price
+from skeptic.collector import observe_advtests
 from skeptic.errors import SkepticInfraError
+from skeptic.judge import judge_diff
+from skeptic.llm import SKEPTIC_MODEL
 from skeptic.spec import TaskSpec, VariantSpec
+from skeptic.testgen import generate_candidates
 
 EXIT_OK = 0
 EXIT_SUSPECT = 1
@@ -327,7 +332,9 @@ def build(
         raise typer.Exit(EXIT_INFRA) from exc
 
 
-def _verify_cache_key(spec: TaskSpec, variant: VariantSpec) -> str:
+def _verify_cache_key(
+    spec: TaskSpec, variant: VariantSpec, profile: str = "deterministic"
+) -> str:
     """VERIFY stage cache key.
 
     Every input that shapes an observation or a check belongs here: the
@@ -340,7 +347,10 @@ def _verify_cache_key(spec: TaskSpec, variant: VariantSpec) -> str:
     `repo.commit` and `environment` (which together determine the image tag,
     so the key needs no `image_id` of its own), `builder_input`
     (`allowed_paths` shapes `t1_scope`), `verification` (check configs,
-    budgets, seeds), and `verifier_revision()`.
+    budgets, seeds), `verifier_revision()`, and `profile`: the paid profile
+    runs two more checks over the same pair (wave B, task 9), so a cached
+    deterministic verdict must never serve a `--profile paid` request, and
+    vice versa.
 
     This is the VERIFY half of the two-key design (plan decision 5); the other
     half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
@@ -364,6 +374,7 @@ def _verify_cache_key(spec: TaskSpec, variant: VariantSpec) -> str:
         "builder_input": spec.builder_input.model_dump(),
         "verification": spec.verification.model_dump(),
         "verifier_revision": verifier_revision(),
+        "profile": profile,
     })
 
 
@@ -375,9 +386,11 @@ def verify(
     tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
     workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
     runner: str = typer.Option("docker", "--runner", help="docker; venv verify is not wired yet."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the paid-profile cost confirmation."),
 ) -> None:
-    """Run the deterministic check layer against a task's variant."""
+    """Run the check layer against a task's variant."""
     import json
+    import os
     import shutil
     import time
 
@@ -395,13 +408,14 @@ def verify(
     from skeptic.workspace import apply_patch, clone_pinned, materialize
 
     try:
-        if profile != "deterministic":
+        if profile not in ("deterministic", "paid"):
             typer.echo(
-                f"Unknown profile {profile!r}: skeptic verify only runs the "
-                f"deterministic lane (T1's structural and coverage checks, "
-                f"no paid calls). The mutation/adversarial-tests/judge "
-                f"profile is wave B work and is not built yet. Next: re-run "
-                f"with `--profile deterministic`."
+                f"Unknown profile {profile!r}: skeptic verify runs either "
+                f"`deterministic` (T1's structural and coverage checks, no "
+                f"paid calls) or `paid` (adds the adversarial-tests and "
+                f"judge checks, which call the Anthropic API from the "
+                f"host). Next: re-run with `--profile deterministic` or "
+                f"`--profile paid`."
             )
             raise typer.Exit(EXIT_INFRA)
         if runner != "docker":
@@ -413,6 +427,68 @@ def verify(
                 f"`--runner docker`."
             )
             raise typer.Exit(EXIT_INFRA)
+
+        # spec is loaded before the paid preflight below (build's own
+        # ordering, cli.py:171-211): the cost-confirmation line names
+        # spec.task_id, and the key/pricing/confirm sequence has to finish,
+        # or exit, before `_docker_available()` and any image work either
+        # way.
+        spec = find_task(task, tasks_dir)
+
+        if profile == "paid":
+            # Key, then pricing row, then the cost confirmation: all three
+            # ahead of the docker-daemon check and every later image/
+            # container step, so a missing key or an unpriced model fails
+            # in well under a second rather than after a 90-second image
+            # build (build's own rationale, cli.py:178-179, restated for
+            # verify's two paid checks). SKEPTIC_MODEL, PRICING, and _price
+            # are module-level imports (top of this file), not the
+            # local-import style every other command in this module uses,
+            # specifically so a test can monkeypatch
+            # `skeptic.cli.SKEPTIC_MODEL` to an unpriced model without
+            # touching the real PRICING table.
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                typer.echo(
+                    "ANTHROPIC_API_KEY is not set. The paid profile's "
+                    "adversarial-tests and judge checks call the Anthropic "
+                    "API from the host (the key never enters the sandbox). "
+                    "Next: export ANTHROPIC_API_KEY and re-run `skeptic "
+                    f"verify --task {spec.task_id} --variant {variant} "
+                    f"--profile paid`."
+                )
+                raise typer.Exit(EXIT_INFRA)
+            if SKEPTIC_MODEL not in PRICING:
+                typer.echo(
+                    f"No pricing entry for {SKEPTIC_MODEL!r}; the cost "
+                    f"estimate cannot be computed. Next: add a sourced "
+                    f"price to PRICING in skeptic/builder.py."
+                )
+                raise typer.Exit(EXIT_INFRA)
+            # One testgen.generate_candidates call (max_tokens 16000) plus
+            # one judge.judge_diff call (max_tokens 2000), both at max
+            # output: a worst-case constant, not a measurement of a real
+            # run, so the estimate over-quotes a typical call rather than
+            # under-quoting one. The input-token figures (30000, 10000) are
+            # round-number guesses at a problem statement plus a handful of
+            # pristine source files for the first call, and a candidate
+            # diff for the second.
+            est = (_price(SKEPTIC_MODEL, 30_000, 16_000)
+                   + _price(SKEPTIC_MODEL, 10_000, 2_000))
+            typer.echo(
+                f"Paid verify: task={spec.task_id} variant={variant} "
+                f"model={SKEPTIC_MODEL} estimated max cost ${est:.2f}"
+            )
+            if not yes and not typer.confirm("Proceed (this spends real API money)?"):
+                typer.echo(
+                    "Declined: the run was not started, so no API spend "
+                    "happened. Skeptic confirms before every billed paid "
+                    "verify run unless --yes is passed. Next: re-run "
+                    f"`skeptic verify --task {spec.task_id} --variant "
+                    f"{variant} --profile paid --yes` once you're ready to "
+                    f"spend."
+                )
+                raise typer.Exit(EXIT_INFRA)
+
         if not _docker_available():
             typer.echo(
                 "Docker daemon unavailable. VERIFY observes both trees "
@@ -422,7 +498,6 @@ def verify(
             )
             raise typer.Exit(EXIT_INFRA)
 
-        spec = find_task(task, tasks_dir)
         workdir = workdir.resolve()
         verify_dir = workdir / spec.task_id / "verify" / variant
         trace = TraceWriter(
@@ -443,7 +518,7 @@ def verify(
             raise typer.Exit(EXIT_INFRA)
         variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
 
-        cache_key = _verify_cache_key(spec, variant_spec)
+        cache_key = _verify_cache_key(spec, variant_spec, profile)
 
         def do_verify() -> dict:
             repo_dir = clone_pinned(spec.repo.url, spec.repo.commit,
@@ -546,11 +621,97 @@ def verify(
                     event="probe_enrichment_failed", variant=variant_spec.id,
                     payload={"error": f"{type(exc).__name__}: {exc}"})
 
-            layer = run_verify_layer(pair)
+            # Adversarial-tests and judge enrichment: paid-profile only
+            # (decision 9), after the mutation and probe blocks above and
+            # structured the same way: each check gets its own isolation
+            # block rather than one wrapping both (DECISIONS row 116), so a
+            # dead advtests batch cannot take a healthy judge call down with
+            # it or vice versa. `client` is constructed once, host-side, and
+            # shared by both calls: both are LLM reads over the same pair
+            # under one paid run (build's `do_build` does the same one-
+            # client-per-run construction, cli.py's own do_build closure).
+            if profile == "paid":
+                import anthropic
+
+                client = anthropic.Anthropic()
+
+                try:
+                    # generate_candidates needs the pristine (pre-seed,
+                    # spec.repo.commit) body of every file the candidate
+                    # changed. observe_advtests below materializes that same
+                    # commit again for itself, into a "advtests-reference"
+                    # tree sibling to the artifacts path it is handed (its
+                    # own docstring's work-dir layout: `work =
+                    # artifacts.parent`), but only after the candidates it
+                    # takes as an argument already exist -- generate_
+                    # candidates has to run first, so this is a second,
+                    # host-side materialize of the same commit, read once
+                    # for the prompt. It lives under `verify_dir`, a
+                    # different parent directory than `pair.artifacts_dir`
+                    # (where observe_advtests rmtree-rebuilds its own
+                    # "advtests-*" siblings), which rules out any
+                    # interaction between the two by construction rather
+                    # than by name alone.
+                    sources_tree = verify_dir / "advtests-sources"
+                    if sources_tree.exists():
+                        shutil.rmtree(sources_tree)
+                    materialize(repo_dir, spec.repo.commit, sources_tree)
+                    sources = {
+                        path: (sources_tree / path).read_text()
+                        for path in pair.candidate_diff.changed_files
+                        if (sources_tree / path).is_file()
+                    }
+                    candidates = generate_candidates(client, spec, sources, trace)
+                    advtests_started = time.monotonic()
+                    advtests_report = observe_advtests(
+                        spec, repo_image_tag(spec), repo_dir, pair,
+                        pair.artifacts_dir / "advtests", candidates, model=SKEPTIC_MODEL)
+                    trace.event(
+                        stage="VERIFY", actor="checks.t2_advtests", event="advtest_batch",
+                        variant=variant_spec.id,
+                        dur_ms=int((time.monotonic() - advtests_started) * 1000),
+                        payload={"n_candidates": advtests_report.n_candidates,
+                                "generated": len(advtests_report.candidates),
+                                "trusted": len(advtests_report.trusted),
+                                "divergences": len(advtests_report.divergences)})
+                    pair = pair.model_copy(update={
+                        "candidate": pair.candidate.model_copy(
+                            update={"advtests": advtests_report})})
+                except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
+                    trace.event(
+                        stage="VERIFY", actor="checks.t2_advtests",
+                        event="advtests_enrichment_failed", variant=variant_spec.id,
+                        payload={"error": f"{type(exc).__name__}: {exc}"})
+
+                try:
+                    diff_text = pair.candidate_diff.diff_path.read_text()
+                    judge_report, judge_io = judge_diff(client, diff_text, trace)
+                    # Persisted before the fold: judge_diff's own docstring
+                    # states the returned io dict (verbatim request and
+                    # response) as its artifact contract, and JudgeReport
+                    # (frozen, four fields) has no field to carry it, so
+                    # this write is what gives that contract an owner
+                    # (DECISIONS row 132 flagged the gap; closed here).
+                    pair.artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    (pair.artifacts_dir / "t2_judge_io.json").write_text(
+                        json.dumps(judge_io, indent=2, sort_keys=True) + "\n")
+                    trace.event(
+                        stage="VERIFY", actor="checks.t2_judge", event="judge_call",
+                        variant=variant_spec.id,
+                        payload={"flagged": judge_report.flagged})
+                    pair = pair.model_copy(update={
+                        "candidate": pair.candidate.model_copy(update={"judge": judge_report})})
+                except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
+                    trace.event(
+                        stage="VERIFY", actor="checks.t2_judge",
+                        event="judge_enrichment_failed", variant=variant_spec.id,
+                        payload={"error": f"{type(exc).__name__}: {exc}"})
+
+            layer = run_verify_layer(pair, profile=profile)
             verdict = aggregate(
                 layer, run_id=trace.run_id, task_id=spec.task_id,
                 variant=variant_spec.id, isolation="docker-run",
-                profile="deterministic")
+                profile=profile)
             return {
                 **verdict.model_dump(),
                 "fix_verified": compute_fix_verified(pair),

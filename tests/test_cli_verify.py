@@ -85,7 +85,8 @@ def _fake_heavy_stages(monkeypatch, pair, calls):
     monkeypatch.setattr(collector, "collect_pair", fake_collect_pair)
     monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
     monkeypatch.setattr(collector, "observe_probe", lambda *a, **k: None)
-    monkeypatch.setattr(checks, "run_verify_layer", lambda p: _pass_layer_outcome())
+    monkeypatch.setattr(
+        checks, "run_verify_layer", lambda p, profile="deterministic": _pass_layer_outcome())
 
 
 # --- enrichment isolation (review round 1, fix 1): a dead enrichment must
@@ -620,6 +621,260 @@ def test_verify_cache_key_changes_with_the_remaining_key_inputs(tmp_path, flip):
     assert flipped != base
 
 
+# --- the paid profile (wave B, task 9) --------------------------------------
+
+
+def test_unknown_profile_names_both_lanes(tmp_path, monkeypatch):
+    """The explain-and-exit contract, restated: an unknown profile's message
+    now names both lanes, not just `deterministic`."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "stochastic",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "deterministic" in result.output
+    assert "paid" in result.output
+
+
+def test_paid_requires_api_key_before_any_image_work(tmp_path, monkeypatch):
+    """Mirrors `test_build_requires_api_key_before_docker_work`: the key
+    check fails in well under a second, before `_docker_available()` (and
+    therefore before any image work) ever runs."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    called = []
+    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "ANTHROPIC_API_KEY" in result.output
+    assert called == []
+
+
+def test_paid_requires_a_pricing_row(tmp_path, monkeypatch):
+    """SKEPTIC_MODEL is a module-level name on `cli` precisely so a test can
+    swap it for an unpriced model without touching the real PRICING table."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "SKEPTIC_MODEL", "no-such-model")
+    called = []
+    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "No pricing entry" in result.output
+    assert called == []
+
+
+def test_paid_confirm_declined_exits_infra_without_spend(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid",
+                                 "--workdir", str(tmp_path)], input="n\n")
+    assert result.exit_code == 3
+    assert "Declined" in result.output
+    assert "--yes" in result.output
+
+
+def test_paid_yes_skips_the_confirm(tmp_path, monkeypatch):
+    """`--yes` reaches the docker check with no prompt: docker unavailable
+    (rather than the confirm's own stdin prompt) is what ends the run, and
+    the confirm's own "Proceed" text never appears."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: False)
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "Docker" in result.output
+    assert "Proceed" not in result.output
+
+
+def test_deterministic_never_prompts(tmp_path, monkeypatch):
+    """The paid preflight is skipped outright under the default profile: no
+    API key required, no cost line, docker unavailable is reached directly."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "_docker_available", lambda: False)
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "Docker" in result.output
+    assert "ANTHROPIC_API_KEY" not in result.output
+
+
+def _fake_heavy_stages_real_registry(monkeypatch, pair):
+    """Fakes the same git/docker-touching steps `_fake_heavy_stages` does,
+    but leaves `run_verify_layer` real: used by the paid-profile tests below,
+    which need the real registry (and the real aggregator's profile gating)
+    to observe `t2_advtests`/`t2_judge` actually run, rather than a canned
+    `LayerOutcome`. `mutation.generate_mutants` degrades to a harmless, real
+    `()` and `observe_probe` is faked to a harmless, real `ProbeReport(calls=
+    ())`, the same "keep the sibling lanes healthy" shape
+    `_fake_heavy_stages_dead_probe` uses, so the mutation and probe lanes
+    complete clean and only the paid lane under test varies."""
+    from skeptic import candidate, collector, mutation, workspace
+    from skeptic.checks.observations import ProbeReport
+
+    monkeypatch.setattr(workspace, "clone_pinned", lambda url, commit, cache: cache)
+    monkeypatch.setattr(
+        workspace, "materialize",
+        lambda repo, commit, dest: dest.mkdir(parents=True, exist_ok=True))
+    monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
+    monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
+    monkeypatch.setattr(
+        candidate, "extract_candidate",
+        lambda baseline, workspace, out_diff, allowed_paths: pair.candidate_diff)
+    monkeypatch.setattr(
+        collector, "collect_pair",
+        lambda spec, repo_dir, report, workdir, baseline_cache=None: pair)
+    monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
+    monkeypatch.setattr(collector, "observe_probe", lambda *a, **k: ProbeReport(calls=()))
+
+
+def _fake_advtests_and_judge(monkeypatch):
+    """Fakes `cli.generate_candidates`, `cli.observe_advtests`,
+    `cli.judge_diff`, and `anthropic.Anthropic` at the module boundary the
+    brief specifies: one trusted, non-diverging candidate and an unflagged
+    judge read, so a would-be-PASS pair stays PASS with both paid checks
+    genuinely completed rather than captured or excused."""
+    import anthropic
+
+    from skeptic.checks.observations import AdvCandidate, AdversarialReport, JudgeReport
+
+    advtests_candidate = AdvCandidate(
+        candidate_id="c1", source="def test_c1():\n    pass\n",
+        status="trusted", rejected_at=None, detail="cleared the ladder")
+    advtests_report = AdversarialReport(
+        model="fake-model", n_candidates=1, candidates=(advtests_candidate,),
+        trusted=("c1",), divergences=())
+    judge_report = JudgeReport(model="fake-model", flagged=False, category=None,
+                               rationale="clean")
+    judge_io = {"request": {"model": "fake-model", "max_tokens": 2000},
+               "response": {"text": "flag: no\nrationale: clean",
+                            "usage": {"in_tok": 10, "out_tok": 5}}}
+
+    monkeypatch.setattr(cli, "generate_candidates", lambda client, spec, sources, trace: ())
+    monkeypatch.setattr(
+        cli, "observe_advtests",
+        lambda spec, image_tag, repo_dir, pair, artifacts, candidates, model: advtests_report)
+    monkeypatch.setattr(
+        cli, "judge_diff", lambda client, diff_text, trace: (judge_report, judge_io))
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
+    return advtests_report, judge_report, judge_io
+
+
+def test_paid_runs_enrichments_and_stamps_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    _fake_advtests_and_judge(monkeypatch)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output
+    assert "profile paid" in result.output
+
+    saved = json.loads((pair.artifacts_dir / "verdict.json").read_text())
+    assert saved["verdict"] == "PASS"
+    assert saved["profile"] == "paid"
+    assert "t2_advtests" in saved["checks_completed"]
+    assert "t2_judge" in saved["checks_completed"]
+
+
+def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypatch):
+    """The amended judge-io-artifact contract (DECISIONS row 132's flagged
+    gap): `t2_judge_io.json` exists after a faked paid run and carries
+    `judge_diff`'s own `{"request", "response"}` shape."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    _, _, judge_io = _fake_advtests_and_judge(monkeypatch)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    io_path = pair.artifacts_dir / "t2_judge_io.json"
+    assert io_path.is_file()
+    saved = json.loads(io_path.read_text())
+    assert set(saved) == {"request", "response"}
+    assert saved == judge_io
+
+
+def test_deterministic_verdict_carries_two_not_applicable_rows(tmp_path, monkeypatch):
+    """The contract from the brief's own words: a deterministic run is
+    byte-identical to wave A's except two NA rows in the verdict and the two
+    synthetic NA artifacts. `run_verify_layer` is left real here (unlike
+    `_fake_heavy_stages`'s canned `LayerOutcome`), so `aggregate.
+    PAID_ONLY_CHECKS`'s own synthesis is what this test observes."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output
+
+    saved = json.loads((pair.artifacts_dir / "verdict.json").read_text())
+    assert saved["profile"] == "deterministic"
+    assert set(saved["not_applicable"]) & {"t2_advtests", "t2_judge"} == {
+        "t2_advtests", "t2_judge"}
+    for name in ("t2_advtests", "t2_judge"):
+        artifact = pair.artifacts_dir / f"{name}.json"
+        assert artifact.is_file()
+        payload = json.loads(artifact.read_text())
+        assert payload["status"] == "not_applicable"
+
+
+def test_enrichment_failure_surfaces_as_check_infra_not_crash(tmp_path, monkeypatch):
+    """A dead advtests batch lands `t2_advtests` in `checks_infra` (its own
+    INFRA-on-`None` guard, `t2_advtests.run`), not a crash, and does not take
+    the independently-healthy judge check down with it (DECISIONS row 116's
+    isolation rule, extended to the two paid checks)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    _fake_advtests_and_judge(monkeypatch)
+
+    def _boom(client, spec, sources, trace):
+        raise RuntimeError("generation boom")
+
+    monkeypatch.setattr(cli, "generate_candidates", _boom)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 3, result.output
+    assert "INFRA ERROR" in result.output
+
+    saved = json.loads((pair.artifacts_dir / "verdict.json").read_text())
+    assert saved["status"] == "INFRA_ERROR"
+    assert "t2_advtests" in saved["checks_infra"]
+    assert "t2_judge" in saved["checks_completed"]
+
+
+def test_cache_key_differs_by_profile():
+    spec = make_task_spec()
+    variant = spec.evaluation.variants[0]
+    assert (_verify_cache_key(spec, variant, "deterministic")
+            != _verify_cache_key(spec, variant, "paid"))
+
+
 @pytest.mark.docker
 @pytest.mark.slow
 def test_verify_minirepo_gold_passes_end_to_end(tmp_path, minirepo_spec_and_repo):
@@ -637,6 +892,39 @@ def test_verify_minirepo_gold_passes_end_to_end(tmp_path, minirepo_spec_and_repo
     saved = json.loads(verdict_path.read_text())
     assert saved["verdict"] == "PASS"
     assert saved["task_id"] == spec.task_id
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_verify_minirepo_deterministic_profile_carries_na_rows_end_to_end(
+    tmp_path, minirepo_spec_and_repo
+):
+    """The one real, docker-backed smoke for the paid-profile wiring (wave B,
+    task 9): a genuine deterministic run against the minirepo fixture still
+    lists `t2_advtests`/`t2_judge` as `not_applicable`, with their own
+    synthetic artifacts on disk, through a real container rather than a
+    faked check layer."""
+    spec, repo_dir = minirepo_spec_and_repo
+    tasks_dir = repo_dir.parent / "tasks"
+    workdir = (tmp_path / "workdir").resolve()
+
+    result = runner.invoke(app, ["verify", "--task", spec.task_id, "--variant", "gold",
+                                 "--tasks-dir", str(tasks_dir), "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output
+    assert "profile deterministic" in result.output
+    artifacts_dir = workdir / spec.task_id / "verify" / "gold" / "collect" / "artifacts"
+    verdict_path = artifacts_dir / "verdict.json"
+    assert verdict_path.is_file()
+    saved = json.loads(verdict_path.read_text())
+    assert saved["verdict"] == "PASS"
+    assert saved["profile"] == "deterministic"
+    assert set(saved["not_applicable"]) & {"t2_advtests", "t2_judge"} == {
+        "t2_advtests", "t2_judge"}
+    for name in ("t2_advtests", "t2_judge"):
+        payload = json.loads((artifacts_dir / f"{name}.json").read_text())
+        assert payload["status"] == "not_applicable"
 
 
 @pytest.mark.docker

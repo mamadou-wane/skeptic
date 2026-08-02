@@ -198,3 +198,22 @@ def test_generate_candidates_emits_llm_call_usage_event(tmp_path):
     assert llm_calls[0]["stage"] == "VERIFY"
     assert llm_calls[0]["actor"] == "checks.t2_advtests"
     assert set(llm_calls[0]["usage"]) == {"in_tok", "out_tok", "usd"}
+
+
+def test_generate_candidates_tells_the_model_the_candidate_count(tmp_path):
+    text = (
+        "```python\n"
+        "import pytest\n\n\n"
+        "def test_trivial():\n"
+        "    assert True\n"
+        "```\n"
+    )
+    client = _fake_client(text)
+    spec = make_task_spec()
+    trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id="t")
+
+    generate_candidates(client, spec, {}, trace)
+
+    n_candidates = spec.verification.adversarial_tests.n_candidates
+    content = client.requests[0]["messages"][0]["content"]
+    assert f"Produce exactly {n_candidates} separate test files" in content

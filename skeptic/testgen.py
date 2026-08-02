@@ -128,15 +128,26 @@ def _allowed_packages(spec: TaskSpec) -> frozenset[str]:
 def generate_candidates(
     client, spec: TaskSpec, sources: dict[str, str], trace: TraceWriter,
 ) -> tuple[AdvCandidate, ...]:
+    n_candidates = spec.verification.adversarial_tests.n_candidates
     prompt = build_testgen_prompt(spec.builder_input.problem_statement, sources)
+    # Appended after build_testgen_prompt returns, not folded into that
+    # function's own two-parameter signature: a bare integer count carries
+    # no test content, so it does not reopen the boundedness contract
+    # build_testgen_prompt exists to hold (plan decision 3). Left out of the
+    # prompt, a model asked open-endedly for "each independent test file"
+    # tends to return a handful, and parse_candidates treating fewer blocks
+    # than requested as fine (plan decision 4) would let that read as a
+    # silent yield problem rather than a stated target the model missed.
+    prompt += (
+        f"\nProduce exactly {n_candidates} separate test files, each its "
+        f"own fenced python code block."
+    )
     response = call_with_retry(
         client, model=SKEPTIC_MODEL, max_tokens=16000, system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": prompt}], trace=trace,
         stage="VERIFY", actor="checks.t2_advtests",
     )
-    blocks = parse_candidates(
-        response_text(response), spec.verification.adversarial_tests.n_candidates
-    )
+    blocks = parse_candidates(response_text(response), n_candidates)
     allowed_packages = _allowed_packages(spec)
 
     candidates: list[AdvCandidate] = []

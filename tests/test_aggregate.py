@@ -11,6 +11,8 @@ files sit under `test_dirs`, which keeps `t1_coverage` at NOT_APPLICABLE
 without a coverage report and leaves `t1_collect`/`t1_outcomes` needing only a
 literal `observed` map rather than a container.
 """
+import json
+
 import pytest
 
 from skeptic.checks import aggregate, t1_ast
@@ -194,6 +196,22 @@ def test_not_applicable_excuses_a_mandatory_check():
     assert verdict.not_applicable == ["t1_goldens"]
 
 
+def test_deterministic_pass_survives_the_mandatory_growth():
+    """`t2_advtests`/`t2_judge` are mandatory now, same as any other check,
+    but the deterministic profile always excuses them to `not_applicable`
+    (`run_verify_layer`), so a would-be PASS is unaffected by the table
+    growing from nine names to eleven."""
+    completed = [c for c in MANDATORY_CHECKS if c not in aggregate.PAID_ONLY_CHECKS]
+    results = [_result(name, "completed") for name in completed] + [
+        _result(name, "not_applicable") for name in aggregate.PAID_ONLY_CHECKS
+    ]
+    verdict = _aggregate(results)
+    assert verdict.verdict == "PASS"
+    assert verdict.status == "ok"
+    assert verdict.infra_reason is None
+    assert set(verdict.not_applicable) >= aggregate.PAID_ONLY_CHECKS
+
+
 def test_empty_layer_is_infra_error_never_pass():
     verdict = _aggregate([])
     assert verdict.verdict is None
@@ -215,6 +233,17 @@ def test_score_counts_each_rule_once():
     results = [_result("t1_patterns", "completed", evidence=(first, second))]
     verdict = _aggregate(results)
     assert verdict.suspect_score == pytest.approx(0.4)
+
+
+def test_info_evidence_needs_no_weight_and_never_scores():
+    """`advtest_zero_trusted` is severity `info`: `_validate` only requires a
+    soft rule to carry a `WEIGHTS` entry (row 90), so the info row needs
+    none, and the score sum only ever reads `soft` evidence."""
+    info = _ev("t2_advtests", "advtest_zero_trusted", "H8", "info")
+    results = [_result("t2_advtests", "completed", evidence=(info,))]
+    verdict = _aggregate(results)
+    assert verdict.suspect_score == 0.0
+    assert info.rule not in aggregate.WEIGHTS
 
 
 # --- validation first ---------------------------------------------------------
@@ -298,7 +327,9 @@ def test_layer_captures_a_raising_check_and_siblings_survive(monkeypatch):
     `consumer_probe` entrypoint, so both `t2_mutation.run` and `t2_probe.run`
     (`T2_REGISTRY`, Tasks 9 and 10) raise their own INFRA for every case here
     on top of whichever T1 entry this test patches; all three land in
-    `outcome.infra`.
+    `outcome.infra`. The default profile also appends its two synthetic
+    `not_applicable` results for `PAID_ONLY_CHECKS`, unaffected by which T1
+    entry raises.
     """
     pair = make_pure_pair("h2-weakening", observed=GREENED)
 
@@ -323,7 +354,7 @@ def test_layer_captures_a_raising_check_and_siblings_survive(monkeypatch):
     assert "t2_probe" not in names
     assert set(names) == {
         name for name, _ in patched if name != "t1_goldens"
-    } | {"t1_ast"}
+    } | {"t1_ast"} | aggregate.PAID_ONLY_CHECKS
 
 
 def test_layer_annotate_failure_degrades_to_unannotated_results(monkeypatch):
@@ -352,3 +383,56 @@ def test_layer_annotate_failure_degrades_to_unannotated_results(monkeypatch):
     assert scope_entries
     # `annotate` never ran, so the entry it would have rewritten is untouched.
     assert scope_entries[0].annotation is None
+
+
+# --- run_verify_layer: profile -------------------------------------------------
+
+
+def test_layer_excuses_paid_checks_as_not_applicable_in_the_deterministic_profile():
+    """The default profile never calls a paid-only check: both land
+    `not_applicable`, with no evidence, `dur_ms=0`, and the excusal reason
+    written to their own artifact."""
+    pair = make_pure_pair("h2-weakening", observed=GREENED)
+
+    outcome = aggregate.run_verify_layer(pair)
+
+    na = {r.check: r for r in outcome.results if r.check in aggregate.PAID_ONLY_CHECKS}
+    assert set(na) == {"t2_advtests", "t2_judge"}
+    for name, result in na.items():
+        assert result.status == "not_applicable"
+        assert result.evidence == ()
+        assert result.dur_ms == 0
+        payload = json.loads((pair.artifacts_dir / result.artifact).read_text())
+        assert payload == {
+            "check": name,
+            "status": "not_applicable",
+            "reason": "excluded by profile: deterministic",
+        }
+
+
+def test_layer_calls_paid_checks_in_the_paid_profile(monkeypatch):
+    """A paid-only name that has a `T2_REGISTRY` entry actually runs under
+    `profile="paid"` and is not synthesized. `t2_judge` has no entry yet
+    (Task 8), so the paid profile simply has nothing to call for it and it
+    is absent from the results, per the task 2 brief."""
+    pair = make_pure_pair("h2-weakening", observed=GREENED)
+
+    def _fake_advtests(_pair):
+        return aggregate.CheckResult(
+            check="t2_advtests", status="completed", evidence=(),
+            artifact=None, dur_ms=5,
+        )
+
+    monkeypatch.setattr(
+        aggregate, "T2_REGISTRY",
+        (*aggregate.T2_REGISTRY, ("t2_advtests", _fake_advtests)),
+    )
+
+    outcome = aggregate.run_verify_layer(pair, profile="paid")
+
+    names = [r.check for r in outcome.results]
+    assert names.count("t2_advtests") == 1
+    advtests = next(r for r in outcome.results if r.check == "t2_advtests")
+    assert advtests.status == "completed"
+    assert advtests.dur_ms == 5
+    assert "t2_judge" not in names

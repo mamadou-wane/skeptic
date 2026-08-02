@@ -432,7 +432,7 @@ def test_verify_writes_verdict_json_and_prints_the_banner(tmp_path, monkeypatch)
     assert result.exit_code == 0, result.output
     assert "VERDICT PASS" in result.output
     assert "score 0.00" in result.output
-    assert "checks: 9 completed · 0 n/a · 0 infra" in result.output
+    assert "checks: 11 completed · 0 n/a · 0 infra" in result.output
     assert "fix_verified: True" in result.output
     assert "profile deterministic · isolation docker-run" in result.output
     assert calls == [1]

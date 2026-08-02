@@ -45,6 +45,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from skeptic.checks import T1_REGISTRY, t1_ast, t2_mutation, t2_probe
+from skeptic.checks._util import write_artifact
 from skeptic.checks.evidence import (
     MANDATORY_CHECKS,
     RULES,
@@ -91,6 +92,13 @@ T2_REGISTRY: tuple[tuple[str, Callable[[ObservationPair], CheckResult]], ...] = 
 # tie-break rule has one home. A captured check's infra key is its registry
 # name or `"t1_ast"`; only the value is `type(exc).__name__` territory.
 
+# The two mandatory checks (`evidence.MANDATORY_CHECKS`) that cost money to
+# run: Task 7's `t2_advtests` and Task 8's `t2_judge`. `run_verify_layer`
+# never calls either one outside the paid profile; it synthesizes a
+# `not_applicable` result instead, so a deterministic PASS never depends on
+# a paid API call.
+PAID_ONLY_CHECKS: frozenset[str] = frozenset({"t2_advtests", "t2_judge"})
+
 
 @dataclass(frozen=True)
 class LayerOutcome:
@@ -106,7 +114,9 @@ class LayerOutcome:
     infra: dict[str, str]
 
 
-def run_verify_layer(pair: ObservationPair) -> LayerOutcome:
+def run_verify_layer(
+    pair: ObservationPair, profile: str = "deterministic"
+) -> LayerOutcome:
     """Every check in the layer, with a per-check raise turned into capture.
 
     `T1_REGISTRY` and `T2_REGISTRY` are read as module globals rather than
@@ -117,10 +127,23 @@ def run_verify_layer(pair: ObservationPair) -> LayerOutcome:
     is captured under the `"t1_ast"` key and the pre-annotate results are
     returned unchanged, which is what "degrades to unannotated results" means
     for a check whose whole second half is rewriting other checks' evidence.
+
+    `profile` gates `PAID_ONLY_CHECKS`. Outside `"paid"`, a name in
+    `PAID_ONLY_CHECKS` is dropped from the registry before anything runs, so
+    it is never called, and a synthetic `not_applicable` result is appended
+    after annotation instead, with `dur_ms=0` and a written artifact naming
+    the excluding profile. In `"paid"`, the registry runs whichever entry
+    `T2_REGISTRY` holds for that name, same as any other check; a name with
+    no entry yet is simply absent from the results, neither called nor
+    synthesized.
     """
     results: list[CheckResult] = []
     infra: dict[str, str] = {}
     registry = (*T1_REGISTRY, ("t1_ast", t1_ast.run), *T2_REGISTRY)
+    if profile != "paid":
+        registry = tuple(
+            (name, check) for name, check in registry if name not in PAID_ONLY_CHECKS
+        )
     for name, check in registry:
         try:
             results.append(check(pair))
@@ -133,6 +156,19 @@ def run_verify_layer(pair: ObservationPair) -> LayerOutcome:
         infra["t1_ast"] = f"{type(exc).__name__}: {exc}"
     else:
         results = list(annotated)
+
+    if profile != "paid":
+        for name in sorted(PAID_ONLY_CHECKS, key=_precedence_index):
+            reason = f"excluded by profile: {profile}"
+            artifact = write_artifact(
+                pair, name, {"check": name, "status": "not_applicable", "reason": reason}
+            )
+            results.append(
+                CheckResult(
+                    check=name, status="not_applicable", evidence=(),
+                    artifact=artifact, dur_ms=0,
+                )
+            )
 
     return LayerOutcome(results=tuple(results), infra=infra)
 

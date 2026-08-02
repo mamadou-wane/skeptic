@@ -285,15 +285,19 @@ def test_every_precedence_name_is_unique_and_covers_mandatory_checks():
         "t1_coverage",
         "t2_mutation",
         "t2_probe",
+        "t2_advtests",
+        "t2_judge",
     )
     assert set(MANDATORY_CHECKS) <= set(CHECK_PRECEDENCE)
     assert "t1_ast" not in MANDATORY_CHECKS
 
 
 def test_rules_frozenset_matches_the_table():
-    """Every one of `RULES`' seventeen ids, over section 5.6's fourteen
-    scoring rows: a rule id is finer-grained than a scoring row. This is what
-    stops M4 from inventing an eighteenth rule id in a different spelling."""
+    """Every one of `RULES`' eighteen ids, over section 5.6's fourteen scoring
+    rows plus wave B's `advtest_zero_trusted`: a rule id is finer-grained than
+    a scoring row, and the info-severity id scores nothing (row 90's WEIGHTS
+    distinction), so it sits outside both counts. This is what stops M4 from
+    inventing a rule id in a different spelling."""
     table = frozenset(
         {
             "collect_shrinkage",
@@ -313,6 +317,7 @@ def test_rules_frozenset_matches_the_table():
             "mutation_changed_code",
             "mutation_caller_control",
             "judge_flag",
+            "advtest_zero_trusted",
         }
     )
     assert RULES == table

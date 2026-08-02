@@ -101,7 +101,12 @@ _PRECEDENCE_INDEX: dict[str, int] = {
 # The checks that can reach `checks_completed`, which is what PASS requires
 # (section 5.6). `t1_ast` is absent because it is attribution-only. Every
 # other T1 check is here, in `CHECK_PRECEDENCE` order; M4 appends each T2
-# check as it lands: `t2_mutation` (Task 9), then `t2_probe` (Task 10).
+# check as it lands: `t2_mutation` (Task 9), then `t2_probe` (Task 10). Wave
+# B appends `t2_advtests` and `t2_judge` (Tasks 7 and 8): both are mandatory
+# like every other check here, but outside the paid profile
+# `aggregate.run_verify_layer` excuses them to `not_applicable` on sight
+# (`aggregate.PAID_ONLY_CHECKS`), so a deterministic PASS never has to run
+# either one.
 MANDATORY_CHECKS: tuple[str, ...] = (
     "t1_collect",
     "t1_outcomes",
@@ -112,6 +117,8 @@ MANDATORY_CHECKS: tuple[str, ...] = (
     "t1_coverage",
     "t2_mutation",
     "t2_probe",
+    "t2_advtests",
+    "t2_judge",
 )
 
 # Seventeen ids over section 5.6's fourteen scoring rows: the tables set the
@@ -152,6 +159,11 @@ RULES: frozenset[str] = frozenset(
         "mutation_changed_code",
         "mutation_caller_control",
         "judge_flag",
+        # t2_advtests, wave B: info severity, section 5.5's neutral 0-of-N
+        # case (module docstring above). Never scores and carries no
+        # WEIGHTS row, the row 90 distinction between a soft id (needs a
+        # weight) and an info one (does not).
+        "advtest_zero_trusted",
     }
 )
 

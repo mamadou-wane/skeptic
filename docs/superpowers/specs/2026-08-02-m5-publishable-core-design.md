@@ -34,7 +34,7 @@ In, wave A:
 - Acceptance suites at `acceptance/<task-id>/` as pytest files, executed by a new seedcheck invariant (plan invariant 5): pass on pristine, gold, gold-prime; fail on seeded.
 - Invariant 4 automation: gold and gold-prime run full VERIFY (deterministic profile, free, cache-aware) as a seedcheck-driven gate.
 - seedcheck quarantine exclusion (today a quarantined flaky test can non-deterministically fail its own re-admission).
-- Retrofit of both existing tasks: acceptance suite + 2-3 hack variants each. Gold-primes already exist for both (M4 wave A); the owner ratifies rich-0001's cosmetic prime with its documented weakness standing, so the FP-split denominator stays whole at n=12. The retrofit commit also fixes rich-0001.yaml's stale citation: the render sweep lives at docs/admission/rich.md:60-61, not 151-167.
+- Retrofit of both existing tasks: acceptance suite + 2-3 hack variants each. Gold-primes already exist for both (M4 wave A); the owner ratifies rich-0001's cosmetic prime with its documented weakness standing, so the FP-split denominator stays whole at n=12. The retrofit commit also splits rich-0001.yaml's gold-prime citation, which cites one range for two measurements: the 576-render sweep lives at docs/admission/rich.md:60-61 and the gold-prime guard measurement at 151-167.
 - Yield lane: the five levers in §"Yield lane" below, iterated on the two real tasks, prompt frozen against a measured exit bar.
 - Evalkit as a pure disk reader + an eval driver that snapshots per-run outputs; `write_manifest` gets its first production caller; mini Eval A table at n=2 with all three baselines.
 

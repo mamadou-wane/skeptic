@@ -241,8 +241,7 @@ def test_spec_mutation_seed_round_trips_model_dump():
 
 
 def _task_dict(**overrides):
-    # If test_spec.py already has a valid-spec builder, use that instead and
-    # delete this one; the field values below mirror tasks/click-0001.yaml.
+    # The field values below mirror tasks/click-0001.yaml.
     base = {
         "schema_version": 1, "task_id": "t-0001",
         "repo": {"url": "https://example.invalid/r", "commit": "a" * 40,

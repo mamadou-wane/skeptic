@@ -174,6 +174,24 @@ def _fresh_seeded(spec: TaskSpec, repo: Path, dest: Path) -> Path:
     return dest
 
 
+def _drop_quarantined(result: SuiteResult, quarantine: list[str]) -> SuiteResult:
+    """The invariant view of a suite run: quarantined nodeids removed.
+
+    Admission-time counterpart of the exclusion t1_collect and t1_outcomes
+    already apply (spec.py's SeedSpec.quarantine comment): a known-flaky test
+    must not be able to fail its own task's re-admission, in either direction
+    (a red flake breaking green checks, or an outcome flip breaking map
+    equality). collection_errors pass through untouched.
+    """
+    if not quarantine:
+        return result
+    q = set(quarantine)
+    return SuiteResult(
+        outcomes={k: v for k, v in result.outcomes.items() if k not in q},
+        collection_errors=result.collection_errors,
+    )
+
+
 def check_task(
     spec: TaskSpec,
     workroot: Path,
@@ -193,13 +211,15 @@ def check_task(
     runner = runner_factory(pristine_ws)
     first = run_suite(runner, env.test_cmd, env.timeout_s, pristine_ws / ".skeptic-junit-1.xml")
     second = run_suite(runner, env.test_cmd, env.timeout_s, pristine_ws / ".skeptic-junit-2.xml")
-    stable = first.outcome_map_equal(second) and first.collection_errors == 0
-    green = not first.red_set()
+    first_view = _drop_quarantined(first, spec.seed.quarantine)
+    second_view = _drop_quarantined(second, spec.seed.quarantine)
+    stable = first_view.outcome_map_equal(second_view) and first_view.collection_errors == 0
+    green = not first_view.red_set()
     report.results.append(InvariantResult(
         "pristine-green-x2", stable and green,
         "stable and green" if stable and green else
-        f"red={sorted(first.red_set())[:5]} stable={stable} "
-        f"collection_errors={first.collection_errors}",
+        f"red={sorted(first_view.red_set())[:5]} stable={stable} "
+        f"collection_errors={first_view.collection_errors}",
     ))
     baseline = first
 
@@ -225,15 +245,16 @@ def check_task(
     seeded_runner = runner_factory(seeded_ws)
     seeded = run_suite(seeded_runner, env.test_cmd, env.timeout_s,
                        seeded_ws / ".skeptic-junit.xml")
+    seeded_view = _drop_quarantined(seeded, spec.seed.quarantine)
     expected_red = set(spec.seed.failing_tests)
-    actual_red = seeded.red_set()
-    ok4 = actual_red == expected_red and seeded.collection_errors == 0
+    actual_red = seeded_view.red_set()
+    ok4 = actual_red == expected_red and seeded_view.collection_errors == 0
     report.results.append(InvariantResult(
         "seed-red-exact", ok4,
         "red set matches failing_tests" if ok4 else
         f"unexpected={sorted(actual_red - expected_red)} "
         f"missing={sorted(expected_red - actual_red)} "
-        f"collection_errors={seeded.collection_errors}",
+        f"collection_errors={seeded_view.collection_errors}",
     ))
 
     # 5. gold restores baseline
@@ -245,11 +266,13 @@ def check_task(
         gold_runner = runner_factory(gold_ws)
         gold = run_suite(gold_runner, env.test_cmd, env.timeout_s,
                          gold_ws / ".skeptic-junit.xml")
-        if gold.outcome_map_equal(baseline):
+        gold_view = _drop_quarantined(gold, spec.seed.quarantine)
+        baseline_view = _drop_quarantined(baseline, spec.seed.quarantine)
+        if gold_view.outcome_map_equal(baseline_view):
             detail5 = f"{variant.id} matches pristine baseline"
         else:
-            diff_keys = [k for k in set(gold.outcomes) | set(baseline.outcomes)
-                         if gold.outcomes.get(k) != baseline.outcomes.get(k)]
+            diff_keys = [k for k in set(gold_view.outcomes) | set(baseline_view.outcomes)
+                         if gold_view.outcomes.get(k) != baseline_view.outcomes.get(k)]
             ok5, detail5 = False, f"{variant.id} diverges on {sorted(diff_keys)[:5]}"
             break
     report.results.append(InvariantResult("gold-restores-baseline", ok5, detail5))
@@ -263,9 +286,10 @@ def check_task(
         hack_runner = runner_factory(hack_ws)
         hack = run_suite(hack_runner, env.test_cmd, env.timeout_s,
                          hack_ws / ".skeptic-junit.xml")
-        if hack.red_set():
+        hack_view = _drop_quarantined(hack, spec.seed.quarantine)
+        if hack_view.red_set():
             ok6 = False
-            detail6 = f"{variant.id} still red: {sorted(hack.red_set())[:5]}"
+            detail6 = f"{variant.id} still red: {sorted(hack_view.red_set())[:5]}"
             break
         detail6 = f"{len(hacked)} hacked variant(s) green"
     report.results.append(InvariantResult("hacked-variants-green", ok6, detail6))

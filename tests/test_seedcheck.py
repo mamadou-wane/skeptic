@@ -1,12 +1,21 @@
+import tempfile
 from pathlib import Path
 
 import pytest
 
+from skeptic import seedcheck
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import ExecResult, VenvRunner
-from skeptic.seedcheck import SuiteResult, check_task, parse_junit, run_suite
+from skeptic.seedcheck import (
+    CheckReport,
+    InvariantResult,
+    SuiteResult,
+    check_task,
+    parse_junit,
+    run_suite,
+)
 from skeptic.spec import find_task
-from tests.helpers import BUGGY, FIXTURE, PRISTINE, make_minirepo_task
+from tests.helpers import BUGGY, FIXTURE, PRISTINE, make_minirepo_task, make_task_spec
 
 SAMPLES = Path(__file__).parent / "fixtures" / "pytest-output"
 
@@ -185,6 +194,145 @@ def test_pristine_green_x2_fails_on_collection_errors(tmp_path):
     first = {r.name: r for r in report.results}["pristine-green-x2"]
     assert not first.ok
     assert "collection_errors=1" in first.detail
+
+
+# Quarantine exclusion (DECISIONS row 138, amending rows 93(f) and 123):
+# `check_task`'s own invariants must not read a quarantined nodeid, in either
+# direction. `ScriptedRunner` drives `check_task` with no real pytest run at
+# all, so these tests (and tasks 3-4's) run in the fast suite with no venv,
+# no Docker, no network.
+
+def _scripted_junit(outcomes: dict[str, str]) -> str:
+    cases = []
+    for nodeid, outcome in outcomes.items():
+        file_part, name_part = nodeid.split("::", 1)
+        if outcome == "passed":
+            child = ""
+        elif outcome == "failed":
+            child = '<failure message="scripted failure">scripted</failure>'
+        elif outcome == "error":
+            child = '<error message="scripted error">scripted</error>'
+        elif outcome == "skipped":
+            child = '<skipped message="scripted skip"/>'
+        else:
+            raise ValueError(f"ScriptedRunner: unscripted outcome {outcome!r} for {nodeid!r}")
+        cases.append(f'<testcase file="{file_part}" name="{name_part}" time="0.0">{child}</testcase>')
+    return (
+        '<?xml version="1.0" encoding="utf-8"?><testsuites>'
+        f'<testsuite errors="0" failures="0" skipped="0" tests="{len(outcomes)}">'
+        + "".join(cases) + "</testsuite></testsuites>"
+    )
+
+
+class ScriptedRunner:
+    """A `check_task` runner that never runs pytest.
+
+    `exec` parses the `--junitxml=<path>` token out of the command, looks up
+    an outcome map keyed by (workspace directory name, junit filename), and
+    writes the matching xunit1 report (mirroring `tests/fixtures/pytest-output`).
+    `.skeptic-junit-1.xml`/`-2.xml` distinguish the two pristine runs; the
+    `seeded`/`gold-*`/`hack-*`/`acc-*` trees are told apart by directory name
+    alone, so a new tree kind (task 3's acceptance matrix) needs no dedicated
+    case here. A key with no scripted map defaults to an empty, green suite,
+    so a caller only has to name the trees its test cares about.
+    """
+
+    def __init__(self, outcomes: dict[tuple[str, str], dict[str, str]]):
+        self.outcomes = outcomes
+
+    def exec(self, cmd: str, timeout_s: int, env: dict[str, str] | None = None) -> ExecResult:
+        junit_path = Path(cmd.split("--junitxml=", 1)[1].split(" ", 1)[0])
+        outcome_map = self.outcomes.get((junit_path.parent.name, junit_path.name), {})
+        junit_path.write_text(_scripted_junit(outcome_map))
+        failed = any(v in ("failed", "error") for v in outcome_map.values())
+        return ExecResult(1 if failed else 0, "", "", 1)
+
+
+def run_check_with_outcomes(
+    *,
+    pristine_first: dict[str, str] | None = None,
+    pristine_second: dict[str, str] | None = None,
+    seeded: dict[str, str] | None = None,
+    gold: dict[str, str] | None = None,
+    failing_tests: list[str] | None = None,
+    quarantine: list[str] | None = None,
+) -> CheckReport:
+    """Run `check_task` against `helpers.make_task_spec`'s fixture spec, with
+    every tree's outcomes scripted by `ScriptedRunner` instead of executed.
+
+    `clone_pinned`/`materialize`/`apply_patch` are stubbed the way
+    `test_cli_build.py` and `test_cli_verify.py` already stub them: the fixture
+    spec's repo and patches are never touched, so a workspace is an empty
+    directory and the only real work is `run_suite` parsing `ScriptedRunner`'s
+    junit output. Omitted trees default to a trivially green, empty suite
+    (`gold` defaults to `pristine_first`, so it matches baseline unless a test
+    overrides it), which is what lets each of the three tests below name only
+    the tree its own invariant reads.
+    """
+    pristine_first = {} if pristine_first is None else pristine_first
+    pristine_second = pristine_first if pristine_second is None else pristine_second
+    seeded = {} if seeded is None else seeded
+    gold = pristine_first if gold is None else gold
+
+    overrides: dict[str, object] = {}
+    if failing_tests is not None:
+        overrides["failing_tests"] = failing_tests
+    if quarantine is not None:
+        overrides["quarantine"] = quarantine
+    spec = make_task_spec(**overrides)
+
+    outcomes = {
+        ("pristine", ".skeptic-junit-1.xml"): pristine_first,
+        ("pristine", ".skeptic-junit-2.xml"): pristine_second,
+        ("seeded", ".skeptic-junit.xml"): seeded,
+        ("gold-gold", ".skeptic-junit.xml"): gold,
+    }
+
+    with tempfile.TemporaryDirectory(prefix="skeptic-seedcheck-scripted-") as tmp:
+        root = Path(tmp)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(seedcheck, "clone_pinned", lambda url, commit, cache: cache)
+            mp.setattr(seedcheck, "materialize", lambda repo, commit, dest: dest.mkdir(parents=True))
+            mp.setattr(seedcheck, "apply_patch", lambda ws, patch: None)
+            return check_task(
+                spec, root / "work", lambda ws: ScriptedRunner(outcomes), root / "cache",
+            )
+
+
+def result_named(report: CheckReport, name: str) -> InvariantResult:
+    return {r.name: r for r in report.results}[name]
+
+
+def test_quarantined_flake_does_not_break_pristine_green_x2():
+    # first pristine run: quarantined nodeid passes; second run: it fails.
+    # Everything else green and stable. quarantine=[the nodeid].
+    report = run_check_with_outcomes(
+        pristine_first={"tests/t.py::test_a": "passed", "tests/t.py::test_flaky": "passed"},
+        pristine_second={"tests/t.py::test_a": "passed", "tests/t.py::test_flaky": "failed"},
+        quarantine=["tests/t.py::test_flaky"],
+    )
+    assert result_named(report, "pristine-green-x2").ok
+
+
+def test_quarantined_failure_does_not_break_seed_red_exact():
+    # seeded run red set = failing_tests + the quarantined flake
+    report = run_check_with_outcomes(
+        seeded={"tests/t.py::test_bug": "failed", "tests/t.py::test_flaky": "failed",
+                "tests/t.py::test_a": "passed"},
+        failing_tests=["tests/t.py::test_bug"],
+        quarantine=["tests/t.py::test_flaky"],
+    )
+    assert result_named(report, "seed-red-exact").ok
+
+
+def test_quarantined_divergence_does_not_break_gold_restores_baseline():
+    # gold tree differs from baseline only on the quarantined nodeid's outcome
+    report = run_check_with_outcomes(
+        pristine_first={"tests/t.py::test_a": "passed", "tests/t.py::test_flaky": "passed"},
+        gold={"tests/t.py::test_a": "passed", "tests/t.py::test_flaky": "failed"},
+        quarantine=["tests/t.py::test_flaky"],
+    )
+    assert result_named(report, "gold-restores-baseline").ok
 
 
 @pytest.mark.slow

@@ -160,7 +160,6 @@ def make_minirepo_task(
           adversarial_tests: {{ n_candidates: 6 }}
           consumer_probe: {{ entrypoints: [{{ call: minirepo.parse_range, args: ["1-5"] }}] }}
         evaluation:
-          acceptance_tests: null
           variants:
 {variants_yaml}
           expected:

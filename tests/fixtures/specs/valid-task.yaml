@@ -40,7 +40,6 @@ verification:
   adversarial_tests: { n_candidates: 8 }
 
 evaluation:
-  acceptance_tests: null
   variants:
     - { id: gold, patch: patches/click-0001-gold.diff, label: clean }
   expected:

@@ -2,6 +2,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from skeptic.errors import SkepticInfraError
 from skeptic.spec import MutationSpec, TaskSpec, find_task, load_task
@@ -237,3 +238,69 @@ def test_spec_mutation_seed_round_trips_model_dump():
     dumped = spec.verification.mutation.model_dump()
     assert dumped["seed"] == 1337
     assert MutationSpec.model_validate(dumped) == spec.verification.mutation
+
+
+def _task_dict(**overrides):
+    # If test_spec.py already has a valid-spec builder, use that instead and
+    # delete this one; the field values below mirror tasks/click-0001.yaml.
+    base = {
+        "schema_version": 1, "task_id": "t-0001",
+        "repo": {"url": "https://example.invalid/r", "commit": "a" * 40,
+                 "language": "python", "python": "3.12"},
+        "environment": {"install": ["pip install -q -e . pytest"],
+                        "test_cmd": "python -m pytest -q",
+                        "test_dirs": ["tests/"], "src_dirs": ["src/pkg/"],
+                        "timeout_s": 600},
+        "seed": {"bug_patch": "patches/t-0001-seed.diff",
+                 "failing_tests": ["tests/t.py::test_a"]},
+        "builder_input": {"problem_statement": "x", "allowed_paths": ["src/pkg/"]},
+        "constraints": {"max_iterations": 1, "token_budget": 1,
+                        "cost_ceiling_usd": 1.0},
+        "verification": {"patch_coverage_min": 0.8,
+                         "mutation": {"budget_mutants": 1, "scope": "patch_only"},
+                         "adversarial_tests": {"n_candidates": 2}},
+        "evaluation": {"variants": [
+            {"id": "gold", "patch": "patches/t-0001-gold.diff", "label": "clean"},
+            {"id": "gold-prime", "patch": "patches/t-0001-gp.diff", "label": "clean"}],
+            "expected": {"clean_verdict": "PASS",
+                         "hacked_verdict_any_of": ["SUSPECT", "FAIL"]}},
+    }
+    return {**base, **overrides}
+
+
+def test_acceptance_suite_block_parses_and_defaults_to_none():
+    spec = TaskSpec.model_validate(_task_dict())
+    assert spec.acceptance_suite is None
+    spec2 = TaskSpec.model_validate(_task_dict(acceptance_suite={
+        "path": "acceptance/click-0001/",
+        "must_pass_on": ["pristine", "gold", "gold-prime"],
+        "must_fail_on": ["seeded"],
+    }))
+    assert spec2.acceptance_suite.path == "acceptance/click-0001/"
+    assert spec2.acceptance_suite.must_fail_on == ["seeded"]
+
+
+def test_acceptance_suite_rejects_unknown_tree_names():
+    with pytest.raises(ValidationError, match="not-a-variant"):
+        TaskSpec.model_validate(_task_dict(acceptance_suite={
+            "path": "acceptance/x/",
+            "must_pass_on": ["pristine", "not-a-variant"],
+            "must_fail_on": ["seeded"],
+        }))
+
+
+def test_acceptance_suite_requires_seeded_in_must_fail_on():
+    with pytest.raises(ValidationError, match="seeded"):
+        TaskSpec.model_validate(_task_dict(acceptance_suite={
+            "path": "acceptance/x/",
+            "must_pass_on": ["pristine"],
+            "must_fail_on": [],
+        }))
+
+
+def test_acceptance_tests_stub_is_gone():
+    # the old nested stub must now be rejected by extra="forbid"
+    bad = _task_dict()
+    bad["evaluation"]["acceptance_tests"] = None
+    with pytest.raises(ValidationError):
+        TaskSpec.model_validate(bad)

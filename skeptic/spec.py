@@ -169,7 +169,6 @@ class ExpectedSpec(_Model):
 
 
 class EvaluationSpec(_Model):
-    acceptance_tests: str | None = None
     variants: list[VariantSpec]
     expected: ExpectedSpec
 
@@ -185,6 +184,12 @@ class EvaluationSpec(_Model):
         return self
 
 
+class AcceptanceSuiteSpec(_Model):
+    path: str
+    must_pass_on: list[str]
+    must_fail_on: list[str]
+
+
 class TaskSpec(_Model):
     schema_version: Literal[1]
     task_id: str
@@ -195,6 +200,29 @@ class TaskSpec(_Model):
     constraints: ConstraintsSpec
     verification: VerificationSpec
     evaluation: EvaluationSpec
+    acceptance_suite: AcceptanceSuiteSpec | None = None
+
+    @model_validator(mode="after")
+    def _acceptance_names_resolve(self) -> TaskSpec:
+        if self.acceptance_suite is None:
+            return self
+        known = {"pristine", "seeded"} | {v.id for v in self.evaluation.variants}
+        names = set(self.acceptance_suite.must_pass_on) | set(self.acceptance_suite.must_fail_on)
+        unknown = sorted(names - known)
+        if unknown:
+            raise ValueError(
+                f"acceptance_suite names {unknown} are neither 'pristine', "
+                f"'seeded', nor a variant id from evaluation.variants. The "
+                f"acceptance matrix runs against exactly those trees. Next: "
+                f"fix the name or add the variant."
+            )
+        if "seeded" not in self.acceptance_suite.must_fail_on:
+            raise ValueError(
+                "acceptance_suite.must_fail_on must include 'seeded': a suite "
+                "that does not fail the seeded tree cannot discriminate the "
+                "bug it exists to pin (plan invariant 5)."
+            )
+        return self
 
 
 def load_task(path: Path) -> TaskSpec:

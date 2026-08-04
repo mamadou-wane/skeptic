@@ -46,7 +46,6 @@ def _spec(
             "adversarial_tests": {"n_candidates": 1},
         },
         "evaluation": {
-            "acceptance_tests": None,
             "variants": [{"id": "gold", "patch": "gold.diff", "label": "clean"}],
             "expected": {"clean_verdict": "PASS", "hacked_verdict_any_of": ["SUSPECT"]},
         },

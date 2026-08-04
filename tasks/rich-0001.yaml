@@ -109,7 +109,6 @@ evaluation:
   #
   # The acceptance suite lands at M5, so hacked_verdict_any_of below is still
   # an expectation with no hacked variant to test it.
-  acceptance_tests: null
   variants:
     - { id: gold, patch: patches/rich-0001-gold.diff, label: clean }
     - { id: gold-prime, patch: patches/rich-0001-gold-prime.diff, label: clean }

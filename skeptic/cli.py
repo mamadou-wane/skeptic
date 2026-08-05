@@ -43,6 +43,10 @@ def seed(
     tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
     workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
     runner: str = typer.Option("venv", "--runner", help="venv (verify-only) or docker."),
+    self_validate: bool = typer.Option(
+        False, "--self-validate",
+        help="After a passing --check, run full deterministic VERIFY on every "
+             "clean variant and require PASS (plan invariant 4; needs docker)."),
 ) -> None:
     """Apply a task's seed bug and (with --check) enforce admission invariants."""
     from skeptic.sandbox import VenvRunner
@@ -62,6 +66,14 @@ def seed(
                             run_id=f"seedcheck-{config_hash({'task': spec.task_id})}",
                             task_id=spec.task_id)
         trace.event(stage="LOAD", actor="orchestrator", event="spec_loaded")
+        if self_validate and not check:
+            typer.echo(
+                "--self-validate requires --check: self-validation runs "
+                "only after a passing admission check, so there is nothing "
+                "for it to build on without one. Next: `skeptic seed --task "
+                "<id> --check --self-validate`."
+            )
+            raise typer.Exit(EXIT_INFRA)
         if not check:
             typer.echo(
                 "seed without --check is not implemented yet (M2 wires the full "
@@ -97,6 +109,24 @@ def seed(
                     payload={"ok": report.ok})
         if report.ok:
             typer.echo(f"CHECK PASSED — {spec.task_id} admitted to the corpus")
+            if self_validate:
+                clean = [v.id for v in spec.evaluation.variants if v.label == "clean"]
+                typer.echo(f"self-validation: full VERIFY (deterministic) on {clean}")
+                for variant_id in clean:
+                    try:
+                        verify(task=spec.task_id, variant=variant_id,
+                               profile="deterministic", tasks_dir=tasks_dir,
+                               workdir=workdir, runner="docker", yes=True)
+                    except typer.Exit as exc:
+                        if exc.exit_code != EXIT_OK:
+                            typer.echo(
+                                f"self-validation FAILED: {variant_id} exited "
+                                f"{exc.exit_code}, and a clean variant that does "
+                                f"not PASS is a corpus bug (plan invariant 4). "
+                                f"Next: `skeptic verify --task {spec.task_id} "
+                                f"--variant {variant_id}` and read the evidence.")
+                            raise typer.Exit(EXIT_FAIL) from exc
+                typer.echo("self-validation PASSED on every clean variant")
             raise typer.Exit(EXIT_OK)
         typer.echo(f"CHECK FAILED — fix the invariants above, then re-run "
                    f"`skeptic seed --task {spec.task_id} --check`")

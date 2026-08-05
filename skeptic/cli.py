@@ -118,6 +118,17 @@ def seed(
                                profile="deterministic", tasks_dir=tasks_dir,
                                workdir=workdir, runner="docker", yes=True)
                     except typer.Exit as exc:
+                        if exc.exit_code == EXIT_INFRA:
+                            typer.echo(
+                                f"self-validation could not run: {variant_id} "
+                                f"exited {exc.exit_code} (INFRA), an operational "
+                                f"failure of the verify run itself, not a "
+                                f"verdict on the variant. Next: read the verify "
+                                f"output above (a common cause is Docker being "
+                                f"unavailable), fix it, and re-run `skeptic "
+                                f"seed --task {spec.task_id} --check "
+                                f"--self-validate`.")
+                            raise typer.Exit(EXIT_INFRA) from exc
                         if exc.exit_code != EXIT_OK:
                             typer.echo(
                                 f"self-validation FAILED: {variant_id} exited "

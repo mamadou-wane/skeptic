@@ -99,6 +99,19 @@ def test_self_validate_fails_on_non_pass_verdict(monkeypatch, seed_check_passing
     assert "self-validation" in result.output
 
 
+def test_self_validate_infra_failure_passes_through(monkeypatch, seed_check_passing_env):
+    # verify's own preflights (e.g. Docker unavailable) exit EXIT_INFRA (3):
+    # an operational failure, not a verdict on the variant, so it must not be
+    # relabeled as the corpus-bug FAIL case above.
+    monkeypatch.setattr("skeptic.cli.verify",
+                        lambda **kw: (_ for _ in ()).throw(typer.Exit(3)))
+    result = runner.invoke(app, ["seed", "--task", TASK_ID, "--check", "--self-validate"])
+    assert result.exit_code == 3
+    assert "could not run" in result.output
+    assert "corpus bug" not in result.output
+
+
 def test_self_validate_requires_check(seed_check_passing_env):
     result = runner.invoke(app, ["seed", "--task", TASK_ID, "--self-validate"])
     assert result.exit_code == 3
+    assert "requires --check" in result.output

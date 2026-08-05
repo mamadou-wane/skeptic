@@ -230,6 +230,8 @@ def make_task_spec(**overrides: object) -> TaskSpec:
                    if key in overrides}
     if seed_fields:
         spec = spec.model_copy(update={"seed": spec.seed.model_copy(update=seed_fields)})
+    if "acceptance_suite" in overrides:
+        spec = spec.model_copy(update={"acceptance_suite": overrides.pop("acceptance_suite")})
     if overrides:
         raise TypeError(f"make_task_spec: unsupported overrides {sorted(overrides)}")
     return spec

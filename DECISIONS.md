@@ -1489,3 +1489,27 @@ Full `tests/test_seedcheck.py`: 20 passed in 49.87s, the slow VenvRunner
 cases unchanged since none of them sets `quarantine`. Fast suite
 (`-m "not docker"`) goes from 553 to 556 passed (the three new), still 81
 deselected, ruff clean.
+
+---
+
+# M5 wave A execution: task 3 (owner-approved, 2026-08-04)
+
+Task 3 of the M5 wave A plan. Adds the seventh corpus-admission invariant,
+`acceptance-matrix` (plan invariant 5): the frozen suite task 5 authors has
+to pass on every `must_pass_on` tree and fail on every `must_fail_on` tree,
+or it does not discriminate the bug it exists to pin.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 139 | `check_task` gains a seventh invariant, `acceptance-matrix`, appended after `hacked-variants-green` and before `return report`. `spec.acceptance_suite is None` scores `ok=True, "no acceptance suite declared"` and returns early, the `hacked-variants-green` precedent (`"no hacked variants"`): a task mid-authoring admits without a suite and says so, and wave B's corpus gate is what will require presence. When a suite is declared, `resolve_tree(name)` builds each named tree the same way invariants 1-6 already do: `"pristine"` is a fresh `materialize` into `workroot/acc-pristine` (rmtree first if the dest exists), `"seeded"` is `_fresh_seeded` into `workroot/acc-seeded`, and a variant id is `_fresh_seeded` plus that variant's own `apply_patch`, into `workroot/acc-<id>`. `acceptance_run(tree)` copies `spec.acceptance_suite.path` into that tree as `.skeptic-acceptance/` via `shutil.copytree` (rmtree first if the dest already exists, since the same tree is never resolved twice inside one matrix but the destination check stays defensive) and runs `python -m pytest -q .skeptic-acceptance --junitxml=<tree>/.skeptic-acceptance-junit.xml`, the exact command and junit path task 5's suites are authored against. Every acceptance `SuiteResult` passes through `_drop_quarantined` (task 2), matching every other invariant's read. A `must_pass_on` tree scoring any red fails the invariant; a `must_fail_on` tree scoring no red also fails it, tagged `"green (suite does not discriminate)"` rather than folded into the same message a red failure gets, since a suite that stays green on the seeded tree is a corpus-authoring bug distinct from a suite that is merely red somewhere it shouldn't be. `run_suite` already raises `SkepticInfraError` on a pytest exit outside (0, 1) (the collection-error path every other invariant already relies on), so a suite that fails to collect propagates out of `check_task` uncaught instead of being scored either side of the matrix: a suite that never ran proves nothing. | Declared-if-present rather than required matches wave A's own incremental corpus-authoring posture and reuses `hacked-variants-green`'s exact reasoning rather than inventing a second one: an admission run has to stay usable on a task before its acceptance suite exists. Copying the suite into `.skeptic-acceptance/` inside each `workroot`-scoped tree, rather than mounting or running it in place, keeps the holdout mechanical by construction: the suite source never leaves `workroot`, which BUILD never mounts, so nothing here has to remember to exclude it from a Builder-visible path or from `extract_candidate`'s scope, the way a second mount point would need remembering. Scoring `must_fail_on` non-discrimination as its own tagged failure, not merely "not `must_pass_on`", keeps the invariant's detail string naming the actual authoring defect (a suite that can't tell seeded from pristine) rather than a generic red/green mismatch. | Scoring a collection error as an ordinary red result on whichever tree hit it: rejected, `run_suite`'s existing contract (invariants 1-6) is that a tree which cannot collect is an operational failure, not evidence, and inventing a second, acceptance-only interpretation here would split that contract for no reason the spec's own error-handling section gives. Mounting `.skeptic-acceptance` read-only into a container rather than copying it into the gitless tree: rejected, admission's own trees are plain `git archive` checkouts run through `VenvRunner`/`SandboxRunnerLike.exec`, not `RunContainer`'s mount machinery, so a copy is the only mechanism already available at this layer, and it is also the one that keeps the acceptance dir a normal path `python -m pytest` can address relative to the tree's own cwd. |
+
+**Ripple.** `tests/test_seedcheck.py -k acceptance` RED before the fix, each
+for the reason its own test names: `KeyError: 'acceptance-matrix'` for the
+three tests reading `result_named` on a report that does not carry it yet,
+`Failed: DID NOT RAISE SkepticInfraError` for the collection-error test
+since nothing yet reaches `acceptance_run` at all; 4 passed after. A
+pre-existing test, `test_check_task_passes_on_well_formed_minirepo_task`,
+had its expected invariant-name list amended to append `"acceptance-matrix"`
+(the new invariant always appends a result, even the declared-absent skip).
+Full `tests/test_seedcheck.py`: 24 passed. Fast suite (`-m "not docker"`)
+goes from 556 to 560 passed (the four new), still 81 deselected, ruff clean.

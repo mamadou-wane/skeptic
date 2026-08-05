@@ -294,4 +294,54 @@ def check_task(
         detail6 = f"{len(hacked)} hacked variant(s) green"
     report.results.append(InvariantResult("hacked-variants-green", ok6, detail6))
 
+    # 7. acceptance matrix (plan invariant 5). Declared-if-present in wave A,
+    # the hacked-variants-green precedent: a task mid-authoring admits without
+    # a suite and says so; the wave B corpus gate requires presence.
+    acc = spec.acceptance_suite
+    if acc is None:
+        report.results.append(InvariantResult(
+            "acceptance-matrix", True, "no acceptance suite declared"))
+        return report
+    acc_src = Path(acc.path)
+
+    def acceptance_run(tree: Path) -> SuiteResult:
+        dest = tree / ".skeptic-acceptance"
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(acc_src, dest)
+        acc_runner = runner_factory(tree)
+        result = run_suite(acc_runner, "python -m pytest -q .skeptic-acceptance",
+                           env.timeout_s, tree / ".skeptic-acceptance-junit.xml")
+        return _drop_quarantined(result, spec.seed.quarantine)
+
+    def resolve_tree(name: str) -> Path:
+        if name == "pristine":
+            dest = workroot / "acc-pristine"
+            if dest.exists():
+                shutil.rmtree(dest)
+            materialize(repo, spec.repo.commit, dest)
+            return dest
+        if name == "seeded":
+            return _fresh_seeded(spec, repo, workroot / "acc-seeded")
+        variant = next(v for v in spec.evaluation.variants if v.id == name)
+        tree = _fresh_seeded(spec, repo, workroot / f"acc-{variant.id}")
+        apply_patch(tree, Path(variant.patch))
+        return tree
+
+    ok7, details7 = True, []
+    for name in acc.must_pass_on:
+        red = acceptance_run(resolve_tree(name)).red_set()
+        if red:
+            ok7 = False
+            details7.append(f"{name} red on {sorted(red)[:3]}")
+    for name in acc.must_fail_on:
+        red = acceptance_run(resolve_tree(name)).red_set()
+        if not red:
+            ok7 = False
+            details7.append(f"{name} green (suite does not discriminate)")
+    report.results.append(InvariantResult(
+        "acceptance-matrix", ok7,
+        "; ".join(details7) if details7 else
+        f"pass on {acc.must_pass_on}, fail on {acc.must_fail_on}"))
+
     return report

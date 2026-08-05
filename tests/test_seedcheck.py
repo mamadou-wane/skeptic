@@ -14,7 +14,7 @@ from skeptic.seedcheck import (
     parse_junit,
     run_suite,
 )
-from skeptic.spec import find_task
+from skeptic.spec import AcceptanceSuiteSpec, find_task
 from tests.helpers import BUGGY, FIXTURE, PRISTINE, make_minirepo_task, make_task_spec
 
 SAMPLES = Path(__file__).parent / "fixtures" / "pytest-output"
@@ -248,6 +248,24 @@ class ScriptedRunner:
         return ExecResult(1 if failed else 0, "", "", 1)
 
 
+def _check_with_stubbed_repo(spec, runner_factory) -> CheckReport:
+    """Shared stub-and-run body `run_check_with_outcomes` and
+    `run_check_with_acceptance` both need: `clone_pinned`/`materialize`/
+    `apply_patch` are stubbed the way `test_cli_build.py` and
+    `test_cli_verify.py` already stub them, no-op on `skeptic.seedcheck`'s
+    own bound names, so the fixture spec's repo and patches are never
+    touched. `check_task` runs against a scratch workroot/cache pair that
+    vanishes on return.
+    """
+    with tempfile.TemporaryDirectory(prefix="skeptic-seedcheck-scripted-") as tmp:
+        root = Path(tmp)
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(seedcheck, "clone_pinned", lambda url, commit, cache: cache)
+            mp.setattr(seedcheck, "materialize", lambda repo, commit, dest: dest.mkdir(parents=True))
+            mp.setattr(seedcheck, "apply_patch", lambda ws, patch: None)
+            return check_task(spec, root / "work", runner_factory, root / "cache")
+
+
 def run_check_with_outcomes(
     *,
     pristine_first: dict[str, str] | None = None,
@@ -256,18 +274,21 @@ def run_check_with_outcomes(
     gold: dict[str, str] | None = None,
     failing_tests: list[str] | None = None,
     quarantine: list[str] | None = None,
+    acceptance_suite: AcceptanceSuiteSpec | None = None,
 ) -> CheckReport:
     """Run `check_task` against `helpers.make_task_spec`'s fixture spec, with
     every tree's outcomes scripted by `ScriptedRunner` instead of executed.
 
-    `clone_pinned`/`materialize`/`apply_patch` are stubbed the way
-    `test_cli_build.py` and `test_cli_verify.py` already stub them: the fixture
-    spec's repo and patches are never touched, so a workspace is an empty
-    directory and the only real work is `run_suite` parsing `ScriptedRunner`'s
-    junit output. Omitted trees default to a trivially green, empty suite
-    (`gold` defaults to `pristine_first`, so it matches baseline unless a test
-    overrides it), which is what lets each of the three tests below name only
-    the tree its own invariant reads.
+    The fixture spec's repo and patches are never touched
+    (`_check_with_stubbed_repo`), so a workspace is an empty directory and
+    the only real work is `run_suite` parsing `ScriptedRunner`'s junit
+    output. Omitted trees default to a trivially green, empty suite
+    (`gold` defaults to `pristine_first`, so it matches baseline unless a
+    test overrides it), which is what lets each of the three tests below
+    name only the tree its own invariant reads. `acceptance_suite` defaults
+    to `None`, the same "don't override" convention `failing_tests`/
+    `quarantine` use: the fixture spec already carries no acceptance suite,
+    so naming it explicitly and leaving it unset land on the same spec.
     """
     pristine_first = {} if pristine_first is None else pristine_first
     pristine_second = pristine_first if pristine_second is None else pristine_second
@@ -279,6 +300,8 @@ def run_check_with_outcomes(
         overrides["failing_tests"] = failing_tests
     if quarantine is not None:
         overrides["quarantine"] = quarantine
+    if acceptance_suite is not None:
+        overrides["acceptance_suite"] = acceptance_suite
     spec = make_task_spec(**overrides)
 
     outcomes = {
@@ -287,20 +310,117 @@ def run_check_with_outcomes(
         ("seeded", ".skeptic-junit.xml"): seeded,
         ("gold-gold", ".skeptic-junit.xml"): gold,
     }
-
-    with tempfile.TemporaryDirectory(prefix="skeptic-seedcheck-scripted-") as tmp:
-        root = Path(tmp)
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(seedcheck, "clone_pinned", lambda url, commit, cache: cache)
-            mp.setattr(seedcheck, "materialize", lambda repo, commit, dest: dest.mkdir(parents=True))
-            mp.setattr(seedcheck, "apply_patch", lambda ws, patch: None)
-            return check_task(
-                spec, root / "work", lambda ws: ScriptedRunner(outcomes), root / "cache",
-            )
+    return _check_with_stubbed_repo(spec, lambda ws: ScriptedRunner(outcomes))
 
 
 def result_named(report: CheckReport, name: str) -> InvariantResult:
     return {r.name: r for r in report.results}[name]
+
+
+# Acceptance matrix (plan invariant 5, task 3). `run_check_with_acceptance`
+# is `run_check_with_outcomes`'s sibling for the seventh invariant: it
+# declares a real `acceptance_suite` on the fixture spec (whose one variant
+# id is `gold`) and scripts every `acc-<name>` tree the invariant resolves,
+# through the same `ScriptedRunner` keyed by (workspace dir, junit
+# filename), just with the acceptance junit filename and the `acc-` tree
+# prefix `check_task`'s `resolve_tree`/`acceptance_run` use.
+
+class _AcceptanceCollectionErrorRunner:
+    """`ScriptedRunner`, except every acceptance-suite run comes back as a
+    pytest exit 2 (a collection failure) instead of a scripted outcome.
+    Invariants 1-6 still run through the wrapped `ScriptedRunner` normally;
+    only `run_check_with_acceptance(acceptance_raises=True)` reaches for
+    this, to drive `test_acceptance_matrix_collection_error_is_infra`:
+    `run_suite` raises `SkepticInfraError` on any pytest exit outside
+    (0, 1), before any acceptance junit outcome is scored.
+    """
+
+    def __init__(self, outcomes: dict[tuple[str, str], dict[str, str]]):
+        self._inner = ScriptedRunner(outcomes)
+
+    def exec(self, cmd: str, timeout_s: int, env: dict[str, str] | None = None) -> ExecResult:
+        junit_path = Path(cmd.split("--junitxml=", 1)[1].split(" ", 1)[0])
+        if junit_path.name == ".skeptic-acceptance-junit.xml":
+            return ExecResult(2, "", "ImportError: no_such_module", 1)
+        return self._inner.exec(cmd, timeout_s, env)
+
+
+def run_check_with_acceptance(
+    *,
+    acceptance_outcomes: dict[str, dict[str, str]] | None = None,
+    acceptance_raises: bool = False,
+    must_pass_on: list[str] | None = None,
+    must_fail_on: list[str] | None = None,
+) -> CheckReport:
+    """Drive `check_task` with a real `acceptance_suite` declared on the
+    fixture spec, scripting every acceptance tree the invariant resolves.
+
+    `acceptance_outcomes` is keyed by tree name (`pristine`, `seeded`, or a
+    variant id), translated here into `ScriptedRunner`'s (dir, junit
+    filename) key via the `acc-<name>` naming `resolve_tree` uses, so a
+    caller writes exactly what the brief writes and never touches the
+    internal key shape. Defaults name `pristine` and `gold` (the fixture
+    spec's one variant id) as `must_pass_on` and `seeded` as `must_fail_on`,
+    which satisfies `TaskSpec`'s own vocabulary validator (`must_fail_on`
+    has to include `seeded`) and matches every caller below.
+    `acceptance_raises` swaps in `_AcceptanceCollectionErrorRunner`, so the
+    first acceptance tree the invariant reaches fails collection instead of
+    returning a scripted outcome. The acceptance dir itself is a real,
+    empty temp directory: `acceptance_run` copies it with
+    `shutil.copytree`, which needs a real source, and no test here runs
+    real pytest against its contents.
+    """
+    must_pass_on = ["pristine", "gold"] if must_pass_on is None else must_pass_on
+    must_fail_on = ["seeded"] if must_fail_on is None else must_fail_on
+    acceptance_outcomes = {} if acceptance_outcomes is None else acceptance_outcomes
+
+    with tempfile.TemporaryDirectory(prefix="skeptic-seedcheck-acceptance-src-") as acc_tmp:
+        spec = make_task_spec(acceptance_suite=AcceptanceSuiteSpec(
+            path=acc_tmp, must_pass_on=must_pass_on, must_fail_on=must_fail_on,
+        ))
+        outcomes = {
+            (f"acc-{name}", ".skeptic-acceptance-junit.xml"): tree_outcomes
+            for name, tree_outcomes in acceptance_outcomes.items()
+        }
+        runner_factory = (
+            (lambda ws: _AcceptanceCollectionErrorRunner(outcomes)) if acceptance_raises
+            else (lambda ws: ScriptedRunner(outcomes))
+        )
+        return _check_with_stubbed_repo(spec, runner_factory)
+
+
+def test_acceptance_matrix_absent_suite_is_a_named_skip():
+    report = run_check_with_outcomes(acceptance_suite=None)
+    item = result_named(report, "acceptance-matrix")
+    assert item.ok and "no acceptance suite" in item.detail
+
+
+def test_acceptance_matrix_pass_and_fail_sides():
+    # must_pass_on tree returns green suite -> ok contribution;
+    # must_fail_on seeded tree returns one failed test -> ok contribution.
+    report = run_check_with_acceptance(
+        acceptance_outcomes={
+            "pristine": {"acc::test_boundary": "passed"},
+            "gold":     {"acc::test_boundary": "passed"},
+            "seeded":   {"acc::test_boundary": "failed"},
+        })
+    assert result_named(report, "acceptance-matrix").ok
+
+
+def test_acceptance_matrix_seeded_green_fails_the_invariant():
+    report = run_check_with_acceptance(
+        acceptance_outcomes={"pristine": {"acc::t": "passed"},
+                             "seeded": {"acc::t": "passed"}})
+    item = result_named(report, "acceptance-matrix")
+    assert not item.ok and "seeded" in item.detail
+
+
+def test_acceptance_matrix_collection_error_is_infra():
+    # run_suite raising SkepticInfraError (pytest exit 2) must propagate,
+    # not score as a red/green side: a suite that cannot collect proves
+    # nothing (spec §Error handling).
+    with pytest.raises(SkepticInfraError):
+        run_check_with_acceptance(acceptance_raises=True)
 
 
 def test_quarantined_flake_does_not_break_pristine_green_x2():
@@ -360,6 +480,7 @@ def test_check_task_passes_on_well_formed_minirepo_task(tmp_path):
         "seed-red-exact",
         "gold-restores-baseline",
         "hacked-variants-green",
+        "acceptance-matrix",
     ]
 
 

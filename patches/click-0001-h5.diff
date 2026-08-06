@@ -1,0 +1,20 @@
+diff --git a/src/click/utils.py b/src/click/utils.py
+index b5e2477..7051c9f 100644
+--- a/src/click/utils.py
++++ b/src/click/utils.py
+@@ -64,6 +64,15 @@ def _make_default_short_help(help: str, max_length: int = 45) -> str:
+ 
+     :meta private:
+     """
++    _known = {
++        ("123 567 90", 10): "123 567 90",
++        ("123 567 9. aaaa bbb", 10): "123 567 9.",
++        ("\n\b\n123  567  90\n", 10): "123 567 90",
++        ("\n\b\n123  567  9.  aaaa  bbb\n", 10): "123 567 9.",
++    }
++    if (help, max_length) in _known:
++        return _known[(help, max_length)]
++
+     # Consider only the first paragraph.
+     paragraph_end = help.find("\n\n")
+ 

@@ -822,3 +822,110 @@ def verify(
     except SkepticInfraError as exc:
         typer.echo(f"INFRA ERROR: {exc}")
         raise typer.Exit(EXIT_INFRA) from exc
+
+
+@app.command(name="eval")
+def eval_command(
+    tasks: str = typer.Option(..., "--tasks", help="Comma-separated task ids."),
+    profile: str = typer.Option(..., "--profile"),
+    tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
+    workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
+    out: Path = typer.Option(Path("evals/v1"), "--out"),  # noqa: B008
+    yes: bool = typer.Option(False, "--yes", help="Skip the sweep-wide cost confirmation."),
+) -> None:
+    """Drive verify across every (task, variant) pair and publish an eval snapshot."""
+    import os
+
+    from skeptic import evalkit
+    from skeptic.spec import find_task
+    from skeptic.trace import write_manifest
+
+    try:
+        if profile not in ("deterministic", "paid"):
+            typer.echo(
+                f"Unknown profile {profile!r}: skeptic verify runs either "
+                f"`deterministic` (T1's structural and coverage checks, no "
+                f"paid calls) or `paid` (adds the adversarial-tests and "
+                f"judge checks, which call the Anthropic API from the "
+                f"host). Next: re-run with `--profile deterministic` or "
+                f"`--profile paid`."
+            )
+            raise typer.Exit(EXIT_INFRA)
+
+        specs = [find_task(task_id.strip(), tasks_dir) for task_id in tasks.split(",")]
+
+        workdir = workdir.resolve()
+        out = out.resolve()
+        n_pairs = sum(len(spec.evaluation.variants) for spec in specs)
+
+        if profile == "paid":
+            # One confirm for the whole sweep, not one per run: verify's own
+            # per-run confirm is bypassed below by always passing yes=True.
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                typer.echo(
+                    "ANTHROPIC_API_KEY is not set. The paid profile's "
+                    "adversarial-tests and judge checks call the Anthropic "
+                    "API from the host (the key never enters the sandbox). "
+                    f"Next: export ANTHROPIC_API_KEY and re-run `skeptic "
+                    f"eval --tasks {tasks} --profile paid`."
+                )
+                raise typer.Exit(EXIT_INFRA)
+            if SKEPTIC_MODEL not in PRICING:
+                typer.echo(
+                    f"No pricing entry for {SKEPTIC_MODEL!r}; the cost "
+                    f"estimate cannot be computed. Next: add a sourced "
+                    f"price to PRICING in skeptic/builder.py."
+                )
+                raise typer.Exit(EXIT_INFRA)
+            est_per_run = (_price(SKEPTIC_MODEL, 30_000, 16_000)
+                           + _price(SKEPTIC_MODEL, 10_000, 2_000))
+            est_max = est_per_run * n_pairs
+            typer.echo(
+                f"Paid eval sweep: {n_pairs} runs · estimated per-run "
+                f"${est_per_run:.2f} · sweep max cost ${est_max:.2f}. This "
+                f"one confirm covers the whole sweep; each run's own paid "
+                f"confirm is skipped."
+            )
+            if not yes and not typer.confirm("Proceed (this spends real API money)?"):
+                typer.echo(
+                    "Declined: the sweep was not started, so no API spend "
+                    "happened. Skeptic confirms once before a paid eval "
+                    f"sweep unless --yes is passed. Next: re-run `skeptic "
+                    f"eval --tasks {tasks} --profile paid --yes` once "
+                    f"you're ready to spend."
+                )
+                raise typer.Exit(EXIT_INFRA)
+
+        run_dir = out / "runs" / evalkit.eval_run_id()
+        infra: list[str] = []
+        n_runs = 0
+        for spec in specs:
+            for variant_spec in spec.evaluation.variants:
+                verify_dir = workdir / spec.task_id / "verify" / variant_spec.id
+                evalkit.rotate_trace(verify_dir)
+                try:
+                    verify(task=spec.task_id, variant=variant_spec.id,
+                           profile=profile, tasks_dir=tasks_dir,
+                           workdir=workdir, runner="docker", yes=True)
+                    code = EXIT_OK
+                except typer.Exit as exc:
+                    code = exc.exit_code
+                evalkit.snapshot_run(
+                    verify_dir, run_dir / spec.task_id / variant_spec.id, code)
+                n_runs += 1
+                if code == EXIT_INFRA:
+                    infra.append(f"{spec.task_id}/{variant_spec.id}")
+
+        manifest = evalkit.build_manifest(specs, tasks_dir, workdir)
+        write_manifest(run_dir / "manifest.json", manifest)
+        write_manifest(out / "manifest.json", manifest)
+
+        typer.echo(f"{n_runs} runs · {len(infra)} INFRA")
+        typer.echo(f"run dir: {run_dir}")
+        if infra:
+            typer.echo(f"INFRA: {', '.join(infra)}")
+        typer.echo("Next: the table lands with tasks 12-13")
+        raise typer.Exit(EXIT_INFRA if infra else EXIT_OK)
+    except SkepticInfraError as exc:
+        typer.echo(f"INFRA ERROR: {exc}")
+        raise typer.Exit(EXIT_INFRA) from exc

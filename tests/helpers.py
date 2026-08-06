@@ -24,7 +24,16 @@ every check test rides on. All three hand back an `ObservationPair` with
 nothing executed: the first from a hack fixture applied to a seeded tree, the
 second from a committed patch and a real task spec, and the third from literal
 collected tuples and outcome maps, with no tree materialized at all.
+
+`fake_verify_layout`, `append_trace`, `write_fake_artifacts`, and
+`write_fake_run` build the on-disk shape `skeptic eval`'s driver
+(`skeptic/evalkit.py`) reads and writes: a `workdir/<task>/verify/<variant>/`
+directory holding `trace.jsonl` and `collect/artifacts/`, with no docker and
+no real verify run behind it. `tests/test_evalkit.py` and `tests/
+test_cli_eval.py` are the first callers; task 12's evalkit tests read the
+same snapshot shape and are expected to reuse them too.
 """
+import json
 import shutil
 import subprocess
 import tempfile
@@ -420,3 +429,58 @@ def make_diff_pair(
         candidate_diff=report,
         artifacts_dir=artifacts,
     )
+
+
+# --- eval-driver fixtures (skeptic/evalkit.py's own on-disk shape) ---------
+
+
+def fake_verify_layout(
+    tmp_path: Path, trace_events: list[dict] | None = None,
+    task: str = "click-0001", variant: str = "gold",
+) -> Path:
+    """A `workdir/<task>/verify/<variant>/` directory, optionally seeded with
+    a `trace.jsonl` carrying `trace_events`: the substrate `rotate_trace` and
+    `snapshot_run` operate on, with no docker and no real verify run behind
+    it."""
+    verify_dir = tmp_path / task / "verify" / variant
+    verify_dir.mkdir(parents=True, exist_ok=True)
+    if trace_events:
+        append_trace(verify_dir, trace_events)
+    return verify_dir
+
+
+def append_trace(verify_dir: Path, events: list[dict]) -> None:
+    """Append raw event dicts to `verify_dir/trace.jsonl`, one JSON line
+    each: simulates a driven run's own `TraceWriter.event` calls without a
+    real run, and (called again after `rotate_trace`) a second run landing
+    in a fresh file."""
+    verify_dir.mkdir(parents=True, exist_ok=True)
+    with (verify_dir / "trace.jsonl").open("a") as fh:
+        for event in events:
+            fh.write(json.dumps(event) + "\n")
+
+
+def write_fake_artifacts(
+    verify_dir: Path, verdict: dict | None = None, t1_outcomes: dict | None = None,
+) -> None:
+    """`verify_dir/collect/artifacts/{verdict,t1_outcomes}.json`: the pair
+    `snapshot_run` always looks for, standing in for a real VERIFY run's own
+    write."""
+    artifacts = verify_dir / "collect" / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (artifacts / "verdict.json").write_text(
+        json.dumps(verdict if verdict is not None else {"verdict": "PASS"}) + "\n")
+    (artifacts / "t1_outcomes.json").write_text(
+        json.dumps(t1_outcomes if t1_outcomes is not None else {"fix_verified": True}) + "\n")
+
+
+def write_fake_run(workdir: Path, task: str, variant: str) -> Path:
+    """The layout a driven run leaves behind, built directly rather than via
+    `fake_verify_layout` (which only pre-seeds a trace for a rotation test):
+    one trace event plus the verdict/t1_outcomes pair, so `skeptic eval`'s
+    own `rotate_trace`/`snapshot_run` calls around a faked `verify` have
+    something real to work with."""
+    verify_dir = workdir / task / "verify" / variant
+    append_trace(verify_dir, [{"event": "verify_ran"}])
+    write_fake_artifacts(verify_dir)
+    return verify_dir

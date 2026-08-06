@@ -2,7 +2,10 @@ import inspect
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import pytest
+
 from skeptic.checks.observations import AdvCandidate
+from skeptic.llm import SKEPTIC_MODEL
 from skeptic.testgen import (
     build_testgen_prompt,
     generate_candidates,
@@ -29,6 +32,7 @@ class FakeUsage:
 class FakeResponse:
     content: list
     usage: FakeUsage = field(default_factory=FakeUsage)
+    stop_reason: str = "end_turn"
 
 
 class FakeClient:
@@ -46,6 +50,14 @@ class FakeClient:
 
 def _fake_client(text: str) -> FakeClient:
     return FakeClient([FakeResponse([FakeBlock("text", text=text)])])
+
+
+@pytest.fixture
+def fake_client_8_blocks() -> FakeClient:
+    text = "\n\n".join(
+        f"```python\ndef test_c{i}():\n    assert True\n```" for i in range(1, 9)
+    )
+    return _fake_client(text)
 
 
 def test_prompt_contains_problem_statement_and_sources_verbatim():
@@ -142,7 +154,7 @@ def test_generate_candidates_marks_parse_failures_generation(tmp_path):
     spec = make_task_spec()
     trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id="t")
 
-    candidates = generate_candidates(client, spec, {}, trace)
+    candidates, _ = generate_candidates(client, spec, {}, trace)
 
     assert len(candidates) == 1
     candidate = candidates[0]
@@ -164,7 +176,7 @@ def test_generate_candidates_marks_screen_failures_import_screen(tmp_path):
     spec = make_task_spec()
     trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id="t")
 
-    candidates = generate_candidates(client, spec, {}, trace)
+    candidates, _ = generate_candidates(client, spec, {}, trace)
 
     assert len(candidates) == 1
     candidate = candidates[0]
@@ -186,7 +198,7 @@ def test_generate_candidates_emits_llm_call_usage_event(tmp_path):
     spec = make_task_spec()
     trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id="t")
 
-    candidates = generate_candidates(client, spec, {}, trace)
+    candidates, _ = generate_candidates(client, spec, {}, trace)
 
     assert len(candidates) == 1
     assert candidates[0].status == "trusted"
@@ -217,3 +229,16 @@ def test_generate_candidates_tells_the_model_the_candidate_count(tmp_path):
     n_candidates = spec.verification.adversarial_tests.n_candidates
     content = client.requests[0]["messages"][0]["content"]
     assert f"Produce exactly {n_candidates} separate test files" in content
+
+
+def test_generate_candidates_returns_io_dict(fake_client_8_blocks, tmp_path):
+    spec = make_task_spec()
+    trace = TraceWriter(tmp_path / "trace.jsonl", run_id="r", task_id="t")
+
+    _candidates, io = generate_candidates(
+        fake_client_8_blocks, spec, {"a.py": "x = 1"}, trace)
+
+    assert io["model"] == SKEPTIC_MODEL
+    assert io["responses"][0]["stop_reason"] == "end_turn"
+    assert "Problem statement" in io["prompt"]
+    assert len(io["responses"]) == 1

@@ -755,15 +755,18 @@ def _fake_advtests_and_judge(monkeypatch):
     judge_io = {"request": {"model": "fake-model", "max_tokens": 2000},
                "response": {"text": "flag: no\nrationale: clean",
                             "usage": {"in_tok": 10, "out_tok": 5}}}
+    testgen_io = {"model": "fake", "system": "", "prompt": "", "responses": []}
 
-    monkeypatch.setattr(cli, "generate_candidates", lambda client, spec, sources, trace: ())
+    monkeypatch.setattr(
+        cli, "generate_candidates",
+        lambda client, spec, sources, trace: ((), testgen_io))
     monkeypatch.setattr(
         cli, "observe_advtests",
         lambda spec, image_tag, repo_dir, pair, artifacts, candidates, model: advtests_report)
     monkeypatch.setattr(
         cli, "judge_diff", lambda client, diff_text, trace: (judge_report, judge_io))
     monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
-    return advtests_report, judge_report, judge_io
+    return advtests_report, judge_report, judge_io, testgen_io
 
 
 def test_paid_runs_enrichments_and_stamps_profile(tmp_path, monkeypatch):
@@ -792,12 +795,15 @@ def test_paid_runs_enrichments_and_stamps_profile(tmp_path, monkeypatch):
 def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypatch):
     """The amended judge-io-artifact contract (DECISIONS row 132's flagged
     gap): `t2_judge_io.json` exists after a faked paid run and carries
-    `judge_diff`'s own `{"request", "response"}` shape."""
+    `judge_diff`'s own `{"request", "response"}` shape. `t2_advtests_io.json`
+    lands beside it on the same judge-IO precedent, task 7's own contract
+    (DECISIONS row 143): raw response text and stop_reason persisted so a
+    1-block gold-prime response is inspectable after the fact."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setattr(cli, "_docker_available", lambda: True)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
-    _, _, judge_io = _fake_advtests_and_judge(monkeypatch)
+    _, _, judge_io, testgen_io = _fake_advtests_and_judge(monkeypatch)
 
     workdir = tmp_path.resolve()
     result = runner.invoke(app, ["verify", "--task", "click-0001",
@@ -810,6 +816,12 @@ def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypa
     saved = json.loads(io_path.read_text())
     assert set(saved) == {"request", "response"}
     assert saved == judge_io
+
+    advtests_io_path = pair.artifacts_dir / "t2_advtests_io.json"
+    assert advtests_io_path.is_file()
+    saved_advtests_io = json.loads(advtests_io_path.read_text())
+    assert set(saved_advtests_io) == {"model", "system", "prompt", "responses"}
+    assert saved_advtests_io == testgen_io
 
 
 def test_deterministic_verdict_carries_two_not_applicable_rows(tmp_path, monkeypatch):

@@ -127,7 +127,7 @@ def _allowed_packages(spec: TaskSpec) -> frozenset[str]:
 
 def generate_candidates(
     client, spec: TaskSpec, sources: dict[str, str], trace: TraceWriter,
-) -> tuple[AdvCandidate, ...]:
+) -> tuple[tuple[AdvCandidate, ...], dict]:
     n_candidates = spec.verification.adversarial_tests.n_candidates
     prompt = build_testgen_prompt(spec.builder_input.problem_statement, sources)
     # Appended after build_testgen_prompt returns, not folded into that
@@ -147,7 +147,19 @@ def generate_candidates(
         messages=[{"role": "user", "content": prompt}], trace=trace,
         stage="VERIFY", actor="checks.t2_advtests",
     )
-    blocks = parse_candidates(response_text(response), n_candidates)
+    text = response_text(response)
+    io = {
+        "model": SKEPTIC_MODEL,
+        "system": SYSTEM_PROMPT,
+        "prompt": prompt,
+        "responses": [{
+            "text": text,
+            "stop_reason": getattr(response, "stop_reason", None),
+            "in_tok": response.usage.input_tokens,
+            "out_tok": response.usage.output_tokens,
+        }],
+    }
+    blocks = parse_candidates(text, n_candidates)
     allowed_packages = _allowed_packages(spec)
 
     candidates: list[AdvCandidate] = []
@@ -172,4 +184,4 @@ def generate_candidates(
             candidate_id=candidate_id, source=source, status="trusted", rejected_at=None,
             detail="cleared the import screen; the acceptance ladder can still demote it",
         ))
-    return tuple(candidates)
+    return tuple(candidates), io

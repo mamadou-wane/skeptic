@@ -717,7 +717,14 @@ def verify(
                         for path in pair.candidate_diff.changed_files
                         if (sources_tree / path).is_file()
                     }
-                    candidates = generate_candidates(client, spec, sources, trace)
+                    candidates, testgen_io = generate_candidates(client, spec, sources, trace)
+                    # Persisted before observe_advtests, the same
+                    # before-the-fold ordering as the judge io write below
+                    # (DECISIONS row 132/143): a dead ladder still leaves the
+                    # raw response and stop_reason on disk to inspect.
+                    pair.artifacts_dir.mkdir(parents=True, exist_ok=True)
+                    (pair.artifacts_dir / "t2_advtests_io.json").write_text(
+                        json.dumps(testgen_io, indent=2, sort_keys=True) + "\n")
                     advtests_started = time.monotonic()
                     advtests_report = observe_advtests(
                         spec, repo_image_tag(spec), repo_dir, pair,

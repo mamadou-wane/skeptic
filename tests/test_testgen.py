@@ -45,7 +45,10 @@ class FakeClient:
 
     def _create(self, **kwargs):
         self.requests.append(kwargs)
-        return self._script.pop(0)
+        item = self._script.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     @property
     def calls(self) -> int:
@@ -70,9 +73,18 @@ def fake_client_8_blocks() -> FakeClient:
 
 @pytest.fixture
 def fake_client_factory():
-    """Builds a FakeClient scripted with one response text per call."""
-    def _make(texts: list[str]) -> FakeClient:
-        return FakeClient([FakeResponse([FakeBlock("text", text=t)]) for t in texts])
+    """Builds a FakeClient scripted with one response text per call.
+
+    A script item that is an exception instance is raised on that call
+    instead of returned, for testing the top-up's own failure path.
+    """
+    def _make(script: list) -> FakeClient:
+        items = [
+            item if isinstance(item, BaseException)
+            else FakeResponse([FakeBlock("text", text=item)])
+            for item in script
+        ]
+        return FakeClient(items)
     return _make
 
 
@@ -359,3 +371,19 @@ def test_topup_prompt_carries_no_new_content(fake_client_factory, trace):
     # same two inputs both times; the calls differ only in the count coda
     assert first.rsplit("\nProduce exactly", 1)[0] == second.rsplit("\nProduce exactly", 1)[0]
     assert "Produce exactly 8" in first and "Produce exactly 6" in second
+
+
+def test_topup_failure_keeps_call_ones_evidence(fake_client_factory, trace):
+    client = fake_client_factory([two_blocks_response, RuntimeError("boom")])
+
+    candidates, io = generate_candidates(client, SPEC_N8, {"a.py": "x = 1"}, trace)
+
+    # no exception escaped; call one's io entry and blocks are what's left
+    assert client.calls == 2
+    assert len(io["responses"]) == 1
+    assert len(candidates) == 2
+
+    events, _ = read_trace(trace.path)
+    failures = [e for e in events if e["event"] == "advtests_topup_failed"]
+    assert len(failures) == 1
+    assert failures[0]["payload"]["error"] == "RuntimeError"

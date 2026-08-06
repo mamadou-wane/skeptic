@@ -24,15 +24,18 @@ tree; the ladder's own precise derivation, by directory listing on a real
 materialized tree, is task 6's job and supersedes this heuristic wherever
 the two would disagree.
 
-Two ways a candidate never reaches the ladder. A block that does not parse
-as Python (`ast.parse` raises `SyntaxError`) rejects with
-`rejected_at="generation"`: the model produced no usable test, a generation
-failure rather than an import problem. A block that parses but imports
-something outside the allowed set rejects with `rejected_at="import_screen"`.
-Every other parsed block comes back `status="trusted"`, `rejected_at=None`,
-which is provisional, not a verdict: the ladder demotes any of these that
-fails a further rung by rebuilding the record with that rung's name, and the
-final report's `trusted` tuple is computed only after the ladder runs.
+A block can fail before the ladder in three ways, two of which share a rung.
+A block that does not parse as Python (`ast.parse` raises `SyntaxError`)
+rejects with `rejected_at="generation"`: the model produced no usable test,
+a generation failure rather than an import problem. A block that parses but
+defines no `def`/`async def test_*` (`_has_test_function`) rejects at that
+same rung: quoted analysis, not a test. A block that parses, defines a
+test, and imports something outside the allowed set rejects with
+`rejected_at="import_screen"`. Every other block comes back
+`status="trusted"`, `rejected_at=None`, which is provisional, not a verdict:
+the ladder demotes any of these that fails a further rung by rebuilding the
+record with that rung's name, and the final report's `trusted` tuple is
+computed only after the ladder runs.
 """
 from __future__ import annotations
 
@@ -186,9 +189,23 @@ def generate_candidates(
         # the retry carries the same two inputs, so the boundedness contract
         # holds (DECISIONS row 144, amending row 129's one-call clause).
         # Shortfall remaining after the top-up is a yield stat, never INFRA.
-        more, second_entry = one_call(n_candidates - len(blocks))
-        responses.append(second_entry)
-        blocks = blocks + more[: n_candidates - len(blocks)]
+        # Only this second call is guarded: call one's already-paid,
+        # already-traced evidence must survive a top-up failure (DECISIONS
+        # row 144 amendment), so a failure here falls back to call one's
+        # blocks and io entry alone rather than losing both. Call one has
+        # no earlier evidence to save, so its own failure still propagates.
+        # `except Exception`, matching decision 8's breadth (aggregate.py's
+        # module docstring): `BaseException` is not caught, so
+        # KeyboardInterrupt/SystemExit still stop the run.
+        try:
+            more, second_entry = one_call(n_candidates - len(blocks))
+        except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
+            trace.event(stage="VERIFY", actor="checks.t2_advtests",
+                        event="advtests_topup_failed",
+                        payload={"error": type(exc).__name__})
+        else:
+            responses.append(second_entry)
+            blocks = blocks + more[: n_candidates - len(blocks)]
 
     io = {
         "model": SKEPTIC_MODEL,

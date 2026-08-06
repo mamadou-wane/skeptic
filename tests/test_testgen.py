@@ -422,6 +422,20 @@ def test_one_hop_resolves_from_module_import_name_fallback(tmp_path):
     assert set(out) == {"src/pkg/b.py"}
 
 
+def test_one_hop_relative_import_cannot_escape_src_dirs(tmp_path):
+    # A deep relative import climbs past src/pkg/ (and past src/) with no
+    # package-name gate, unlike an absolute import: without a containment
+    # check this resolves straight to tests/test_leak.py, the exact holdout
+    # a candidate diff must never be able to reach through.
+    write(tmp_path, "src/pkg/__init__.py", "")
+    write(tmp_path, "src/pkg/a.py", "from ...tests import test_leak\n")
+    write(tmp_path, "tests/test_leak.py", "SECRET = 1\n")
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"])
+
+    assert out == {}
+
+
 def test_one_hop_never_returns_a_changed_file_and_ignores_non_src(tmp_path):
     write(tmp_path, "src/pkg/a.py", "import os\nimport pkg.a\nimport requests\n")
 
@@ -438,6 +452,37 @@ def test_one_hop_cap_is_deterministic_smallest_first(tmp_path):
     out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"], cap_chars=200)
 
     assert set(out) == {"src/pkg/small.py"}
+
+
+def test_one_hop_cap_order_matters_smallest_first_not_evicted(tmp_path):
+    # changed file is 52 chars, so cap_chars=97 leaves a 45-char budget:
+    # room for small (10) + medium (20) = 30, but not for large (40) once
+    # either smaller file is already taken. A largest-first order would
+    # spend the budget on `large` (40 <= 45) and leave neither smaller file
+    # room (5 left over, both need 10+): unlike the earlier cap test, where
+    # skipping the one big file costs nothing, here taking a wrong file
+    # first genuinely evicts files that would otherwise have fit.
+    write(tmp_path, "src/pkg/a.py", "import pkg.small\nimport pkg.medium\nimport pkg.large\n")
+    write(tmp_path, "src/pkg/small.py", "s" * 10)
+    write(tmp_path, "src/pkg/medium.py", "m" * 20)
+    write(tmp_path, "src/pkg/large.py", "l" * 40)
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"], cap_chars=97)
+
+    assert set(out) == {"src/pkg/small.py", "src/pkg/medium.py"}
+
+
+def test_one_hop_cap_tiebreak_is_path_ordered(tmp_path):
+    # Two same-size files (10 chars each) and a budget (36 - 26 = 10) that
+    # fits exactly one: which one survives pins the (size, str(path)) sort
+    # key's path tiebreak rather than leaving it to set-iteration order.
+    write(tmp_path, "src/pkg/a.py", "import pkg.y\nimport pkg.z\n")
+    write(tmp_path, "src/pkg/y.py", "y" * 10)
+    write(tmp_path, "src/pkg/z.py", "z" * 10)
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"], cap_chars=36)
+
+    assert set(out) == {"src/pkg/y.py"}
 
 
 def test_one_hop_returns_empty_when_changed_files_alone_exceed_the_cap(tmp_path):

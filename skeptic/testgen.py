@@ -109,6 +109,7 @@ def one_hop_sources(tree_root: Path, changed_files: list[str], src_dirs: list[st
     for src in src_dirs:
         pkg_dir = Path(src.rstrip("/"))
         packages[pkg_dir.name] = pkg_dir.parent   # "src/click/" -> {"click": src/}
+    src_prefixes = tuple(src.rstrip("/") + "/" for src in src_dirs)
 
     def resolve(module: str, level: int, importer: Path) -> Path | None:
         if level:
@@ -123,7 +124,17 @@ def one_hop_sources(tree_root: Path, changed_files: list[str], src_dirs: list[st
                 return None
             candidate = packages[top].joinpath(top, *rest)
         for path in (candidate.with_suffix(".py"), candidate / "__init__.py"):
-            if (tree_root / path).is_file():
+            # A relative import (`level` truthy) climbs `importer`'s own
+            # directory tree with no package-name gate the way the absolute
+            # branch's `top not in packages` check gives it, so a deep
+            # enough `from ...tests import x` in an adversarial candidate
+            # diff can walk clean out of src_dirs into tests/ (or anywhere
+            # else in tree_root, which holds the whole materialized repo).
+            # The absolute branch already can't escape src_dirs by
+            # construction (`candidate` is built from `packages[top]`,
+            # itself derived from `src_dirs`), so this containment check
+            # only gates the relative branch.
+            if (tree_root / path).is_file() and (not level or str(path).startswith(src_prefixes)):
                 return path
         return None
 

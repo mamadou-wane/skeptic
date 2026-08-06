@@ -1,14 +1,18 @@
 """Adversarial-test candidate generation, parsing, and the host-side import screen.
 
 `generate_candidates` is the only entrypoint the acceptance ladder (task 6)
-calls. It makes exactly one `call_with_retry` request (`SKEPTIC_MODEL`, one
-shot, `max_tokens=16000`) built from `build_testgen_prompt`, whose own
-signature is the security boundary: `problem_statement` and the pristine
-bodies of the patch's changed files are structurally the only inputs a
-candidate's prompt can carry. No test file, no acceptance path, no seed
-patch, and nothing outside the `sources` the caller hands in can leak into
-what the model sees, because the function that builds the prompt has no
-parameter through which to receive them.
+calls. It makes at most two `call_with_retry` requests (`SKEPTIC_MODEL`, one
+shot each, `max_tokens=16000`) built from `build_testgen_prompt`: a first
+call asking for `n_candidates` blocks, and, only if that call returns fewer
+blocks than asked (zero included), one top-up call asking for exactly the
+shortfall. The top-up carries the same two inputs as the first call, so
+`build_testgen_prompt`'s own signature stays the security boundary either
+way: `problem_statement` and the pristine bodies of the patch's changed
+files are structurally the only inputs a candidate's prompt can carry. No
+test file, no acceptance path, no seed patch, and nothing outside the
+`sources` the caller hands in can leak into what the model sees, because the
+function that builds the prompt has no parameter through which to receive
+them.
 
 `screen_imports` is rung 5 of the promotion ladder, run host-side before any
 container work: a candidate may import the standard library
@@ -125,46 +129,86 @@ def _allowed_packages(spec: TaskSpec) -> frozenset[str]:
     return frozenset(src.rstrip("/").rsplit("/", 1)[-1] for src in spec.environment.src_dirs)
 
 
+def _has_test_function(source: str) -> bool:
+    """False iff `source` parses and defines no `def`/`async def test_*`.
+
+    A fenced block that is quoted source or prose rather than a test is
+    rejected before the import screen ever sees it. On `SyntaxError` this
+    returns True, deferring to `screen_imports`'s own parse attempt to raise
+    and reject with the real generation-failure message: that message names
+    the actual syntax problem, which "no test function" would not.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return True
+    return any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+        for node in ast.walk(tree)
+    )
+
+
 def generate_candidates(
     client, spec: TaskSpec, sources: dict[str, str], trace: TraceWriter,
 ) -> tuple[tuple[AdvCandidate, ...], dict]:
     n_candidates = spec.verification.adversarial_tests.n_candidates
     prompt = build_testgen_prompt(spec.builder_input.problem_statement, sources)
-    # Appended after build_testgen_prompt returns, not folded into that
-    # function's own two-parameter signature: a bare integer count carries
-    # no test content, so it does not reopen the boundedness contract
-    # build_testgen_prompt exists to hold (plan decision 3). Left out of the
-    # prompt, a model asked open-endedly for "each independent test file"
-    # tends to return a handful, and parse_candidates treating fewer blocks
-    # than requested as fine (plan decision 4) would let that read as a
-    # silent yield problem rather than a stated target the model missed.
-    prompt += (
-        f"\nProduce exactly {n_candidates} separate test files, each its "
-        f"own fenced python code block."
-    )
-    response = call_with_retry(
-        client, model=SKEPTIC_MODEL, max_tokens=16000, system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}], trace=trace,
-        stage="VERIFY", actor="checks.t2_advtests",
-    )
-    text = response_text(response)
+
+    def one_call(ask: int) -> tuple[list[str], dict]:
+        # Appended per call, not folded into build_testgen_prompt's own
+        # two-parameter signature: a bare integer count carries no test
+        # content, so it does not reopen the boundedness contract
+        # build_testgen_prompt exists to hold (plan decision 3). Left out of
+        # the prompt, a model asked open-endedly for "each independent test
+        # file" tends to return a handful, and parse_candidates treating
+        # fewer blocks than requested as fine (plan decision 4) would let
+        # that read as a silent yield problem rather than a stated target
+        # the model missed.
+        coda = (f"\nProduce exactly {ask} separate test files, each its "
+                f"own fenced python code block.")
+        response = call_with_retry(
+            client, model=SKEPTIC_MODEL, max_tokens=16000, system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": prompt + coda}], trace=trace,
+            stage="VERIFY", actor="checks.t2_advtests",
+        )
+        text = response_text(response)
+        entry = {"text": text, "stop_reason": getattr(response, "stop_reason", None),
+                 "in_tok": response.usage.input_tokens,
+                 "out_tok": response.usage.output_tokens}
+        return list(parse_candidates(text, ask)), entry
+
+    blocks, first_entry = one_call(n_candidates)
+    responses = [first_entry]
+    if len(blocks) < n_candidates:
+        # One top-up, whether the first call fell short or returned nothing
+        # (a shortfall of the full count is a re-roll for the full count):
+        # the retry carries the same two inputs, so the boundedness contract
+        # holds (DECISIONS row 144, amending row 129's one-call clause).
+        # Shortfall remaining after the top-up is a yield stat, never INFRA.
+        more, second_entry = one_call(n_candidates - len(blocks))
+        responses.append(second_entry)
+        blocks = blocks + more[: n_candidates - len(blocks)]
+
     io = {
         "model": SKEPTIC_MODEL,
         "system": SYSTEM_PROMPT,
         "prompt": prompt,
-        "responses": [{
-            "text": text,
-            "stop_reason": getattr(response, "stop_reason", None),
-            "in_tok": response.usage.input_tokens,
-            "out_tok": response.usage.output_tokens,
-        }],
+        "responses": responses,
     }
-    blocks = parse_candidates(text, n_candidates)
     allowed_packages = _allowed_packages(spec)
 
     candidates: list[AdvCandidate] = []
     for i, source in enumerate(blocks, start=1):
         candidate_id = f"c{i}"
+        if not _has_test_function(source):
+            candidates.append(AdvCandidate(
+                candidate_id=candidate_id, source=source, status="rejected",
+                rejected_at="generation",
+                detail="no test function: a fenced block without a "
+                       "def test_* is quoted analysis",
+            ))
+            continue
         try:
             rejection = screen_imports(source, allowed_packages)
         except SyntaxError as exc:

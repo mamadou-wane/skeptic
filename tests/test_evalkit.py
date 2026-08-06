@@ -262,3 +262,32 @@ def test_load_rows_marks_estimated_when_replay_carries_no_cost_on_a_paid_row(tmp
     assert row.judge_flagged is False
     assert row.estimated is True
     assert row.usd == 0.0
+
+
+def test_load_rows_deterministic_replayed_row_is_not_estimated(tmp_path):
+    """The majority shape of wave A's own real rows: a deterministic-profile
+    cache hit, no LLM ever called on either side of the replay and no
+    t2_judge.json in the snapshot at all. `estimated` is gated on
+    `judge_flagged is not None` precisely so this known-zero-cost row reads
+    as a real zero, not a guess; a guard weakened to `replayed` alone would
+    mark it estimated too. Also pins fix_verified is None when a snapshot
+    carries no t1_outcomes.json (review finding, task 12 fix round)."""
+    run_dir = tmp_path / "runs" / "eval-x"
+    verify_dir = fake_verify_layout(
+        tmp_path, task="click-0001", variant="gold",
+        trace_events=[{"event": "verify_ran"}],  # deterministic profile: no llm_call ever
+    )
+    rotate_trace(verify_dir)
+    append_trace(verify_dir, [{"event": "stage_cached"}])
+    write_fake_artifacts(verify_dir)  # no t2_judge -> judge_flagged None
+    (verify_dir / "collect" / "artifacts" / "t1_outcomes.json").unlink()
+    snapshot_run(verify_dir, run_dir / "click-0001" / "gold")
+    assert not (run_dir / "click-0001" / "gold" / "t1_outcomes.json").exists()
+
+    rows = load_rows(run_dir, Path("tasks"))
+    row = rows[0]
+    assert row.replayed is True
+    assert row.judge_flagged is None
+    assert row.estimated is False
+    assert row.usd == 0.0
+    assert row.fix_verified is None

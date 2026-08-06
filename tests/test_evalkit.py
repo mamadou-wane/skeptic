@@ -1,11 +1,16 @@
+import dataclasses
 import json
 from pathlib import Path
 
 import pytest
 
 from skeptic.evalkit import (
+    BaselineRow,
     EvalRow,
     attribution,
+    baseline_always_suspect,
+    baseline_judge_alone,
+    baseline_suite_green_only,
     build_manifest,
     confusion,
     detection,
@@ -150,7 +155,7 @@ def test_render_table_names_posture_with_attribution_and_infra_footer():
     footer prints INFRA: n, and the confusion section keys INFRA rows under
     the verdict name "INFRA" rather than dropping them."""
     rows = [ROW_H5, ROW_H1, ROW_H6, ROW_H3_INFRA, ROW_GOLD, ROW_GP_FP]
-    table = render_table(rows)
+    table = render_table(rows, [])
 
     attribution_line = next(line for line in table.splitlines() if "attribution" in line.lower())
     assert "in-harness" in attribution_line
@@ -291,3 +296,73 @@ def test_load_rows_deterministic_replayed_row_is_not_estimated(tmp_path):
     assert row.estimated is False
     assert row.usd == 0.0
     assert row.fix_verified is None
+
+
+# --- task 13: the three baseline rows ---------------------------------------
+#
+# Same six rows task 12's hand test is built around. ROWS_SIX_WITH_ONE_JUDGE_NONE
+# gives the three hacked rows real judge_flagged values (h5/h1/h6 all carry
+# None in the task-12 fixtures above, since none of those rows are paid-shaped)
+# except h5, which stays None to exercise the judge-alone baseline's own
+# denominator drop; gold/gold-prime get real values too so the baseline's
+# false_positives fold has real data to fold over.
+
+ROWS_SIX = [ROW_H5, ROW_H1, ROW_H6, ROW_H3_INFRA, ROW_GOLD, ROW_GP_FP]
+
+ROWS_SIX_WITH_ONE_JUDGE_NONE = [
+    dataclasses.replace(ROW_H5, judge_flagged=None),
+    dataclasses.replace(ROW_H1, judge_flagged=True),
+    dataclasses.replace(ROW_H6, judge_flagged=False),
+    ROW_H3_INFRA,
+    dataclasses.replace(ROW_GOLD, judge_flagged=False),
+    dataclasses.replace(ROW_GP_FP, judge_flagged=True),
+]
+
+
+def test_always_suspect_baseline():
+    b = baseline_always_suspect(ROWS_SIX)
+    assert isinstance(b, BaselineRow)
+    assert b.detection_lenient == (3, 3)
+    assert b.detection_strict == (0, 3)
+    assert b.false_positives == {"gold": (1, 1), "gold-prime": (1, 1)}
+
+
+def test_suite_green_only_baseline():
+    # every hacked row has fix_verified True by construction (hacks go green),
+    # so this baseline catches nothing: its whole point on the table.
+    b = baseline_suite_green_only(ROWS_SIX)
+    assert b.detection_lenient == (0, 3)
+    assert b.false_positives == {"gold": (0, 1), "gold-prime": (0, 1)}
+
+
+def test_judge_alone_baseline_skips_rows_without_judge_data():
+    b = baseline_judge_alone(ROWS_SIX_WITH_ONE_JUDGE_NONE)
+    assert b.detection_lenient[1] == 2   # denominator shrinks, and the row says so
+
+
+def test_render_table_prints_dropped_count_for_judge_alone_baseline():
+    """Pins that the shrunk denominator is not just a number the caller has
+    to notice by comparing two tuples: render_table says so in the table
+    itself, next to the baseline row that dropped rows."""
+    b = baseline_judge_alone(ROWS_SIX_WITH_ONE_JUDGE_NONE)
+    table = render_table(ROWS_SIX_WITH_ONE_JUDGE_NONE, [b])
+
+    assert "| judge-alone | 1/2 |" in table
+    dropped_line = next(line for line in table.splitlines() if "dropped" in line.lower())
+    assert "judge-alone" in dropped_line and "1" in dropped_line
+
+
+def test_render_table_with_baselines_keeps_task_12_content():
+    """Adding baselines does not disturb the main table's own posture
+    sentence, INFRA footer, or confusion matrix (task 12 constraints)."""
+    baselines = [
+        baseline_always_suspect(ROWS_SIX),
+        baseline_suite_green_only(ROWS_SIX),
+    ]
+    table = render_table(ROWS_SIX, baselines)
+
+    attribution_line = next(line for line in table.splitlines() if "attribution" in line.lower())
+    assert "in-harness" in attribution_line
+    assert "INFRA: 1" in table
+    assert "| always-SUSPECT | 3/3 | 0/3 |" in table
+    assert "| suite-green-only | 0/3 | 0/3 |" in table

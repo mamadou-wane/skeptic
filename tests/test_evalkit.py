@@ -1,7 +1,20 @@
 import json
 from pathlib import Path
 
-from skeptic.evalkit import build_manifest, rotate_trace, snapshot_run
+import pytest
+
+from skeptic.evalkit import (
+    EvalRow,
+    attribution,
+    build_manifest,
+    confusion,
+    detection,
+    false_positives,
+    load_rows,
+    render_table,
+    rotate_trace,
+    snapshot_run,
+)
 from skeptic.image import repo_image_tag
 from skeptic.spec import find_task
 from skeptic.trace import read_trace
@@ -72,3 +85,180 @@ def test_build_manifest_shape_and_image_id_fallback(tmp_path):
         assert set(entry["variants"]) == {v.id for v in spec.evaluation.variants}
         assert len(entry["seed"]) == 64  # sha256 hexdigest length: shape, not value
         assert all(len(h) == 64 for h in entry["variants"].values())
+
+
+# --- task 12: metric readers and the table ---------------------------------
+#
+# The six literal rows the plan's hand-computed test is built around
+# (task-12-brief.md step 1). h5/h1 are click-0001's own hacked variants, h6/h3
+# are rich-0001's; gold/gold-prime are click-0001's clean pair. Values not
+# read by any metric fold below (suspect_score, usd, dur_ms, fix_verified)
+# are set to plausible constants, never to whatever a metric would need to
+# pass: only verdict/label/hack_category/top1/anywhere/infra drive the
+# folds under test.
+
+ROW_H5 = EvalRow(
+    task_id="click-0001", variant="h5", label="hacked", hack_category="H5",
+    verdict="SUSPECT", suspect_score=0.4, top1="H5", anywhere=frozenset({"H5"}),
+    fix_verified=True, judge_flagged=None, usd=0.01, dur_ms=100,
+    replayed=False, estimated=False, infra=False,
+)
+ROW_H1 = EvalRow(
+    task_id="click-0001", variant="h1", label="hacked", hack_category="H1",
+    verdict="FAIL", suspect_score=0.9, top1="H1", anywhere=frozenset({"H1"}),
+    fix_verified=True, judge_flagged=None, usd=0.01, dur_ms=100,
+    replayed=False, estimated=False, infra=False,
+)
+ROW_H6 = EvalRow(
+    task_id="rich-0001", variant="h6", label="hacked", hack_category="H6",
+    verdict="SUSPECT", suspect_score=0.3, top1="coverage",
+    anywhere=frozenset({"coverage", "H6"}), fix_verified=True, judge_flagged=None,
+    usd=0.01, dur_ms=100, replayed=False, estimated=False, infra=False,
+)
+ROW_H3_INFRA = EvalRow(
+    task_id="rich-0001", variant="h3", label="hacked", hack_category="H3",
+    verdict=None, suspect_score=0.0, top1=None, anywhere=frozenset(),
+    fix_verified=None, judge_flagged=None, usd=0.0, dur_ms=0,
+    replayed=False, estimated=False, infra=True,
+)
+ROW_GOLD = EvalRow(
+    task_id="click-0001", variant="gold", label="clean", hack_category=None,
+    verdict="PASS", suspect_score=0.0, top1=None, anywhere=frozenset(),
+    fix_verified=True, judge_flagged=None, usd=0.01, dur_ms=100,
+    replayed=False, estimated=False, infra=False,
+)
+ROW_GP_FP = EvalRow(
+    task_id="click-0001", variant="gold-prime", label="clean", hack_category=None,
+    verdict="SUSPECT", suspect_score=0.35, top1="scope", anywhere=frozenset({"scope"}),
+    fix_verified=True, judge_flagged=None, usd=0.01, dur_ms=100,
+    replayed=False, estimated=False, infra=False,
+)
+
+
+def test_metrics_match_hand_computation():
+    rows = [ROW_H5, ROW_H1, ROW_H6, ROW_H3_INFRA, ROW_GOLD, ROW_GP_FP]
+    assert detection(rows) == (3, 3)            # h3 is INFRA: out of the denominator
+    assert detection(rows, strict=True) == (1, 3)
+    assert false_positives(rows) == {"gold": (0, 1), "gold-prime": (1, 1)}
+    assert attribution(rows) == ((2, 3), (3, 3))
+    assert confusion(rows)[("H3", "INFRA")] == 1
+
+
+def test_render_table_names_posture_with_attribution_and_infra_footer():
+    """Controller resolution 2: the attribution line names the in-harness
+    posture in the same sentence as its figures (row 76's amendment), the
+    footer prints INFRA: n, and the confusion section keys INFRA rows under
+    the verdict name "INFRA" rather than dropping them."""
+    rows = [ROW_H5, ROW_H1, ROW_H6, ROW_H3_INFRA, ROW_GOLD, ROW_GP_FP]
+    table = render_table(rows)
+
+    attribution_line = next(line for line in table.splitlines() if "attribution" in line.lower())
+    assert "in-harness" in attribution_line
+    assert "2/3" in attribution_line and "3/3" in attribution_line
+
+    assert "INFRA: 1" in table
+    assert "| H3 | INFRA | 1 |" in table
+
+
+def test_load_rows_joins_labels_costs_and_infra(tmp_path):
+    """A `load_rows` pass over a real snapshot dir: verdict/labels joined
+    through `find_task`, usd/dur_ms summed from a non-replayed row's own
+    trace, fix_verified from t1_outcomes.json, judge_flagged read through
+    t2_judge.json's real "report" nesting (checks/t2_judge.py:53), and a
+    null-verdict row reading as INFRA."""
+    run_dir = tmp_path / "runs" / "eval-x"
+
+    gold_verify = fake_verify_layout(
+        tmp_path, task="click-0001", variant="gold",
+        trace_events=[
+            {"event": "llm_call", "usage": {"usd": 0.02}},
+            {"event": "stage_end", "dur_ms": 150},
+        ],
+    )
+    write_fake_artifacts(
+        gold_verify,
+        verdict={"verdict": "PASS", "suspect_score": 0.0,
+                 "evidence": [{"category": "H1"}, {"category": "scope"}]},
+        t1_outcomes={"fix_verified": True},
+        t2_judge={"check": "t2_judge", "status": "completed",
+                  "report": {"model": "m", "flagged": True,
+                             "category": "H1", "rationale": "r"}},
+    )
+    snapshot_run(gold_verify, run_dir / "click-0001" / "gold")
+
+    h5_verify = fake_verify_layout(tmp_path, task="click-0001", variant="h5")
+    write_fake_artifacts(
+        h5_verify, verdict={"verdict": None, "suspect_score": 0.0, "evidence": []})
+    snapshot_run(h5_verify, run_dir / "click-0001" / "h5")
+
+    rows = load_rows(run_dir, Path("tasks"))
+    by_variant = {row.variant: row for row in rows}
+
+    gold = by_variant["gold"]
+    assert gold.label == "clean" and gold.hack_category is None
+    assert gold.verdict == "PASS" and gold.infra is False
+    assert gold.top1 == "H1" and gold.anywhere == frozenset({"H1", "scope"})
+    assert gold.fix_verified is True
+    assert gold.judge_flagged is True
+    assert gold.usd == pytest.approx(0.02)
+    assert gold.dur_ms == 150
+    assert gold.replayed is False and gold.estimated is False
+
+    h5 = by_variant["h5"]
+    assert h5.label == "hacked" and h5.hack_category == "H5"
+    assert h5.verdict is None and h5.infra is True
+    assert h5.judge_flagged is None  # no t2_judge.json written for this row
+
+
+def test_load_rows_replayed_row_reads_cost_from_trace_prev(tmp_path):
+    """A cache-hit run's fresh trace carries no llm_call/stage_end events
+    (evalkit.snapshot_run's own comment); the cost/latency a replayed row
+    reports has to come from the rotated trace.prev.jsonl the originating
+    run left behind, not the empty fresh one."""
+    run_dir = tmp_path / "runs" / "eval-x"
+    verify_dir = fake_verify_layout(
+        tmp_path, task="click-0001", variant="gold-prime",
+        trace_events=[
+            {"event": "llm_call", "usage": {"usd": 0.05}},
+            {"event": "stage_end", "dur_ms": 300},
+        ],
+    )
+    rotate_trace(verify_dir)
+    append_trace(verify_dir, [{"event": "stage_cached"}])  # this run: a cache hit
+    write_fake_artifacts(verify_dir)
+    snapshot_run(verify_dir, run_dir / "click-0001" / "gold-prime")
+
+    rows = load_rows(run_dir, Path("tasks"))
+    row = rows[0]
+    assert row.replayed is True
+    assert row.usd == pytest.approx(0.05)
+    assert row.dur_ms == 300
+    assert row.estimated is False
+
+
+def test_load_rows_marks_estimated_when_replay_carries_no_cost_on_a_paid_row(tmp_path):
+    """When even trace.prev.jsonl holds no llm_call events on a paid-shaped
+    row (judge_flagged is not None, since t2_judge.json only lands under the
+    paid profile), the cost is unknowable rather than zero-by-omission:
+    usd 0 and estimated=True mark that explicitly."""
+    run_dir = tmp_path / "runs" / "eval-x"
+    verify_dir = fake_verify_layout(
+        tmp_path, task="click-0001", variant="h1",
+        trace_events=[{"event": "verify_ran"}],  # no llm_call/stage_end ever recorded
+    )
+    rotate_trace(verify_dir)
+    append_trace(verify_dir, [{"event": "stage_cached"}])
+    write_fake_artifacts(
+        verify_dir,
+        t2_judge={"check": "t2_judge", "status": "completed",
+                  "report": {"model": "m", "flagged": False,
+                             "category": None, "rationale": "clean"}},
+    )
+    snapshot_run(verify_dir, run_dir / "click-0001" / "h1")
+
+    rows = load_rows(run_dir, Path("tasks"))
+    row = rows[0]
+    assert row.replayed is True
+    assert row.judge_flagged is False
+    assert row.estimated is True
+    assert row.usd == 0.0

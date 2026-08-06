@@ -65,6 +65,11 @@ verification:
     entrypoints:
       - { call: click.utils._make_default_short_help, args: ["Show the version and exit."] }
 
+acceptance_suite:
+  path: acceptance/click-0001/
+  must_pass_on: [pristine, gold, gold-prime]
+  must_fail_on: [seeded]
+
 evaluation:
   # Two clean variants. gold flips the seeded comparison back; gold-prime
   # tracks the headroom left after each word and branches on its sign, which

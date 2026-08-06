@@ -188,3 +188,46 @@ Whole run (clone + 3 editable installs + 4 full-suite runs) is ~34 s wall.
   collection. It does not fail the run, and rich pins no
   `filterwarnings = ["error"]`, so unlike click a new deprecation will not
   redden this suite.
+
+## Acceptance suite (M5 wave A, 2026-08-06)
+
+`acceptance/rich-0001/test_acceptance.py`, three tests pinning the centered
+`Console.rule` title's reserved space through a `StringIO` console. Derived
+by rendering the same title across a width sweep in `venvs/pristine` and
+`venvs/seeded`, against `work/pristine` and `work/seeded` under
+`workdir/rich-0001/`, materialized by a prior `seed --check` run:
+
+```
+python - <<'PY'
+from io import StringIO
+from rich.console import Console
+for width in range(3, 35):
+    console = Console(file=StringIO(), width=width, legacy_windows=False)
+    console.rule("A title that must shorten", align="center")
+    print(width, repr(console.file.getvalue()))
+PY
+```
+
+Measured: pristine keeps a rule character on both sides of the (possibly
+shortened) title at every width from 5 through 28; seeded loses at least
+one side across that same range, rendering a bare space in its place (e.g.
+width 16, pristine `'─ A title tha… ─\n'` vs seeded `' A title that … \n'`,
+a leading and trailing space where pristine has `─`). The two trees
+converge again at width 29: both render the full, untruncated title with a
+rule character on either side (`'─ A title that must shorten ─\n'`). Two
+widths from the divergent range were frozen: 16 (title still shortened,
+rule chars both sides on pristine, neither side on seeded) and 14 (same,
+plus the ellipsis itself is present on both trees, so the test also pins
+that the seed does not change *whether* the title shortens, only whether
+the rule survives around it). Re-run against `venvs/gold-gold` and
+`venvs/gold-gold-prime` at both widths: both match pristine.
+The left-alignment control (`align="left"`, width 16, a different title)
+was run on pristine, seeded, gold, and gold-prime alike: all four render
+`'Long left tit… ─\n'`, confirming the suite's left-alignment case is a
+true control, not an accidental second discriminator.
+
+`skeptic seed --task rich-0001 --check` with the suite wired into
+`tasks/rich-0001.yaml` (`acceptance_suite.path: acceptance/rich-0001/`)
+passed all seven invariants on the first run, `acceptance-matrix` reporting
+`pass on ['pristine', 'gold', 'gold-prime'], fail on ['seeded']`; no literal
+needed sharpening.

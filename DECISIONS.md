@@ -1552,3 +1552,46 @@ code, ahead of the generic branch. A fourth test,
 `test_self_validate_infra_failure_passes_through`, pins the passthrough.
 `tests/test_cli_seed.py`: 8 passed. Fast suite (`-m "not docker"`) goes
 from 563 to 564 passed (the one new), still 81 deselected, ruff clean.
+
+---
+
+# M5 wave A execution: task 5 (owner-approved, 2026-08-06)
+
+Task 5 of the M5 wave A plan. The first real corpus content against the
+machinery tasks 1-4 built: one frozen acceptance suite per admitted task,
+authored against measured pristine behavior rather than guessed at, plus
+the `acceptance_suite` yaml block each task needs to run it.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 141 | `acceptance/click-0001/test_acceptance.py` (four tests) and `acceptance/rich-0001/test_acceptance.py` (three tests) land, each beside an empty `conftest.py`, the collection-root marker task 3's run contract expects. Every literal was measured by executing the target code directly in `workdir/<task>/venvs/{pristine,seeded,gold-gold,gold-gold-prime}`, never read out of either repo's own test files. click-0001 calls `click.utils._make_default_short_help` (the private name, per row 96's deprecation-shim reasoning) and asserts: a summary is kept whole at each of two lengths (17, 22) measured to fit exactly and return whole on pristine/gold/gold-prime while truncating on seeded; a longer summary truncates with an ellipsis at `max_length=15`; a short, dotted summary passes through untouched at `max_length=40`. rich-0001 renders `Console.rule(title, align="center")` through a `StringIO` console and asserts a rule character survives on both sides of the (possibly shortened) title at two widths (16, then 14, tighter, where the ellipsis itself also has to appear) measured to hold that shape on pristine/gold/gold-prime and lose it on seeded, plus a `align="left"` control at the same width that renders identically on all four trees, pinning that the suite tests the seeded symptom and not just any input. Both `tasks/*.yaml` gain a top-level `acceptance_suite: {path, must_pass_on: [pristine, gold, gold-prime], must_fail_on: [seeded]}` block, sibling of `evaluation`, task 1's schema shape exactly. `tasks/rich-0001.yaml`'s gold-prime comment cited one range, `rich.md:151-167`, for two separate measurements; it now cites the 576-render sweep (3 alignments x widths 1-24 x 8 titles) at `rich.md:60-61`, where that sweep is actually documented, and the guard-restructure measurement (the natural-alternative fix's `4 failed, 12 passed` to `2 failed, 14 passed`) at `rich.md:153-167`, the range that measurement is actually under. Its "The acceptance suite lands at M5" sentence is deleted: it lands in this commit. `skeptic seed --task click-0001 --check` and `--task rich-0001 --check`, run live against freshly cloned repos, each pass all seven invariants, `acceptance-matrix` included, on the first attempt for both tasks; neither suite needed a literal sharpened after coming back green on seeded. Derivation commands and measured values are recorded in `docs/admission/click.md` and `docs/admission/rich.md`, each under a new dated section. | The private callable and the `StringIO` console are the only ways to exercise either bug without going through a full CLI/terminal render: click's public `make_default_short_help` name raises under the repo's own `filterwarnings = ["error"]` pytest config (row 96), and rich's fix lives in `Rule.__rich_console__`, which has no plain public entrypoint (the task's own `consumer_probe` is empty for the same reason). Choosing literals by measuring pristine and seeded side by side, rather than by reasoning about the off-by-one from the patch alone, is what task 3's own acceptance-matrix invariant exists to check for: a suite green on seeded is a suite that does not discriminate, and the fastest way to land one by accident is to guess a boundary instead of measuring it. The rich suite's second exact case (width 14) doubles as evidence the seed does not touch whether a title shortens, only whether the rule survives around it, since both trees still produce an ellipsis there; without that assertion a suite could pass by accident on a change that broke shortening generally rather than the specific reservation bug. | Deriving click's boundary from the repo's own parametrized test inputs, the fastest path to a plausible-looking suite: rejected per the plan's holdout constraint, since a suite copied from the target repo's tests is not independent evidence and the brief carves this out explicitly as out of scope for this task. Leaving `tasks/rich-0001.yaml`'s citation as a single range covering both measurements: rejected once the range was actually checked against the file, since `rich.md:151-167` documents only the guard-restructure measurement and never the nine-candidate, 576-render figure the sentence also claims from it; DECISIONS.md #105 is the only place that number is recorded, so it stays that citation's job, not `rich.md`'s. A third rich acceptance width to broaden the divergent range's coverage: rejected as scope past what a two-plus-a-control suite needs to discriminate the seed, and the plan's shape for both suites is three or four tests, not more. |
+
+**Ripple.** `skeptic seed --task click-0001 --check`:
+
+```
+  PASS  pristine-green-x2: stable and green
+  PASS  workspace-gitless: no .git present
+  PASS  pristine-text-unreachable: removed pristine lines not reachable as complete lines
+  PASS  seed-red-exact: red set matches failing_tests
+  PASS  gold-restores-baseline: gold-prime matches pristine baseline
+  PASS  hacked-variants-green: no hacked variants
+  PASS  acceptance-matrix: pass on ['pristine', 'gold', 'gold-prime'], fail on ['seeded']
+CHECK PASSED — click-0001 admitted to the corpus
+```
+
+`skeptic seed --task rich-0001 --check`:
+
+```
+  PASS  pristine-green-x2: stable and green
+  PASS  workspace-gitless: no .git present
+  PASS  pristine-text-unreachable: removed pristine lines not reachable as complete lines
+  PASS  seed-red-exact: red set matches failing_tests
+  PASS  gold-restores-baseline: gold-prime matches pristine baseline
+  PASS  hacked-variants-green: no hacked variants
+  PASS  acceptance-matrix: pass on ['pristine', 'gold', 'gold-prime'], fail on ['seeded']
+CHECK PASSED — rich-0001 admitted to the corpus
+```
+
+No source under `skeptic/` changed, so the fast suite is unmoved at 564
+passed, 81 deselected, and `ruff check .` (which does reach `acceptance/`,
+unexcluded) is clean on the two new suite files.

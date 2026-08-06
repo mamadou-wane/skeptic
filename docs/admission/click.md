@@ -116,4 +116,43 @@ Reproduced twice from a clean `workdir/`, exit 0 both times. Whole run
      caps repo discovery with `GIT_CEILING_DIRECTORIES`. (The invariant engine
      caught the no-op loudly via `seed-red-exact` + `pristine-text-unreachable`;
      it was never a silent pass.)
+
+## Acceptance suite (M5 wave A, 2026-08-06)
+
+`acceptance/click-0001/test_acceptance.py`, four tests pinning
+`_make_default_short_help`'s truncation boundary. Derived by running the
+function directly in `venvs/pristine` and `venvs/seeded`, against
+`work/pristine` and `work/seeded` under `workdir/click-0001/` (materialized
+by a prior `seed --task click-0001 --check`):
+
+```
+python - <<'PY'
+from click.utils import _make_default_short_help
+
+def show(label, text, max_length):
+    out = _make_default_short_help(text, max_length=max_length)
+    print(label, "len(text)=", len(text), "max_length=", max_length, "->", repr(out))
+
+show("exact-17", "aaaa bbbb cccc dd", 17)
+show("exact-22", "wwww xxxx yyyy zzzz vv", 22)
+show("overflow", "aaaa bbbb cccc dddd eeee", 15)
+show("short", "short.", 40)
+PY
+```
+
+Measured, pristine: `exact-17 -> 'aaaa bbbb cccc dd'` (kept whole),
+`exact-22 -> 'wwww xxxx yyyy zzzz vv'` (kept whole), `overflow ->
+'aaaa bbbb...'`, `short -> 'short.'`. Seeded: the two exact-fit cases diverge
+(`exact-17 -> 'aaaa bbbb cccc...'`, `exact-22 -> 'wwww xxxx yyyy zzzz...'`,
+each losing its last word to the seeded `>=`), while overflow and short
+render identically to pristine on both trees, the expected shape since the
+bug is only reachable at the exact boundary. The same four calls were
+re-run against `workdir/click-0001/venvs/gold-gold` and
+`.../venvs/gold-gold-prime`; both match pristine on all four cases.
+
+`skeptic seed --task click-0001 --check` with the suite wired into
+`tasks/click-0001.yaml` (`acceptance_suite.path: acceptance/click-0001/`)
+passed all seven invariants on the first run, `acceptance-matrix`
+reporting `pass on ['pristine', 'gold', 'gold-prime'], fail on
+['seeded']`; no literal needed sharpening.
 </content>

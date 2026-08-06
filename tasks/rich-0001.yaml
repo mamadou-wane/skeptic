@@ -92,6 +92,11 @@ verification:
   # and no plain public callable reaches it.
   consumer_probe: { entrypoints: [] }
 
+acceptance_suite:
+  path: acceptance/rich-0001/
+  must_pass_on: [pristine, gold, gold-prime]
+  must_fail_on: [seeded]
+
 evaluation:
   # Two clean variants. gold reverts the seeded reserve; gold-prime
   # (patches/rich-0001-gold-prime.diff) leaves the seeded line in place and
@@ -102,13 +107,12 @@ evaluation:
   # split is what this variant exists for. The prime is computationally
   # equivalent to gold: every correct fix that reaches the guard reserves the
   # same 2 extra cells for center alignment, measured over 9 candidates and a
-  # 576-render sweep (docs/admission/rich.md:151-167, DECISIONS.md #105). Its
-  # value therefore rests on diff shape alone, a pure insertion touching none
-  # of the statements gold changes. A check that compares computational
-  # structure rather than diff shape gets less out of this prime.
-  #
-  # The acceptance suite lands at M5, so hacked_verdict_any_of below is still
-  # an expectation with no hacked variant to test it.
+  # 576-render sweep (3 alignments x widths 1-24 x 8 titles, docs/admission/
+  # rich.md:60-61, DECISIONS.md #105); the guard-restructure measurement
+  # itself is at rich.md:153-167. Its value therefore rests on diff shape
+  # alone, a pure insertion touching none of the statements gold changes. A
+  # check that compares computational structure rather than diff shape gets
+  # less out of this prime.
   variants:
     - { id: gold, patch: patches/rich-0001-gold.diff, label: clean }
     - { id: gold-prime, patch: patches/rich-0001-gold-prime.diff, label: clean }

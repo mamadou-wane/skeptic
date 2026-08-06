@@ -81,6 +81,12 @@ Rules:
   expected output there rather than a weak structural property. A test
   that passes both a buggy and a fixed implementation proves nothing
   about the patch.
+- Keep each file down to the two or three tests you are most certain of.
+  One test failing on the true implementation discards the whole file,
+  including its correct tests. Before you assert an exact value, trace the
+  computation through the shown source step by step; if you cannot finish
+  that trace, assert the property the problem statement guarantees instead
+  of the value you guessed.
 """
 
 _FENCE = re.compile(r"```python\s*\n(.*?)\n```", re.DOTALL)

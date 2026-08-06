@@ -36,12 +36,33 @@ def rotate_trace(verify_dir: Path) -> None:
         trace.replace(verify_dir / "trace.prev.jsonl")
 
 
+def _is_na_stub(path: Path) -> bool:
+    """Whether `path` holds a `not_applicable` artifact: the NA stub
+    `checks.aggregate.run_verify_layer` writes for every `PAID_ONLY_CHECKS`
+    name outside the paid profile (`{"check": name, "status":
+    "not_applicable", "reason": ...}`), so `t2_judge.json` (and, if the
+    registry ever grows another paid-only check, its artifact too) exists on
+    disk under every profile, not only `paid`. The plan's absence semantics
+    are about the *snapshot*, not the verify layout underneath it: an absent
+    file in the snapshot means no data for that check, so this filter
+    applies generically to whatever `SNAPSHOT_ARTIFACTS` entry it is handed
+    rather than special-casing the filename. Unparseable JSON reads as
+    "not a stub": a corrupt artifact is still evidence and still copies.
+    """
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return False
+    return isinstance(payload, dict) and payload.get("status") == "not_applicable"
+
+
 def snapshot_run(verify_dir: Path, dest: Path, exit_code: int = 0) -> dict:
     dest.mkdir(parents=True, exist_ok=True)
     artifacts = verify_dir / "collect" / "artifacts"
     for name in SNAPSHOT_ARTIFACTS:
-        if (artifacts / name).is_file():
-            shutil.copy2(artifacts / name, dest / name)
+        src = artifacts / name
+        if src.is_file() and not _is_na_stub(src):
+            shutil.copy2(src, dest / name)
     trace = verify_dir / "trace.jsonl"
     replayed = False
     if trace.is_file():
@@ -72,16 +93,14 @@ def _image_id(spec: TaskSpec, workdir: Path) -> str:
     return repo_image_tag(spec)
 
 
-def build_manifest(specs: list[TaskSpec], tasks_dir: Path, workdir: Path) -> dict:
+def build_manifest(specs: list[TaskSpec], workdir: Path) -> dict:
     """The first-run manifest: verifier and collector revisions, the model
     and prompt fingerprint, and per-task patch hashes, mutation seeds, and
     image ids, so a published eval table can be traced back to exactly what
-    ran. `tasks_dir` is accepted for parity with the rest of the CLI's
-    `--tasks-dir` plumbing; every patch path a spec carries is already a
-    plain repo-relative string (the convention `seed`/`build`/`verify` all
-    read patches by, cwd-relative rather than tasks_dir-relative), so nothing
-    here re-reads it directly. schema_version is not set here: write_manifest
-    injects it.
+    ran. No `tasks_dir` parameter: every patch path a spec carries is already
+    a plain, cwd-relative string (the convention `seed`/`build`/`verify` all
+    read patches by), so nothing here would have read it. schema_version is
+    not set here: write_manifest injects it.
     """
     tasks = {}
     for spec in specs:

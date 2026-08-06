@@ -462,16 +462,23 @@ def append_trace(verify_dir: Path, events: list[dict]) -> None:
 
 def write_fake_artifacts(
     verify_dir: Path, verdict: dict | None = None, t1_outcomes: dict | None = None,
+    t2_judge: dict | None = None,
 ) -> None:
     """`verify_dir/collect/artifacts/{verdict,t1_outcomes}.json`: the pair
     `snapshot_run` always looks for, standing in for a real VERIFY run's own
-    write."""
+    write. `t2_judge`, when given, writes `t2_judge.json` too (the real
+    check writes one under every profile: a `{"status": "not_applicable",
+    ...}` NA stub outside `paid`, a `{"status": "completed", "report": ...}`
+    read under it); left `None` (the default), no `t2_judge.json` lands at
+    all, matching the earlier tests that never needed one."""
     artifacts = verify_dir / "collect" / "artifacts"
     artifacts.mkdir(parents=True, exist_ok=True)
     (artifacts / "verdict.json").write_text(
         json.dumps(verdict if verdict is not None else {"verdict": "PASS"}) + "\n")
     (artifacts / "t1_outcomes.json").write_text(
         json.dumps(t1_outcomes if t1_outcomes is not None else {"fix_verified": True}) + "\n")
+    if t2_judge is not None:
+        (artifacts / "t2_judge.json").write_text(json.dumps(t2_judge) + "\n")
 
 
 def write_fake_run(workdir: Path, task: str, variant: str) -> Path:

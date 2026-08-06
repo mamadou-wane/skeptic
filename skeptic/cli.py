@@ -916,7 +916,7 @@ def eval_command(
                 if code == EXIT_INFRA:
                     infra.append(f"{spec.task_id}/{variant_spec.id}")
 
-        manifest = evalkit.build_manifest(specs, tasks_dir, workdir)
+        manifest = evalkit.build_manifest(specs, workdir)
         write_manifest(run_dir / "manifest.json", manifest)
         write_manifest(out / "manifest.json", manifest)
 

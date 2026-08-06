@@ -1,5 +1,6 @@
 import inspect
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,11 +10,18 @@ from skeptic.llm import SKEPTIC_MODEL
 from skeptic.testgen import (
     build_testgen_prompt,
     generate_candidates,
+    one_hop_sources,
     parse_candidates,
     screen_imports,
 )
 from skeptic.trace import TraceWriter, read_trace
 from tests.helpers import make_task_spec
+
+
+def write(tmp_path: Path, relpath: str, content: str) -> None:
+    path = tmp_path / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
 
 
 @dataclass
@@ -387,3 +395,55 @@ def test_topup_failure_keeps_call_ones_evidence(fake_client_factory, trace):
     failures = [e for e in events if e["event"] == "advtests_topup_failed"]
     assert len(failures) == 1
     assert failures[0]["payload"]["error"] == "RuntimeError"
+
+
+# --- one-hop pristine context (task 9) --------------------------------------
+
+
+def test_one_hop_resolves_absolute_and_relative_imports(tmp_path):
+    write(tmp_path, "src/pkg/__init__.py", "")
+    write(tmp_path, "src/pkg/a.py", "import pkg.b\nfrom . import c\n")
+    write(tmp_path, "src/pkg/b.py", "B = 1")
+    write(tmp_path, "src/pkg/c.py", "C = 1")
+    write(tmp_path, "src/pkg/d.py", "D = 1")
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"])
+
+    assert set(out) == {"src/pkg/b.py", "src/pkg/c.py"}
+
+
+def test_one_hop_resolves_from_module_import_name_fallback(tmp_path):
+    write(tmp_path, "src/pkg/__init__.py", "")
+    write(tmp_path, "src/pkg/a.py", "from pkg.b import B\n")
+    write(tmp_path, "src/pkg/b.py", "B = 1")
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"])
+
+    assert set(out) == {"src/pkg/b.py"}
+
+
+def test_one_hop_never_returns_a_changed_file_and_ignores_non_src(tmp_path):
+    write(tmp_path, "src/pkg/a.py", "import os\nimport pkg.a\nimport requests\n")
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"])
+
+    assert out == {}
+
+
+def test_one_hop_cap_is_deterministic_smallest_first(tmp_path):
+    write(tmp_path, "src/pkg/a.py", "import pkg.small\nimport pkg.big\n")
+    write(tmp_path, "src/pkg/small.py", "s = 1")
+    write(tmp_path, "src/pkg/big.py", "b = " + "'x'" * 40_000)
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"], cap_chars=200)
+
+    assert set(out) == {"src/pkg/small.py"}
+
+
+def test_one_hop_returns_empty_when_changed_files_alone_exceed_the_cap(tmp_path):
+    write(tmp_path, "src/pkg/a.py", "import pkg.b\n" + "x = 1\n" * 100)
+    write(tmp_path, "src/pkg/b.py", "B = 1")
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"], cap_chars=10)
+
+    assert out == {}

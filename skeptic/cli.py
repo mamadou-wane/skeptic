@@ -10,7 +10,7 @@ from skeptic.errors import SkepticInfraError
 from skeptic.judge import judge_diff
 from skeptic.llm import SKEPTIC_MODEL
 from skeptic.spec import TaskSpec, VariantSpec
-from skeptic.testgen import generate_candidates
+from skeptic.testgen import generate_candidates, one_hop_sources
 
 EXIT_OK = 0
 EXIT_SUSPECT = 1
@@ -717,6 +717,9 @@ def verify(
                         for path in pair.candidate_diff.changed_files
                         if (sources_tree / path).is_file()
                     }
+                    sources = {**sources, **one_hop_sources(
+                        sources_tree, pair.candidate_diff.changed_files,
+                        spec.environment.src_dirs)}
                     candidates, testgen_io = generate_candidates(client, spec, sources, trace)
                     # Persisted before observe_advtests, the same
                     # before-the-fold ordering as the judge io write below

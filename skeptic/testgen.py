@@ -42,6 +42,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+from pathlib import Path
 
 from skeptic.checks.observations import AdvCandidate
 from skeptic.llm import SKEPTIC_MODEL, call_with_retry, response_text
@@ -69,6 +70,17 @@ Rules:
   observable state), never on a test's own name or path: you were not shown
   any repository test paths, so referencing one would be fabricated.
 - Return each independent test file as its own fenced python code block.
+- Your tests run first against the true, current implementation of the
+  package; any test that fails there is discarded unread. Assert only
+  behavior you can trace in the source shown to you. Prefer exact values
+  you can derive over guessed edge behavior, and never assert formatting
+  or edge cases the problem statement does not imply.
+- Derive most of your inputs from the problem statement's own symptom:
+  parametrize across the boundary region it describes (exact fits,
+  one-off sizes, empty and just-too-long inputs) and assert the exact
+  expected output there rather than a weak structural property. A test
+  that passes both a buggy and a fixed implementation proves nothing
+  about the patch.
 """
 
 _FENCE = re.compile(r"```python\s*\n(.*?)\n```", re.DOTALL)
@@ -82,6 +94,77 @@ def build_testgen_prompt(problem_statement: str, sources: dict[str, str]) -> str
         f"Problem statement:\n{problem_statement}\n\n"
         f"Pristine, pre-patch source of the changed files:\n\n{files}\n"
     )
+
+
+def one_hop_sources(tree_root: Path, changed_files: list[str], src_dirs: list[str],
+                    cap_chars: int = 120_000) -> dict[str, str]:
+    """Pristine one-hop imports of the changed files, smallest-first under a cap.
+
+    Widens what the caller may put in `build_testgen_prompt`'s sources dict
+    (DECISIONS row 129 amendment): still pristine source text only, never a
+    test file, never a changed file again. cap_chars ~ 30k tokens at 4
+    chars/token, the spec's per-call input bound.
+    """
+    packages: dict[str, Path] = {}
+    for src in src_dirs:
+        pkg_dir = Path(src.rstrip("/"))
+        packages[pkg_dir.name] = pkg_dir.parent   # "src/click/" -> {"click": src/}
+
+    def resolve(module: str, level: int, importer: Path) -> Path | None:
+        if level:
+            base = importer.parent
+            for _ in range(level - 1):
+                base = base.parent
+            parts = module.split(".") if module else []
+            candidate = base.joinpath(*parts)
+        else:
+            top, *rest = module.split(".")
+            if top not in packages:
+                return None
+            candidate = packages[top].joinpath(top, *rest)
+        for path in (candidate.with_suffix(".py"), candidate / "__init__.py"):
+            if (tree_root / path).is_file():
+                return path
+        return None
+
+    changed = set(changed_files)
+    found: set[Path] = set()
+    for changed_file in changed_files:
+        source_path = tree_root / changed_file
+        if not source_path.is_file():
+            continue
+        try:
+            tree = ast.parse(source_path.read_text())
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                hops = [resolve(alias.name, 0, Path(changed_file)) for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                # `from pkg import b` and `from . import c` name submodules in
+                # their aliases; try <module>.<alias> first, then the module
+                # itself (`from pkg.b import B` lands on b.py via the fallback).
+                base = node.module or ""
+                hops = []
+                for alias in node.names:
+                    submodule = f"{base}.{alias.name}" if base else alias.name
+                    hops.append(
+                        resolve(submodule, node.level, Path(changed_file))
+                        or resolve(base, node.level, Path(changed_file)))
+            else:
+                continue
+            found.update(h for h in hops if h is not None and str(h) not in changed)
+
+    budget = cap_chars - sum(len((tree_root / f).read_text()) for f in changed
+                             if (tree_root / f).is_file())
+    out: dict[str, str] = {}
+    for path in sorted(found, key=lambda p: ((tree_root / p).stat().st_size, str(p))):
+        body = (tree_root / path).read_text()
+        if len(body) > budget:
+            continue
+        out[str(path)] = body
+        budget -= len(body)
+    return out
 
 
 def parse_candidates(text: str, n_candidates: int) -> tuple[str, ...]:

@@ -792,6 +792,56 @@ def test_paid_runs_enrichments_and_stamps_profile(tmp_path, monkeypatch):
     assert "t2_judge" in saved["checks_completed"]
 
 
+def test_verify_sources_include_one_hop(monkeypatch, tmp_path):
+    """The one-hop widening (task 9): cli's advtests sources dict merges in
+    `one_hop_sources`. `_fake_heavy_stages_real_registry` fakes
+    `workspace.materialize` to a bare mkdir, so the advtests-sources tree it
+    builds is empty; re-faked here to write the changed file (which imports
+    one_hop_target) plus src/click/one_hop_target.py into whichever tree it's
+    asked to build, with the candidate diff's changed_files naming the
+    importer under click's real src_dirs so the resolver has something to
+    walk. `cli.generate_candidates` is re-faked on top of
+    `_fake_advtests_and_judge`'s own fake to record the sources it's called
+    with instead of just returning a canned report."""
+    import dataclasses
+
+    from skeptic import workspace
+
+    pair = _would_be_pass_pair()
+    pair = pair.model_copy(update={
+        "candidate_diff": dataclasses.replace(
+            pair.candidate_diff, changed_files=["src/click/importer.py"]),
+    })
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    _fake_advtests_and_judge(monkeypatch)
+
+    def fake_materialize(repo, commit, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "src" / "click").mkdir(parents=True, exist_ok=True)
+        (dest / "src/click/importer.py").write_text("from . import one_hop_target\n")
+        (dest / "src/click/one_hop_target.py").write_text("TARGET = 1\n")
+
+    monkeypatch.setattr(workspace, "materialize", fake_materialize)
+
+    seen = {}
+
+    def fake_generate(client, spec, sources, trace):
+        seen.update(sources)
+        return (), {"model": "fake", "system": "", "prompt": "", "responses": []}
+
+    monkeypatch.setattr(cli, "generate_candidates", fake_generate)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert any(path.endswith("one_hop_target.py") for path in seen)
+
+
 def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypatch):
     """The amended judge-io-artifact contract (DECISIONS row 132's flagged
     gap): `t2_judge_io.json` exists after a faked paid run and carries

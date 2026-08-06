@@ -1906,3 +1906,78 @@ stands unless the owner rules otherwise at the checkpoint. 4 (this
 table, three baselines, confusion, from snapshots; hand-computed fixture
 green) met. 5 (fast suite 600 passed zero-API, ruff clean, docker suite
 80 passed 1 skipped) met.
+
+---
+
+# M5 wave A final review (owner-approved, 2026-08-06)
+
+The whole-branch review that closes wave A, run against task 14's own
+commit (0097f9d).
+
+**The sources-dict finding.** `skeptic/cli.py`'s paid-profile advtests
+block builds the `sources` dict handed to `generate_candidates` (`cli.py:
+715`) from `pair.candidate_diff.changed_files` alone, with no filter
+against `spec.environment.src_dirs`: every changed file present in the
+materialized `advtests-sources` tree gets its pristine body read straight
+into the dict, test files included. Two runs in the committed 8-run sweep
+(`evals/v1/runs/eval-20260806-215743/`) hit this. click-0001/h1's
+candidate diff deletes `tests/test_utils/test_make_default_short_help.py`;
+rich-0001/h3's diff touches `tests/test_rule.py`. Both files' full
+pristine bodies are readable in that prompt text
+(`workdir/click-0001/verify/h1/collect/artifacts/t2_advtests_io.json`,
+`workdir/rich-0001/verify/h3/collect/artifacts/t2_advtests_io.json`;
+`workdir/` is gitignored and outside this commit).
+
+**What it falsifies.** `skeptic/testgen.py`'s module docstring states "No
+test file, no acceptance path, no seed patch, and nothing outside the
+`sources` the caller hands in can leak into what the model sees, because
+the function that builds the prompt has no parameter through which to
+receive them." That reads as a holdout guarantee over the whole pipeline
+and is not one: it is a true statement about `build_testgen_prompt`'s own
+two-argument signature and a false one about what actually reached the
+model in these two runs, since the guarantee only holds when the caller's
+`sources` dict is itself clean, and `cli.py`'s was not. `one_hop_sources`'s
+own docstring line, "still pristine source text only, never a test file,
+never a changed file again," is true of `one_hop_sources` in isolation
+(its resolver cannot walk outside `src_dirs`) but does not cover the other
+half of the merged dict, the raw `changed_files` loop `one_hop_sources`
+never touches. Row 129's claim, "no test file, acceptance path, or seed
+patch can reach the model, because the function assembling the prompt has
+no parameter to receive them through," is wrong as a description of the
+pipeline. Stated plainly: the by-construction claim was wrong. The
+construction bounded the resolver, `one_hop_sources`'s own walk, which
+cannot leave `src_dirs`, not the caller building the `sources` dict handed
+to it.
+
+**Why the published table stands.** Both leaky runs produced
+`advtest_zero_trusted` (`verdict.json`'s `rule` field on both), the
+zero-trusted state row 131 already names: the leaked content generated
+zero trusted candidates and contributed zero evidence to either verdict.
+click-0001/h1's real top-1 hit is `t1_collect`'s H1 row; rich-0001/h3's
+FAIL evidence is unrelated to the leak. The final reviewer re-ran
+`load_rows` + `render_table` against the eight committed snapshots and
+reproduced `table.md` byte-identical to the committed file. No number on
+the wave A table moves.
+
+**The ruling.** Record the finding in docs now; the code fix opens wave B.
+Wave B's first commit: a `src_dirs` filter on the `sources` dict at the
+`cli.py` call site, so a candidate diff touching `tests/` can no longer
+put that file's body in front of the model; an end-to-end holdout
+regression test that builds a candidate diff touching a `tests/` path,
+drives the real `eval_command`/`verify` path, and asserts no `tests/` path
+string reaches the testgen prompt; and `load_rows` treating a snapshot's
+`meta.json` `exit_code == 3` as INFRA outright, which also closes the
+stale-artifact gap below.
+
+**Other accepted findings.** The stale-artifact INFRA risk: `snapshot_run`
+copies whatever `verdict.json`/`t1_outcomes.json`/`t2_judge.json` already
+sit in `collect/artifacts/` regardless of the just-driven run's own exit
+code, so a run that fails with `EXIT_INFRA` (3) into a `verify_dir` still
+holding a prior successful run's artifacts would snapshot stale,
+non-INFRA-looking data under an INFRA exit code; `load_rows` today reads
+only `verdict is None` to flag INFRA and would miss that case. It did not
+occur in the committed sweep (0 INFRA across all 8 runs); it rides to wave
+B in the same commit as the sources-dict fix. The table's missing
+attribution note: `table.md` gave the h5 top-1 miss as a bare `3/4` with
+no explanation of why; fixed in this commit by adding the h5/H6
+category-labeling note (row 131) to `table.md` directly.

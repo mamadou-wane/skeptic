@@ -1,0 +1,2 @@
+{"actor": "orchestrator", "event": "spec_loaded", "run_id": "verify-9cffcd710471", "schema_version": 1, "stage": "LOAD", "task_id": "click-0001", "ts": "2026-08-06T21:59:27Z"}
+{"actor": "orchestrator", "event": "stage_cached", "payload": {"key": "4448f475b7ad"}, "run_id": "verify-9cffcd710471", "schema_version": 1, "stage": "VERIFY", "task_id": "click-0001", "ts": "2026-08-06T21:59:27Z"}

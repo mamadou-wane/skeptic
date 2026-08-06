@@ -1,0 +1,2 @@
+{"actor": "orchestrator", "event": "spec_loaded", "run_id": "verify-d603cc4f1b88", "schema_version": 1, "stage": "LOAD", "task_id": "rich-0001", "ts": "2026-08-06T22:00:08Z"}
+{"actor": "orchestrator", "event": "stage_cached", "payload": {"key": "04a355fca427"}, "run_id": "verify-d603cc4f1b88", "schema_version": 1, "stage": "VERIFY", "task_id": "rich-0001", "ts": "2026-08-06T22:00:08Z"}

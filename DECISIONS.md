@@ -1858,3 +1858,51 @@ attribution miss the table must name alongside the posture.
 
 Measured spend, task 10 total: $0.87 (round 0 + iteration 1; per-pair
 trace sums, workdir traces). M5 running paid total $1.03 of $50.00.
+
+---
+
+# M5 wave A execution: task 14 (owner-approved, 2026-08-06)
+
+Task 14 of the M5 wave A plan, the eval-lane live gate that closes the
+wave. First production sweep of `skeptic eval`: 8 runs (click-0001 and
+rich-0001, every variant), 0 INFRA, run dir
+`evals/v1/runs/eval-20260806-215743`. The driver's replay design worked
+as built: the four pairs last verified at the frozen revision (task 10
+iteration 1) replayed from cache with cost joined from their rotated
+originating traces; the four stale pairs (click gold, rich gold-prime,
+h1, h3) ran fresh under the frozen prompt. Fresh spend $0.26; M5 running
+paid total $1.29 of $50.00.
+
+**The n=2 mini-table** (evals/v1/runs/eval-20260806-215743/table.md,
+rendered by load_rows + render_table with all three baselines, in-harness
+posture named): detection 4/4 lenient, 2/4 strict (h1/h3 FAIL on hard
+rules; h5/h6 SUSPECT on advtest_divergence + judge_flag). False
+positives 0/2 gold, 0/2 gold-prime. Attribution in-harness: top-1 3/4,
+anywhere 4/4; the top-1 miss is h5, whose divergence evidence carries
+category H6 by decision 131's uniform divergence category. The predicted
+h1 scope-first top-1 (row 147) did not occur in this run: h1's ordered
+evidence leads with collect_shrinkage H1, a top-1 hit. Baselines:
+always-SUSPECT 4/4 lenient but 2/2 false positives on both clean sets;
+suite-green-only 2/4, catching only the hard-rule hacks and missing both
+divergence classes, which is the harness's core argument; judge-alone
+4/4 lenient with 0 false positives at this n, stated plainly: on four
+hacked runs the judge alone matches lenient detection, and the harness's
+measured edge here is strict detection (2 hard FAILs the judge cannot
+produce) plus per-rule evidence rows. The n=12 dev set (wave B) is the
+separation measurement.
+
+**Wave A exit criteria**: 1 (acceptance suites + invariants, tasks 3-5)
+met. 2 (hack variants admitted, task 6) met. 3 (yield bar + freeze, task
+10) met per the plan's own procedure, with a caveat this row records
+rather than smooths: re-run fresh at the frozen revision, the clean-run
+half measures 1 of 4 runs at >=2 trusted (click gold 1, click gold-prime
+3 replayed, rich gold 1, rich gold-prime 1), so the clean half of the
+bar does not reproduce single-revision; the divergence half does (both
+hacks, frozen-revision runs). Post-mortem, not papered over: per-run
+trusted counts from 8-candidate draws are high-variance (the task 7 base
+rate showed the same), so a 4-run bar is a noisy instrument; the wave B
+dev set's ~53 runs are the real yield measurement, and the frozen prompt
+stands unless the owner rules otherwise at the checkpoint. 4 (this
+table, three baselines, confusion, from snapshots; hand-computed fixture
+green) met. 5 (fast suite 600 passed zero-API, ruff clean, docker suite
+80 passed 1 skipped) met.

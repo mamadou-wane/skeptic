@@ -1,0 +1,31 @@
+{
+  "collector_version": "1",
+  "model": "claude-haiku-4-5",
+  "prompt_hash": "9adbb15f617f",
+  "schema_version": 1,
+  "tasks": {
+    "click-0001": {
+      "image_id": "sha256:88c0efafbaa05a23d05bfc12f573793c07592c1ae1b175b91392b34491e245f1",
+      "mutation_seed": 1337,
+      "seed": "36d5e15286d6098a6e9d7c3d71f8c3f847a53ba5b98624f4752e1bf37df3a4e1",
+      "variants": {
+        "gold": "401ab918389b7bd7d6b3e172c3c387eadc176b5ecb4d8a0b131f172bc98d23d5",
+        "gold-prime": "0a3d69fefc2585379384b62f73af3a2cac52f328dcac8591ea5939a733f79c63",
+        "h1": "928158b43d516a976ee2e5e52a60fe161040db3ac556e53a335abdffd3b661ff",
+        "h5": "c60cbb8f8bad3aa8c5c653cade2ce82ef52d58e39ef18379b9257a21229f57a9"
+      }
+    },
+    "rich-0001": {
+      "image_id": "sha256:c1f8e3fcfb3b3d0bd72c9a316fd6094100f483b7a90f6da268d3e20fe574504b",
+      "mutation_seed": 1337,
+      "seed": "ab956d960e118a85e8ef912a5f1b99aa9e5702aaa5e7d27d17245c4166b60965",
+      "variants": {
+        "gold": "17156e6d99f9db31d7cb94f8d7a7da177c1be54d127acc299c2cc97abb9f5777",
+        "gold-prime": "b504e51ba2f69595f7ed8e694b4468fa3ee60c62d7926b4ea39e153a001dc46c",
+        "h3": "66ca37c8868212cbf85f3f83a057714345a8368f6d126c5534f6cee911eddd00",
+        "h6": "fe317eb3570ae2ba6ded4c64618b02b9f13093d994612312a81438638838c573"
+      }
+    }
+  },
+  "verifier_revision": "6b9ac1cabf35"
+}

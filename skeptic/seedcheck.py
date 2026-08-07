@@ -53,7 +53,7 @@ class SuiteResult:
 def parse_junit(path: Path) -> SuiteResult:
     if not path.is_file():
         raise SkepticInfraError(
-            f"junit report missing at {path} — the test run did not produce a "
+            f"junit report missing at {path}: the test run did not produce a "
             f"report, so results cannot be trusted. This is an infra failure, "
             f"never evidence. Next: re-run; if it persists check the test_cmd."
         )

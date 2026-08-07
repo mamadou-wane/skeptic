@@ -106,7 +106,7 @@ def make_minirepo_task(
     if extra_variants:
         # Commit the seeded (buggy) state so each further `git diff` below is
         # taken relative to it, producing a patch that applies cleanly on top
-        # of the seed patch — the same shape a real variant patch has.
+        # of the seed patch: the same shape a real variant patch has.
         _git(upstream, "add", "-A")
         _git(upstream, "commit", "-qm", "seeded baseline for variant patches")
         for variant_id, label, files in extra_variants:

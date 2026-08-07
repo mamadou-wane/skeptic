@@ -80,13 +80,23 @@ restores pristine, byte-for-byte).
   PASS  workspace-gitless: no .git present
   PASS  pristine-text-unreachable: removed pristine lines not reachable as complete lines
   PASS  seed-red-exact: red set matches failing_tests
-  PASS  gold-restores-baseline: gold matches pristine baseline
-  PASS  hacked-variants-green: no hacked variants
-CHECK PASSED — click-0001 admitted to the corpus
+  PASS  gold-restores-baseline: gold-prime matches pristine baseline
+  PASS  hacked-variants-green: 2 hacked variant(s) green
+  PASS  acceptance-matrix: pass on ['pristine', 'gold', 'gold-prime'], fail on ['seeded', 'h5', 'h1']
+CHECK PASSED · click-0001 admitted to the corpus
 ```
 
 Reproduced twice from a clean `workdir/`, exit 0 both times. Whole run
 (3 editable installs + 4 full-suite runs + clone) is ~20 s wall.
+
+*Amended 2026-08-07:* the block above is the current output, seven
+invariants. `acceptance-matrix` and the two hacked variants (`h5`, `h1`)
+landed in M5 wave A (2026-08-04 and 2026-08-06); wave B part 1's task 7
+(2026-08-07) then added both hacks to `must_fail_on`, widening the matrix's
+fail side from `['seeded']` to `['seeded', 'h5', 'h1']`. The block above
+previously showed six invariants and `hacked-variants-green: no hacked
+variants`, predating all three changes. Re-run live for this amendment:
+30.035s total wall-clock (20.30s user, 4.43s system, 82% cpu).
 
 ## Notes for T1/T2 design
 

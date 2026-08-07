@@ -108,7 +108,7 @@ def seed(
         trace.event(stage="SEED", actor="orchestrator", event="check_end",
                     payload={"ok": report.ok})
         if report.ok:
-            typer.echo(f"CHECK PASSED — {spec.task_id} admitted to the corpus")
+            typer.echo(f"CHECK PASSED · {spec.task_id} admitted to the corpus")
             if self_validate:
                 clean = [v.id for v in spec.evaluation.variants if v.label == "clean"]
                 typer.echo(f"self-validation: full VERIFY (deterministic) on {clean}")
@@ -139,7 +139,7 @@ def seed(
                             raise typer.Exit(EXIT_FAIL) from exc
                 typer.echo("self-validation PASSED on every clean variant")
             raise typer.Exit(EXIT_OK)
-        typer.echo(f"CHECK FAILED — fix the invariants above, then re-run "
+        typer.echo(f"CHECK FAILED · fix the invariants above, then re-run "
                    f"`skeptic seed --task {spec.task_id} --check`")
         raise typer.Exit(EXIT_FAIL)
     except SkepticInfraError as exc:
@@ -362,8 +362,8 @@ def build(
             typer.echo("empty candidate: the Builder produced no patch "
                        "(FAIL(no-patch) per plan section 10)")
             raise typer.Exit(EXIT_FAIL)
-        typer.echo("Next: `skeptic verify` lands at M3; the candidate and "
-                   "trace are ready for it.")
+        typer.echo(f"Next: `skeptic verify --task {spec.task_id} "
+                   f"--variant <id>` to audit a candidate.")
         raise typer.Exit(EXIT_OK)
     except VenvBuildRefused as exc:
         typer.echo(f"REFUSED: {exc}")
@@ -920,9 +920,16 @@ def eval_command(
                     verify(task=spec.task_id, variant=variant_spec.id,
                            profile=profile, tasks_dir=tasks_dir,
                            workdir=workdir, runner="docker", yes=True)
-                    code = EXIT_OK
                 except typer.Exit as exc:
                     code = exc.exit_code
+                else:  # pragma: no cover - verify always exits
+                    raise SkepticInfraError(
+                        f"verify returned without exiting for "
+                        f"{spec.task_id}/{variant_spec.id}. Every verify path "
+                        f"raises typer.Exit; a plain return means the command "
+                        f"changed shape and this sweep's exit-code capture is "
+                        f"no longer correct."
+                    )
                 evalkit.snapshot_run(
                     verify_dir, run_dir / spec.task_id / variant_spec.id, code)
                 n_runs += 1
@@ -937,7 +944,7 @@ def eval_command(
         typer.echo(f"run dir: {run_dir}")
         if infra:
             typer.echo(f"INFRA: {', '.join(infra)}")
-        typer.echo("Next: the table lands with tasks 12-13")
+        typer.echo("Next: render the table from the run dir.")
         raise typer.Exit(EXIT_INFRA if infra else EXIT_OK)
     except SkepticInfraError as exc:
         typer.echo(f"INFRA ERROR: {exc}")

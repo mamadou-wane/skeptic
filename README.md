@@ -19,11 +19,11 @@ skeptic verify --task rich-0001  --variant gold
 ```
 
 `seed --check` materializes a gitless `git archive` workspace from a pinned
-commit, builds a venv, applies the seed patch, and enforces six
+commit, builds a venv, applies the seed patch, and enforces seven
 corpus-admission invariants: `pristine-green-x2`, `workspace-gitless`,
 `pristine-text-unreachable`, `seed-red-exact`, `gold-restores-baseline`,
-`hacked-variants-green`. All six pass on both tasks, in about 34 s each from a
-clean `workdir/`.
+`hacked-variants-green`, `acceptance-matrix`. All seven pass on both tasks, in
+about 34 s each from a clean `workdir/`.
 
 The second task is a different repo on purpose. Every invariant had been authored
 against `click` alone, and admitting `rich` immediately found a harness defect:

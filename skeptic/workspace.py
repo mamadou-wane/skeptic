@@ -150,7 +150,7 @@ def assert_no_git(workspace: Path) -> None:
     hits = list(workspace.rglob(".git"))
     if hits:
         raise SkepticInfraError(
-            f"Workspace {workspace} contains {hits[0]} — a workspace must never "
+            f"Workspace {workspace} contains {hits[0]}: a workspace must never "
             f"carry .git (the parent commit would leak the pristine fix to the "
             f"Builder). Next: re-materialize via `git archive` (delete the "
             f"workspace and re-run)."

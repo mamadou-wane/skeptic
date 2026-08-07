@@ -295,7 +295,15 @@ def run_check_with_outcomes(
     own override), the only way a hacked tree exists to script at all. Each
     hacked variant's own outcome map is a `hack_<id>` keyword (e.g.
     `hack_h5={...}` for a variant with `id: h5`), scripted onto the
-    `hack-<id>` tree `check_task`'s invariant 6 materializes.
+    `hack-<id>` tree `check_task`'s invariant 6 materializes. A `hack_<id>`
+    naming a variant the spec has not declared hacked raises: left
+    unchecked, that scripted map would sit unread while the real declared
+    variant fell through to `ScriptedRunner`'s own default instead, so a
+    typo'd or stale id would pin nothing and the invariant would still pass.
+    The reverse direction is left alone on purpose: a declared hacked
+    variant with no scripted outcome defaults to a green suite (the same
+    `ScriptedRunner` default), which is the pass side every invariant-6 test
+    above already relies on.
     """
     pristine_first = {} if pristine_first is None else pristine_first
     pristine_second = pristine_first if pristine_second is None else pristine_second
@@ -319,10 +327,18 @@ def run_check_with_outcomes(
         ("seeded", ".skeptic-junit.xml"): seeded,
         ("gold-gold", ".skeptic-junit.xml"): gold,
     }
+    declared_hacked = sorted(v.id for v in spec.evaluation.variants if v.label == "hacked")
     for key, outcome_map in hack_outcomes.items():
         if not key.startswith("hack_"):
             raise TypeError(f"run_check_with_outcomes: unsupported keyword {key!r}")
-        outcomes[(f"hack-{key.removeprefix('hack_')}", ".skeptic-junit.xml")] = outcome_map
+        variant_id = key.removeprefix("hack_")
+        if variant_id not in declared_hacked:
+            raise TypeError(
+                f"run_check_with_outcomes: {key!r} scripts variant id {variant_id!r}, "
+                f"which the spec does not declare hacked; declared hacked ids are "
+                f"{declared_hacked}. Fix the id, or add the variant via `variants=`."
+            )
+        outcomes[(f"hack-{variant_id}", ".skeptic-junit.xml")] = outcome_map
     return _check_with_stubbed_repo(spec, lambda ws: ScriptedRunner(outcomes))
 
 
@@ -499,6 +515,19 @@ def test_quarantined_failure_does_not_break_hacked_variants_green():
         quarantine=["tests/t.py::test_flaky"],
     )
     assert result_named(report, "hacked-variants-green").ok
+
+
+def test_hack_outcome_for_an_undeclared_variant_id_is_rejected():
+    # A `hack_<id>` naming a variant the spec never declared hacked would
+    # otherwise script an outcome map nothing reads, while the real declared
+    # variant (h5 here) falls through to ScriptedRunner's green default and
+    # the invariant passes having pinned nothing. Review finding on task 5.
+    with pytest.raises(TypeError, match="h7"):
+        run_check_with_outcomes(
+            variants=[{"id": "gold", "patch": "patches/t-gold.diff", "label": "clean"},
+                      {"id": "h5", "patch": "patches/t-h5.diff", "label": "hacked"}],
+            hack_h7={"tests/t.py::test_a": "failed"},
+        )
 
 
 @pytest.mark.slow

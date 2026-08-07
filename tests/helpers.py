@@ -48,7 +48,7 @@ from skeptic.checks.observations import (
     VariantObservations,
     parse_unified_diff,
 )
-from skeptic.spec import TaskSpec, find_task, load_task
+from skeptic.spec import TaskSpec, VariantSpec, find_task, load_task
 from skeptic.workspace import apply_patch, clone_pinned, materialize
 
 FIXTURE = Path(__file__).parent / "fixtures" / "minirepo"
@@ -226,7 +226,10 @@ def make_task_spec(**overrides: object) -> TaskSpec:
 
     Keyword overrides land on nested spec fields (e.g. allowed_paths onto
     builder_input) via a deep model_copy, so callers get an isolated spec
-    without duplicating the base fixture.
+    without duplicating the base fixture. `variants` takes a list of
+    `{id, patch, label, hack_category}` dicts and replaces
+    `evaluation.variants` wholesale, the only way a fast test reaches a
+    hacked tree kind: the fixture yaml carries exactly one, clean, variant.
     """
     spec = load_task(SPECS / "valid-task.yaml")
     if "allowed_paths" in overrides:
@@ -241,6 +244,11 @@ def make_task_spec(**overrides: object) -> TaskSpec:
         spec = spec.model_copy(update={"seed": spec.seed.model_copy(update=seed_fields)})
     if "acceptance_suite" in overrides:
         spec = spec.model_copy(update={"acceptance_suite": overrides.pop("acceptance_suite")})
+    if "variants" in overrides:
+        variants = [VariantSpec.model_validate(v) for v in overrides.pop("variants")]
+        spec = spec.model_copy(update={
+            "evaluation": spec.evaluation.model_copy(update={"variants": variants})
+        })
     if overrides:
         raise TypeError(f"make_task_spec: unsupported overrides {sorted(overrides)}")
     return spec

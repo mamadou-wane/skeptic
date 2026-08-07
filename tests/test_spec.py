@@ -297,6 +297,20 @@ def test_acceptance_suite_requires_seeded_in_must_fail_on():
         }))
 
 
+def test_acceptance_suite_rejects_a_name_in_both_lists():
+    # Before this rule, the unknown-name check unions must_pass_on and
+    # must_fail_on before checking membership, so a name in both loads
+    # cleanly and check_task then materializes that tree twice with one
+    # branch guaranteed to fail, reporting a corpus authoring mistake as an
+    # invariant failure.
+    with pytest.raises(ValidationError, match="both"):
+        TaskSpec.model_validate(_task_dict(acceptance_suite={
+            "path": "acceptance/x/",
+            "must_pass_on": ["pristine", "seeded"],
+            "must_fail_on": ["seeded"],
+        }))
+
+
 def test_acceptance_tests_stub_is_gone():
     # the old nested stub must now be rejected by extra="forbid"
     bad = _task_dict()

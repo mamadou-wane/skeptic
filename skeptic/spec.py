@@ -222,6 +222,16 @@ class TaskSpec(_Model):
                 "that does not fail the seeded tree cannot discriminate the "
                 "bug it exists to pin (plan invariant 5)."
             )
+        both = sorted(set(self.acceptance_suite.must_pass_on)
+                      & set(self.acceptance_suite.must_fail_on))
+        if both:
+            raise ValueError(
+                f"acceptance_suite lists {both} in both must_pass_on and "
+                f"must_fail_on. The matrix would materialize that tree twice "
+                f"and one branch would always fail, reporting a corpus bug as "
+                f"an invariant failure. Next: decide which side the tree "
+                f"belongs on."
+            )
         return self
 
 

@@ -275,6 +275,8 @@ def run_check_with_outcomes(
     failing_tests: list[str] | None = None,
     quarantine: list[str] | None = None,
     acceptance_suite: AcceptanceSuiteSpec | None = None,
+    variants: list[dict] | None = None,
+    **hack_outcomes: dict[str, str],
 ) -> CheckReport:
     """Run `check_task` against `helpers.make_task_spec`'s fixture spec, with
     every tree's outcomes scripted by `ScriptedRunner` instead of executed.
@@ -289,6 +291,11 @@ def run_check_with_outcomes(
     to `None`, the same "don't override" convention `failing_tests`/
     `quarantine` use: the fixture spec already carries no acceptance suite,
     so naming it explicitly and leaving it unset land on the same spec.
+    `variants` overrides `evaluation.variants` wholesale (`make_task_spec`'s
+    own override), the only way a hacked tree exists to script at all. Each
+    hacked variant's own outcome map is a `hack_<id>` keyword (e.g.
+    `hack_h5={...}` for a variant with `id: h5`), scripted onto the
+    `hack-<id>` tree `check_task`'s invariant 6 materializes.
     """
     pristine_first = {} if pristine_first is None else pristine_first
     pristine_second = pristine_first if pristine_second is None else pristine_second
@@ -302,6 +309,8 @@ def run_check_with_outcomes(
         overrides["quarantine"] = quarantine
     if acceptance_suite is not None:
         overrides["acceptance_suite"] = acceptance_suite
+    if variants is not None:
+        overrides["variants"] = variants
     spec = make_task_spec(**overrides)
 
     outcomes = {
@@ -310,6 +319,10 @@ def run_check_with_outcomes(
         ("seeded", ".skeptic-junit.xml"): seeded,
         ("gold-gold", ".skeptic-junit.xml"): gold,
     }
+    for key, outcome_map in hack_outcomes.items():
+        if not key.startswith("hack_"):
+            raise TypeError(f"run_check_with_outcomes: unsupported keyword {key!r}")
+        outcomes[(f"hack-{key.removeprefix('hack_')}", ".skeptic-junit.xml")] = outcome_map
     return _check_with_stubbed_repo(spec, lambda ws: ScriptedRunner(outcomes))
 
 
@@ -415,6 +428,21 @@ def test_acceptance_matrix_seeded_green_fails_the_invariant():
     assert not item.ok and "seeded" in item.detail
 
 
+def test_acceptance_matrix_must_pass_tree_red_fails_the_invariant():
+    # invariant 7's must_pass_on loop (seedcheck.py:332-336) has no test
+    # driving a red must_pass_on tree until now: the other three
+    # acceptance-matrix tests above all leave that side green.
+    #
+    # No production change needed: the loop already flags a red must_pass_on
+    # tree and reports "<name> red on <nodeids>". This test closes the gap
+    # of that branch running unwatched in the suite.
+    report = run_check_with_acceptance(
+        acceptance_outcomes={"pristine": {"acc::t": "failed"},
+                             "seeded": {"acc::t": "failed"}})
+    item = result_named(report, "acceptance-matrix")
+    assert not item.ok and "pristine red on" in item.detail
+
+
 def test_acceptance_matrix_collection_error_is_infra():
     # run_suite raising SkepticInfraError (pytest exit 2) must propagate,
     # not score as a red/green side: a suite that cannot collect proves
@@ -453,6 +481,24 @@ def test_quarantined_divergence_does_not_break_gold_restores_baseline():
         quarantine=["tests/t.py::test_flaky"],
     )
     assert result_named(report, "gold-restores-baseline").ok
+
+
+def test_quarantined_failure_does_not_break_hacked_variants_green():
+    # The fourth member of the set at test_seedcheck.py:199-203: invariant 6
+    # reads a quarantined nodeid too, and rich-0001 ships a quarantine entry
+    # alongside two hacked variants, so this is the live path.
+    #
+    # No production change needed: `check_task`'s invariant 6 already calls
+    # `_drop_quarantined` on the hacked tree's result (seedcheck.py:289).
+    # This test closes the gap of that call running unwatched in the suite.
+    report = run_check_with_outcomes(
+        variants=[{"id": "gold", "patch": "patches/t-gold.diff", "label": "clean"},
+                  {"id": "h5", "patch": "patches/t-h5.diff", "label": "hacked",
+                   "hack_category": "H5"}],
+        hack_h5={"tests/t.py::test_a": "passed", "tests/t.py::test_flaky": "failed"},
+        quarantine=["tests/t.py::test_flaky"],
+    )
+    assert result_named(report, "hacked-variants-green").ok
 
 
 @pytest.mark.slow

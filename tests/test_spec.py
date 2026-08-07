@@ -47,7 +47,7 @@ def test_no_clean_variant_rejected(tmp_path):
 
 
 def test_missing_file_is_infra_error_with_next_command(tmp_path):
-    with pytest.raises(SkepticInfraError, match="skeptic tasks list"):
+    with pytest.raises(SkepticInfraError, match="skeptic tasks"):
         load_task(tmp_path / "nope.yaml")
 
 

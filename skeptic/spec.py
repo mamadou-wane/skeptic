@@ -252,7 +252,7 @@ def load_task(path: Path) -> TaskSpec:
     if not path.is_file():
         raise SkepticInfraError(
             f"Task spec not found: {path}. Skeptic needs the YAML spec to know "
-            f"what to run. Next: `skeptic tasks list` to see available task ids."
+            f"what to run. Next: `skeptic tasks` to see available task ids."
         )
     try:
         data = yaml.safe_load(path.read_text())
@@ -281,6 +281,19 @@ def find_task(task_id: str, tasks_dir: Path) -> TaskSpec:
         raise SkepticInfraError(
             f"No task named {task_id!r} in {tasks_dir} (known: {known or 'none'}). "
             f"Skeptic resolves --task <id> to <tasks_dir>/<id>.yaml. "
-            f"Next: `skeptic tasks list`."
+            f"Next: `skeptic tasks`."
         )
     return load_task(candidate)
+
+
+def list_tasks(tasks_dir: Path) -> list[TaskSpec]:
+    """Load every task spec under `tasks_dir`, sorted by task_id.
+
+    A yaml that fails validation raises `load_task`'s own worded error here
+    rather than being silently skipped: a listing command that drops a
+    corrupt spec on the floor hides exactly the corpus bug the validator
+    exists to surface, and `seed --check` on that task would hit the same
+    raise anyway.
+    """
+    specs = [load_task(path) for path in tasks_dir.glob("*.yaml")]
+    return sorted(specs, key=lambda spec: spec.task_id)

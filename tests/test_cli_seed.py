@@ -33,7 +33,13 @@ def test_seed_check_end_to_end(tmp_path):
 def test_seed_without_check_flag_explains(tmp_path):
     result = runner.invoke(app, ["seed", "--task", "x", "--tasks-dir", str(tmp_path)])
     assert result.exit_code == 3
-    assert "tasks list" in result.output or "No task named" in result.output
+    assert "No task named" in result.output
+
+
+def test_unknown_task_error_names_the_real_command(tmp_path):
+    result = runner.invoke(app, ["seed", "--task", "nope"])
+    assert "skeptic tasks" in result.output
+    assert "skeptic tasks list" not in result.output
 
 
 def test_seed_without_check_flag_explains_on_valid_task(tmp_path):

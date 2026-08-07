@@ -767,7 +767,7 @@ def verify(
                         import anthropic
 
                         client = anthropic.Anthropic()
-                    diff_text = pair.candidate_diff.diff_path.read_text()
+                    diff_text = read_source(pair.candidate_diff.diff_path)
                     judge_report, judge_io = judge_diff(client, diff_text, trace)
                     # Persisted before the fold: judge_diff's own docstring
                     # states the returned io dict (verbatim request and

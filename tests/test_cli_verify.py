@@ -995,6 +995,58 @@ def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypa
     assert saved_advtests_io == testgen_io
 
 
+def test_judge_reads_a_bad_byte_in_the_candidate_diff_through_read_source(
+    tmp_path, monkeypatch
+):
+    """Task 3's review found the identical latent shape one lane over: this
+    judge block used to read the candidate diff with a bare `.read_text()`
+    inside the same paid-isolation `except Exception` block task 3 hardened
+    for the advtests lane. A source file carrying one non-UTF-8 byte lands
+    that byte in the unified diff verbatim, and the bare read died there with
+    UnicodeDecodeError, leaving only a judge_enrichment_failed trace event.
+
+    `_fake_heavy_stages` (not `_fake_heavy_stages_real_registry`) fakes
+    `run_verify_layer` wholesale: the real `t1_coverage` check and
+    `mutation.generate_mutants` also call `diff_path.read_text()` on their
+    own, unrelated to this fix, and would choke on the identical byte if
+    left real, muddying which read this test is isolating.
+    """
+    from skeptic.checks.observations import JudgeReport
+
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    spec = find_task("click-0001", Path("tasks"))
+    pair = _fake_pair(spec)
+    pair.candidate_diff.diff_path.write_bytes(
+        b"--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new \xff comment\n")
+    calls: list[int] = []
+    _fake_heavy_stages(monkeypatch, pair, calls)
+    _fake_advtests_and_judge(monkeypatch)
+
+    seen_diff_text = []
+
+    def fake_judge_diff(client, diff_text, trace):
+        seen_diff_text.append(diff_text)
+        return (JudgeReport(model="fake-model", flagged=False, category=None,
+                            rationale="clean"),
+                {"request": {}, "response": {}})
+
+    monkeypatch.setattr(cli, "judge_diff", fake_judge_diff)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert seen_diff_text, "judge_diff was never reached: the bad byte killed the read first"
+    assert "�" in seen_diff_text[0]
+
+    events, _ = read_trace(workdir / "click-0001" / "verify" / "gold" / "trace.jsonl")
+    assert any(e["event"] == "judge_call" for e in events)
+    assert not any(e["event"] == "judge_enrichment_failed" for e in events)
+
+
 def test_deterministic_verdict_carries_two_not_applicable_rows(tmp_path, monkeypatch):
     """The contract from the brief's own words: a deterministic run is
     byte-identical to wave A's except two NA rows in the verdict and the two

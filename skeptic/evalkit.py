@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from skeptic.collector import COLLECTOR_VERSION
+from skeptic.errors import SkepticInfraError
 from skeptic.image import repo_image_tag
 from skeptic.llm import SKEPTIC_MODEL
 from skeptic.orchestrator import verifier_revision
@@ -200,10 +201,21 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
             )
 
             t2_path = variant_dir / "t2_judge.json"
-            judge_flagged = (
-                json.loads(t2_path.read_text())["report"]["flagged"]
-                if t2_path.is_file() else None
-            )
+            judge_flagged = None
+            if t2_path.is_file():
+                payload = json.loads(t2_path.read_text())
+                try:
+                    judge_flagged = payload["report"]["flagged"]
+                except (KeyError, TypeError) as exc:
+                    raise SkepticInfraError(
+                        f"{t2_path} is not a judge artifact: expected a "
+                        f"'report' object carrying 'flagged'. A snapshot's "
+                        f"artifacts are copied verbatim from a verify run, so "
+                        f"this is a corrupt or truncated run rather than a "
+                        f"corpus question. Next: re-run that pair with `skeptic "
+                        f"verify --task {task_dir.name} --variant "
+                        f"{variant_dir.name} --profile paid`."
+                    ) from exc
 
             meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
             replayed = meta.get("replayed", False)
@@ -235,6 +247,15 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
                 estimated = True
                 usd = 0.0
 
+            if variant_dir.name not in variants:
+                raise SkepticInfraError(
+                    f"{variant_dir} is a snapshot of variant "
+                    f"{variant_dir.name!r}, which {task_dir.name} no longer "
+                    f"declares. Labels join through the task spec, so a row "
+                    f"with no variant has no label and cannot be scored. "
+                    f"Next: re-add the variant to tasks/{task_dir.name}.yaml, "
+                    f"or delete the stale snapshot directory."
+                )
             variant_spec = variants[variant_dir.name]
             rows.append(EvalRow(
                 task_id=task_dir.name, variant=variant_dir.name,

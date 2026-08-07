@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from skeptic.errors import SkepticInfraError
 from skeptic.evalkit import (
     BaselineRow,
     EvalRow,
@@ -334,6 +335,33 @@ def test_load_rows_reads_infra_from_meta_exit_code(tmp_path):
     assert row.judge_flagged is None    # the stale judge read must not reach any fold either
     assert row.estimated is False       # stale judge_flagged must not flip this on
     assert row.usd == 0.0
+
+
+def test_load_rows_names_an_unknown_variant_directory(tmp_path):
+    """A run dir can hold a variant the task yaml no longer lists (part 2's
+    live case: hack allocation changes across the corpus while old run dirs
+    stay on disk). The join through find_task's own spec has no label for
+    a variant it doesn't declare, so this raises a worded refusal to score
+    an unscoreable row rather than a bare KeyError."""
+    snap = tmp_path / "run" / "click-0001" / "h7"
+    snap.mkdir(parents=True)
+    (snap / "verdict.json").write_text(json.dumps({"verdict": "FAIL", "evidence": []}))
+    with pytest.raises(SkepticInfraError, match="h7"):
+        load_rows(tmp_path / "run", Path("tasks"))
+
+
+def test_load_rows_names_a_malformed_judge_artifact(tmp_path):
+    """A t2_judge.json missing the real check's `report.flagged` nesting
+    (checks/t2_judge.py:53) is a corrupt or truncated run, since a snapshot's
+    artifacts are copied verbatim from a real verify run: this raises a
+    worded error naming the file and the next command instead of a bare
+    KeyError."""
+    verify_dir = fake_verify_layout(tmp_path, task="click-0001", variant="gold")
+    write_fake_artifacts(verify_dir, t2_judge={"check": "t2_judge"})
+    snapshot_run(verify_dir, tmp_path / "runs" / "eval-x" / "click-0001" / "gold")
+
+    with pytest.raises(SkepticInfraError, match="t2_judge.json"):
+        load_rows(tmp_path / "runs" / "eval-x", Path("tasks"))
 
 
 # --- task 13: the three baseline rows ---------------------------------------

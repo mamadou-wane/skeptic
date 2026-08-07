@@ -487,3 +487,64 @@ def test_layer_paid_profile_runs_advtests_deterministic_excuses_it():
     assert result.status == "not_applicable"
     assert result.evidence == ()
     assert "t2_advtests" not in outcome.infra
+
+
+# --- run_verify_layer: the demo profile ---------------------------------------
+
+
+def test_demo_profile_excuses_the_execution_heavy_checks():
+    """The demo runs on a bundled fixture with no docker, so coverage,
+    mutation, and the consumer probe cannot run, on top of the two paid
+    checks every non-paid profile already excuses."""
+    pair = make_pure_pair("gold", observed=GREENED)
+
+    outcome = aggregate.run_verify_layer(pair, profile="demo")
+
+    na = {r.check for r in outcome.results if r.status == "not_applicable"}
+    assert {"t1_coverage", "t2_mutation", "t2_probe",
+            "t2_advtests", "t2_judge"} <= na
+
+
+def test_demo_profile_still_runs_the_structural_checks():
+    """Excusing the execution-heavy checks by name leaves the structural T1
+    checks running for real; `h1-excision` still collects (one surviving
+    test), so `t1_collect` reaches `completed` rather than being swept up by
+    the demo's excused set."""
+    pair = make_pure_pair("h1-excision", observed=GREENED)
+
+    outcome = aggregate.run_verify_layer(pair, profile="demo")
+
+    completed = {r.check for r in outcome.results if r.status == "completed"}
+    assert "t1_collect" in completed
+
+
+def test_demo_excusal_names_the_profile_in_the_artifact():
+    pair = make_pure_pair("gold", observed=GREENED)
+
+    outcome = aggregate.run_verify_layer(pair, profile="demo")
+
+    result = next(r for r in outcome.results if r.check == "t2_mutation")
+    stub = json.loads((pair.artifacts_dir / result.artifact).read_text())
+    assert stub["reason"] == "excluded by profile: demo"
+
+
+def test_demo_gold_pair_still_aggregates_to_pass():
+    """The load-bearing case: mandatory completion through `not_applicable`
+    makes the demo's PASS honest rather than reached by omission."""
+    pair = make_pure_pair("gold", observed=GREENED)
+    outcome = aggregate.run_verify_layer(pair, profile="demo")
+
+    verdict = aggregate.aggregate(
+        outcome, run_id="r", task_id="minirepo-0001", variant="gold",
+        isolation="none", profile="demo",
+    )
+    assert verdict.verdict == "PASS"
+
+
+def test_unknown_profile_excuses_only_the_paid_checks():
+    """`_excused`'s `.get` default falls back to `PAID_ONLY_CHECKS` for any
+    name `EXCUSED_BY_PROFILE` does not carry. The CLI validates profile names
+    long before `run_verify_layer` ever sees one, so a reader-side default
+    that ran the execution-heavy checks on a typo'd profile would spend
+    money rather than fail closed."""
+    assert aggregate._excused("some-typo") == aggregate.PAID_ONLY_CHECKS

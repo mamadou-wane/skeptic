@@ -231,8 +231,9 @@ class Verdict(_Model):
     `verdict=None` and states why in `infra_reason`. `isolation` is the DX8
     stamp naming the runner the verdict was produced under, so a `--no-docker`
     verdict says so in the artifact. `profile` is the verify profile the
-    aggregator ran under (`"deterministic"` at M4; a paid lane is wave B),
-    stamped from the same caller as `isolation`.
+    aggregator ran under (`"deterministic"` at M4; a paid lane is wave B;
+    `demo` joins both in wave B part 1, still a plain `str` with no schema
+    change), stamped from the same caller as `isolation`.
 
     `checks_infra` names every check `run_verify_layer` caught an exception
     from, in `CHECK_PRECEDENCE` order (decision 8, `skeptic/checks/aggregate.py`).

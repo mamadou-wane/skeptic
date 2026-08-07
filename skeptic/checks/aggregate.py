@@ -101,6 +101,24 @@ T2_REGISTRY: tuple[tuple[str, Callable[[ObservationPair], CheckResult]], ...] = 
 # a paid API call.
 PAID_ONLY_CHECKS: frozenset[str] = frozenset({"t2_advtests", "t2_judge"})
 
+# What each profile excuses, by name. The paid lane is the absence of an
+# entry: only "paid" runs everything. `demo` additionally excuses the three
+# checks that need a container or a coverage run, because the demo is
+# keyless, dockerless, and network-free by construction; excusing them by
+# name in the artifact is what keeps its PASS honest rather than silent.
+EXCUSED_BY_PROFILE: dict[str, frozenset[str]] = {
+    "paid": frozenset(),
+    "deterministic": PAID_ONLY_CHECKS,
+    "demo": PAID_ONLY_CHECKS | frozenset({"t1_coverage", "t2_mutation", "t2_probe"}),
+}
+
+
+def _excused(profile: str) -> frozenset[str]:
+    # An unknown profile excuses the paid checks and nothing else: the CLI
+    # validates the name long before here, and a reader-side default that
+    # ran paid checks would spend money on a typo.
+    return EXCUSED_BY_PROFILE.get(profile, PAID_ONLY_CHECKS)
+
 
 @dataclass(frozen=True)
 class LayerOutcome:
@@ -130,21 +148,22 @@ def run_verify_layer(
     returned unchanged, which is what "degrades to unannotated results" means
     for a check whose whole second half is rewriting other checks' evidence.
 
-    `profile` gates `PAID_ONLY_CHECKS`. Outside `"paid"`, a name in
-    `PAID_ONLY_CHECKS` is dropped from the registry before anything runs, so
-    it is never called, and a synthetic `not_applicable` result is appended
-    after annotation instead, with `dur_ms=0` and a written artifact naming
-    the excluding profile. In `"paid"`, the registry runs whichever entry
-    `T2_REGISTRY` holds for that name, same as any other check; a name with
-    no entry yet is simply absent from the results, neither called nor
-    synthesized.
+    `profile` gates which checks it excuses, via `EXCUSED_BY_PROFILE`
+    (`_excused`). A name in the profile's excused set is dropped from the
+    registry before anything runs, so it is never called, and a synthetic
+    `not_applicable` result is appended after annotation instead, with
+    `dur_ms=0` and a written artifact naming the excluding profile. A name
+    outside the excused set runs whichever entry `T2_REGISTRY` holds for it,
+    same as any other check; a name with no entry yet is simply absent from
+    the results, neither called nor synthesized.
     """
     results: list[CheckResult] = []
     infra: dict[str, str] = {}
     registry = (*T1_REGISTRY, ("t1_ast", t1_ast.run), *T2_REGISTRY)
-    if profile != "paid":
+    excused = _excused(profile)
+    if excused:
         registry = tuple(
-            (name, check) for name, check in registry if name not in PAID_ONLY_CHECKS
+            (name, check) for name, check in registry if name not in excused
         )
     for name, check in registry:
         try:
@@ -159,8 +178,8 @@ def run_verify_layer(
     else:
         results = list(annotated)
 
-    if profile != "paid":
-        for name in sorted(PAID_ONLY_CHECKS, key=_precedence_index):
+    if excused:
+        for name in sorted(excused, key=_precedence_index):
             reason = f"excluded by profile: {profile}"
             artifact = write_artifact(
                 pair, name, {"check": name, "status": "not_applicable", "reason": reason}

@@ -636,6 +636,22 @@ def test_unknown_profile_names_both_lanes(tmp_path, monkeypatch):
     assert "paid" in result.output
 
 
+def test_verify_profile_demo_is_still_unreachable(tmp_path, monkeypatch):
+    """`demo` (wave B part 1, `aggregate.EXCUSED_BY_PROFILE`) is deliberately
+    not a `verify --profile` value: the future `skeptic demo` command calls
+    `run_verify_layer(pair, profile="demo")` directly, and `--profile demo`
+    gets the same rejection as any other unrecognized name, still naming
+    only the two CLI-visible lanes."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "demo",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "Unknown profile 'demo'" in result.output
+    assert "deterministic" in result.output
+    assert "paid" in result.output
+
+
 def test_paid_requires_api_key_before_any_image_work(tmp_path, monkeypatch):
     """Mirrors `test_build_requires_api_key_before_docker_work`: the key
     check fails in well under a second, before `_docker_available()` (and

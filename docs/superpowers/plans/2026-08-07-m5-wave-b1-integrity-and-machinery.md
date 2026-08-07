@@ -1199,7 +1199,7 @@ DECISIONS row: the per-profile excused-set generalization; `demo` deliberately n
 ### Task 13: the minirepo moves into the package
 
 **Files:**
-- Move: `tests/fixtures/minirepo/` and `tests/fixtures/hacks/` to `skeptic/fixtures/`
+- Move: `tests/fixtures/minirepo/` to `skeptic/fixtures/minirepo/`
 - Create: `skeptic/fixtures/__init__.py`, `skeptic/fixtures/demo.json`
 - Modify: `pyproject.toml` (package-data, pytest to runtime deps)
 - Modify: `tests/helpers.py:54-56`
@@ -1224,7 +1224,7 @@ def test_bundled_fixture_ships_its_non_python_payload():
     """
     root = skeptic.fixtures.root()
     for rel in ("minirepo/pyproject.toml", "minirepo/goldens/expected.txt",
-                "demo.json", "hacks/h1-excision/deleted.txt"):
+                "demo.json", "demo/h1-excision.diff"):
         assert (root / rel).is_file(), rel
 
 
@@ -1242,7 +1242,7 @@ Expected: FAIL, `skeptic.fixtures` does not exist.
 
 - [ ] **Step 3: Move the tree and add the accessor**
 
-`git mv tests/fixtures/minirepo skeptic/fixtures/minirepo` and the same for `hacks/`. Keep `tests/fixtures/specs/` where it is: `valid-task.yaml` is a test fixture, not demo content.
+`git mv tests/fixtures/minirepo skeptic/fixtures/minirepo`. **`tests/fixtures/hacks/` stays in `tests/`**: it is 34 kB of fourteen hack bodies that only the self-tests read, the spec asks for the minirepo and not the corpus, and a published wheel carrying fourteen reward-hacking patches is surface the demo does not need. The demo's h1 variant comes from its own committed diff under `skeptic/fixtures/demo/`, generated once from the `h1-excision` fixture and thereafter independent of it. `tests/fixtures/specs/` also stays: `valid-task.yaml` is a test fixture, not demo content.
 
 `skeptic/fixtures/__init__.py`:
 
@@ -1261,7 +1261,7 @@ def root() -> Path:
     return Path(str(files("skeptic.fixtures")))
 ```
 
-Carry `hacks/conftest.py` (`collect_ignore_glob = ["*"]`) with the move: several hack bodies are named `test_*.py` and a bare `pytest skeptic/` would collect them into an import-file-mismatch.
+The minirepo carries its own `tests/test_minirepo.py` and `tests/test_golden.py`, which a bare `pytest skeptic/` would now collect (two files named `tests/test_minirepo.py` in one run is an import-file-mismatch, and the bundled suite is the demo's target, not a test of skeptic). `[tool.pytest.ini_options] testpaths = ["tests"]` already keeps the default run clear, which is not the same as safe: add `skeptic/fixtures/conftest.py` carrying `collect_ignore_glob = ["*"]`, the same guard `tests/fixtures/hacks/conftest.py` already uses and for the same reason.
 
 Generate the two demo diffs once, commit them as data, and write `demo.json`:
 
@@ -1298,7 +1298,7 @@ Recursive `**` in package-data needs setuptools >= 62.3; `[build-system] require
 ```python
 FIXTURE = skeptic.fixtures.root() / "minirepo"
 SPECS = Path(__file__).parent / "fixtures" / "specs"
-HACKS = skeptic.fixtures.root() / "hacks"
+HACKS = Path(__file__).parent / "fixtures" / "hacks"      # unchanged
 ```
 
 - [ ] **Step 6: Verify the wheel really carries it**
@@ -1312,7 +1312,7 @@ python -m venv /tmp/skeptic-wheel && /tmp/skeptic-wheel/bin/pip install -q dist/
   print(sorted(p.name for p in skeptic.fixtures.root().iterdir()))"
 ```
 
-Expected: `demo.json`, `hacks`, `minirepo`. Record the wheel size before and after in the task report.
+Expected: `conftest.py`, `demo`, `demo.json`, `minirepo`. Record the wheel size before and after in the task report.
 
 - [ ] **Step 7: Run tests, lint, commit**
 

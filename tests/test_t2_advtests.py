@@ -125,6 +125,27 @@ def test_zero_trusted_emits_info_row_with_yield_stat():
     assert artifact["yield"]["gold_prime"] == 0
 
 
+def test_yield_detail_lists_rungs_in_ladder_order():
+    """`_RUNGS`'s ordering drives the shipped yield-stat detail string, and
+    it is unpinned today: it happens to already match ladder order, but
+    nothing stops a future edit from reordering it for readability and
+    silently changing what "rejected N at <rung>, ..." says."""
+    report = AdversarialReport(
+        model="haiku", n_candidates=2,
+        candidates=(
+            _candidate("c1", "rejected", rejected_at="seeded_green", detail="non-discriminating"),
+            _candidate("c2", "rejected", rejected_at="reference", detail="disagreed"),
+        ),
+        trusted=(), divergences=(),
+    )
+    pair = _pair_with_advtests(report)
+
+    result = t2_advtests.run(pair)
+
+    entry = result.evidence[0]
+    assert entry.detail.index("at reference") < entry.detail.index("at seeded_green")
+
+
 def test_all_trusted_green_is_completed_and_silent():
     report = AdversarialReport(
         model="haiku", n_candidates=1,

@@ -418,6 +418,26 @@ def test_render_table_prints_dropped_count_for_judge_alone_baseline():
     assert "judge-alone" in dropped_line and "1" in dropped_line
 
 
+def test_judge_alone_drops_a_clean_row_without_judge_data():
+    """`render_table`'s `dropped_fp` branch has zero coverage today: the
+    dropped-count test above only ever drops a hacked row (h5), so
+    `dropped_fp`'s own `if variant, (_, n) in fps.items()` fold, the
+    false-positive half of the drop line, never runs against a real drop.
+    This drops gold-prime, a clean row, instead."""
+    rows = [
+        dataclasses.replace(ROW_H5, judge_flagged=True),
+        dataclasses.replace(ROW_H1, judge_flagged=True),
+        dataclasses.replace(ROW_H6, judge_flagged=False),
+        ROW_H3_INFRA,
+        dataclasses.replace(ROW_GOLD, judge_flagged=False),
+        dataclasses.replace(ROW_GP_FP, judge_flagged=None),
+    ]
+    table = render_table(rows, [baseline_judge_alone(rows)])
+
+    assert "1 gold-prime" in table
+    assert "no judge data" in table
+
+
 def test_render_table_with_baselines_keeps_task_12_content():
     """Adding baselines does not disturb the main table's own posture
     sentence, INFRA footer, or confusion matrix (task 12 constraints)."""

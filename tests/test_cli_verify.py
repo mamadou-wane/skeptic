@@ -995,6 +995,53 @@ def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypa
     assert saved_advtests_io == testgen_io
 
 
+def test_advtests_io_persists_when_the_ladder_dies(tmp_path, monkeypatch):
+    """Row 143's write-before-the-call, proven on the failure path.
+
+    `t2_advtests_io.json` is written before `observe_advtests` runs, on
+    purpose: when the acceptance ladder dies, the raw model response and
+    stop_reason are the only evidence left of why a run produced nothing.
+    `test_paid_judge_io_artifact_persists_request_and_response` above only
+    fakes `observe_advtests` to a successful canned report, so it cannot
+    tell a write-before-the-call from a write-after: moving the write past
+    the call would keep that test green while losing the one artifact that
+    explains a dead ladder. This one fakes `observe_advtests` to raise and
+    checks the artifact survives.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    _fake_advtests_and_judge(monkeypatch)
+
+    testgen_io = {"model": "fake", "system": "", "prompt": "",
+                 "responses": [{"in_tok": 100, "out_tok": 50,
+                               "text": "def test_c1():\n    pass\n",
+                               "stop_reason": "end_turn"}]}
+    monkeypatch.setattr(
+        cli, "generate_candidates", lambda client, spec, sources, trace: ((), testgen_io))
+
+    def boom(*args, **kwargs):
+        raise SkepticInfraError("container died")
+
+    monkeypatch.setattr(cli, "observe_advtests", boom)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    # A dead paid enrichment on a would-be-PASS pair reports INFRA_ERROR
+    # (the same shape the dead-mutation and dead-probe tests pin), never a
+    # silent PASS: the command completes rather than crashing.
+    assert result.exit_code == 3, result.output
+    assert "INFRA ERROR" in result.output
+
+    io_path = pair.artifacts_dir / "t2_advtests_io.json"
+    assert io_path.is_file()
+    assert json.loads(io_path.read_text())["responses"]
+
+
 def test_judge_reads_a_bad_byte_in_the_candidate_diff_through_read_source(
     tmp_path, monkeypatch
 ):

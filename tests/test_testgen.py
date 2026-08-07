@@ -109,9 +109,6 @@ def _spec_with_n_candidates(n: int):
             update={"n_candidates": n})})})
 
 
-SPEC_N2 = _spec_with_n_candidates(2)
-SPEC_N8 = _spec_with_n_candidates(8)
-
 CLICK_FRAGMENT = "if total_length == max_length and i != last_index:\n    break"
 GOOD_TEST = "def test_ok():\n    assert True"
 
@@ -339,6 +336,10 @@ def test_generate_candidates_returns_io_dict(fake_client_8_blocks, tmp_path):
     assert "Problem statement" in io["prompt"]
     assert len(io["responses"]) == 1
 
+    entry = io["responses"][0]
+    assert entry["in_tok"] == 100 and entry["out_tok"] == 50
+    assert entry["text"].startswith("```python") or "def test_" in entry["text"]
+
 
 # --- parse filter and top-up retry (task 8) ----------------------------------
 
@@ -346,7 +347,8 @@ def test_generate_candidates_returns_io_dict(fake_client_8_blocks, tmp_path):
 def test_fragment_without_test_function_rejects_at_generation(fake_client_factory, trace):
     client = fake_client_factory([fenced(CLICK_FRAGMENT), fenced(GOOD_TEST)])
 
-    candidates, _ = generate_candidates(client, SPEC_N2, {"a.py": "x = 1"}, trace)
+    candidates, _ = generate_candidates(
+        client, _spec_with_n_candidates(2), {"a.py": "x = 1"}, trace)
 
     frag = candidates[0]
     assert frag.status == "rejected" and frag.rejected_at == "generation"
@@ -357,7 +359,8 @@ def test_shortfall_triggers_exactly_one_topup_call(fake_client_factory, trace):
     # first response: 2 blocks of an 8-candidate ask; second: 6 more
     client = fake_client_factory([two_blocks_response, six_blocks_response])
 
-    candidates, io = generate_candidates(client, SPEC_N8, {"a.py": "x = 1"}, trace)
+    candidates, io = generate_candidates(
+        client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace)
 
     assert client.calls == 2
     assert len(io["responses"]) == 2
@@ -367,7 +370,8 @@ def test_shortfall_triggers_exactly_one_topup_call(fake_client_factory, trace):
 def test_full_first_response_makes_no_second_call(fake_client_factory, trace):
     client = fake_client_factory([eight_blocks_response])
 
-    candidates, io = generate_candidates(client, SPEC_N8, {"a.py": "x = 1"}, trace)
+    candidates, io = generate_candidates(
+        client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace)
 
     assert client.calls == 1 and len(io["responses"]) == 1
     assert len(candidates) == 8
@@ -376,7 +380,8 @@ def test_full_first_response_makes_no_second_call(fake_client_factory, trace):
 def test_zero_blocks_rerolls_once_then_proceeds(fake_client_factory, trace):
     client = fake_client_factory([prose_only_response, three_blocks_response])
 
-    candidates, _ = generate_candidates(client, SPEC_N8, {"a.py": "x = 1"}, trace)
+    candidates, _ = generate_candidates(
+        client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace)
 
     # shortfall after the retry is a yield stat, not a second retry
     assert client.calls == 2 and len(candidates) == 3
@@ -385,7 +390,7 @@ def test_zero_blocks_rerolls_once_then_proceeds(fake_client_factory, trace):
 def test_topup_prompt_carries_no_new_content(fake_client_factory, trace):
     client = fake_client_factory([two_blocks_response, six_blocks_response])
 
-    generate_candidates(client, SPEC_N8, {"a.py": "x = 1"}, trace)
+    generate_candidates(client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace)
 
     first, second = client.prompts
     # same two inputs both times; the calls differ only in the count coda
@@ -396,7 +401,8 @@ def test_topup_prompt_carries_no_new_content(fake_client_factory, trace):
 def test_topup_failure_keeps_call_ones_evidence(fake_client_factory, trace):
     client = fake_client_factory([two_blocks_response, RuntimeError("boom")])
 
-    candidates, io = generate_candidates(client, SPEC_N8, {"a.py": "x = 1"}, trace)
+    candidates, io = generate_candidates(
+        client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace)
 
     # no exception escaped; call one's io entry and blocks are what's left
     assert client.calls == 2

@@ -1066,6 +1066,50 @@ def test_advtest_gold_prime_rung_short_circuits_after_the_first_rejected_variant
         c.candidate_id for c in report.candidates if c.status == "trusted")
 
 
+def test_rejected_at_names_the_first_rung_not_the_last(tmp_path, monkeypatch):
+    """`_ADV_RUNG_ORDER`'s middle two entries, `target_coverage` and
+    `seeded_green`, are only pinned today for `reference`-before-the-rest.
+
+    A trivial `assert 1 + 1 == 2` candidate fails both: it never executes
+    the changed file (rung `target_coverage`) and it passes the seeded
+    (buggy) tree, non-discriminating (rung `seeded_green`). `rejected_at`
+    has to name the earlier rung in ladder order, `target_coverage`, not
+    whichever of the two the reader happens to check first.
+    """
+    spec, repo, _ = _minirepo(tmp_path)
+    candidates = (
+        AdvCandidate(candidate_id="c1", source="def test_trivial():\n    assert 1 + 1 == 2\n",
+                     status="trusted", rejected_at=None, detail="provisional"),
+    )
+    # Every changed-file context is the empty string: import-time only,
+    # never executed under a real test, so target_coverage rejects it.
+    no_context = {"minirepo.py": {"executed_lines": [1, 6], "missing_lines": [],
+                                  "excluded_lines": [], "contexts": {"1": [""], "6": [""]}}}
+    reference_plan = {
+        "c1": {"exit": 0, "outcomes": {".skeptic-advtests/test_c1.py::test_trivial": "passed"},
+              "coverage_exit": 0, "covered": no_context},
+    }
+    # Exit 0 on the seeded (buggy) tree: non-discriminating, so seeded_green
+    # rejects it too.
+    seeded_plan = {"c1": {"exit": 0}}
+    gold_plan = {"c1": {"exit": 0}}
+    _advtest_fake_runs(monkeypatch, [reference_plan, seeded_plan, gold_plan])
+
+    from tests.helpers import make_observed_pair
+    pair = make_observed_pair(baseline={}, spec=spec)
+    pair = pair.model_copy(update={
+        "candidate_diff": CandidateReport(
+            diff_path=pair.candidate_diff.diff_path, changed_files=["minirepo.py"],
+            out_of_scope=[], is_empty=False)})
+
+    report = observe_advtests(
+        spec, "img", repo, pair, tmp_path / "artifacts", candidates, model="test-model")
+
+    by_id = {c.candidate_id: c for c in report.candidates}
+    assert by_id["c1"].status == "rejected"
+    assert by_id["c1"].rejected_at == "target_coverage"
+
+
 @pytest.mark.docker
 @pytest.mark.slow
 def test_collect_pair_on_the_minirepo_gold_fixture(tmp_path, minirepo_spec_and_repo):

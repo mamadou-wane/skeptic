@@ -43,19 +43,23 @@ def tasks(
     """List the corpus tasks this checkout carries."""
     from skeptic.spec import list_tasks
 
-    specs = list_tasks(tasks_dir)
-    if not specs:
-        typer.echo(
-            f"no task specs under {tasks_dir}: skeptic reads one yaml per "
-            f"task from that directory. Next: `skeptic tasks --tasks-dir "
-            f"<dir>` if the corpus lives elsewhere."
-        )
-        raise typer.Exit(EXIT_INFRA)
-    for spec in specs:
-        acc = "acceptance" if spec.acceptance_suite else "no acceptance suite"
-        typer.echo(f"{spec.task_id} · {spec.repo.url.rsplit('/', 1)[-1]} · "
-                   f"{len(spec.evaluation.variants)} variants · {acc}")
-    typer.echo(f"Next: `skeptic seed --task {specs[0].task_id} --check`")
+    try:
+        specs = list_tasks(tasks_dir)
+        if not specs:
+            typer.echo(
+                f"no task specs under {tasks_dir}: skeptic reads one yaml per "
+                f"task from that directory. Next: `skeptic tasks --tasks-dir "
+                f"<dir>` if the corpus lives elsewhere."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        for spec in specs:
+            acc = "acceptance" if spec.acceptance_suite else "no acceptance suite"
+            typer.echo(f"{spec.task_id} · {spec.repo.url.rsplit('/', 1)[-1]} · "
+                       f"{len(spec.evaluation.variants)} variants · {acc}")
+        typer.echo(f"Next: `skeptic seed --task {specs[0].task_id} --check`")
+    except SkepticInfraError as exc:
+        typer.echo(f"INFRA ERROR: {exc}")
+        raise typer.Exit(EXIT_INFRA) from exc
 
 
 @app.command()

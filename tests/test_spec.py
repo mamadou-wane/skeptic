@@ -47,8 +47,11 @@ def test_no_clean_variant_rejected(tmp_path):
 
 
 def test_missing_file_is_infra_error_with_next_command(tmp_path):
-    with pytest.raises(SkepticInfraError, match="skeptic tasks"):
+    with pytest.raises(
+        SkepticInfraError, match=r"`skeptic tasks` to see available task ids"
+    ) as excinfo:
         load_task(tmp_path / "nope.yaml")
+    assert "tasks list" not in str(excinfo.value)
 
 
 def test_find_task_by_id(tmp_path):

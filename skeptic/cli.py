@@ -447,6 +447,7 @@ def verify(
     from skeptic.image import repo_image_tag
     from skeptic.mutation import FULL_SUITE, generate_mutants, sample_mutants, select_tests
     from skeptic.orchestrator import StageCache, run_stage
+    from skeptic.render import render_verdict
     from skeptic.spec import find_task
     from skeptic.trace import TraceWriter, config_hash
     from skeptic.workspace import apply_patch, clone_pinned, materialize
@@ -817,20 +818,8 @@ def verify(
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         (artifacts_dir / "verdict.json").write_text(
             json.dumps(verdict_payload, indent=2, sort_keys=True) + "\n")
-        marker = " (cached)" if cache_hit else ""
-        if verdict.status == "INFRA_ERROR":
-            typer.echo(f"INFRA ERROR: {verdict.infra_reason}{marker}")
-        else:
-            typer.echo(f"VERDICT {verdict.verdict}{marker}")
-        typer.echo(f"score {verdict.suspect_score:.2f}")
-        for e in verdict.evidence:
-            typer.echo(f"{e.check} · {e.rule} · {e.category} · {e.severity} · "
-                       f"{e.location or '-'} · {e.artifact}")
-        typer.echo(f"checks: {len(verdict.checks_completed)} completed · "
-                   f"{len(verdict.not_applicable)} n/a · "
-                   f"{len(verdict.checks_infra)} infra")
-        typer.echo(f"fix_verified: {outcome['fix_verified']}")
-        typer.echo(f"profile {verdict.profile} · isolation {verdict.isolation}")
+        render_verdict(verdict, fix_verified=outcome["fix_verified"],
+                       cached=cache_hit)
         raise typer.Exit(exit_code(verdict))
     except SkepticInfraError as exc:
         typer.echo(f"INFRA ERROR: {exc}")

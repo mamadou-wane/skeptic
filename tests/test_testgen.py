@@ -8,13 +8,14 @@ import pytest
 from skeptic.checks.observations import AdvCandidate
 from skeptic.llm import SKEPTIC_MODEL
 from skeptic.testgen import (
+    SYSTEM_PROMPT,
     build_testgen_prompt,
     generate_candidates,
     one_hop_sources,
     parse_candidates,
     screen_imports,
 )
-from skeptic.trace import TraceWriter, read_trace
+from skeptic.trace import TraceWriter, config_hash, read_trace
 from tests.helpers import make_task_spec
 
 
@@ -128,6 +129,17 @@ three_blocks_response = _n_blocks(3)
 six_blocks_response = _n_blocks(6)
 eight_blocks_response = _n_blocks(8)
 prose_only_response = "Here is my reasoning about the patch. No code follows."
+
+
+def test_system_prompt_is_frozen():
+    """The testgen prompt is frozen for every Eval A measurement.
+
+    DECISIONS.md's task 10 row froze it at this hash and wave A's mini-table
+    plus evals/v1/manifest.json both carry it. A wording change invalidates
+    every published dev-set number, so it changes here first, deliberately,
+    with the manifests and the tables re-stamped in the same commit.
+    """
+    assert config_hash({"system": SYSTEM_PROMPT}) == "9adbb15f617f"
 
 
 def test_prompt_contains_problem_statement_and_sources_verbatim():

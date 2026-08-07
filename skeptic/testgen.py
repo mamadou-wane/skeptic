@@ -7,14 +7,23 @@ call asking for `n_candidates` blocks, and, only if that call returns fewer
 blocks than asked (zero included), one top-up call asking for exactly the
 shortfall. The top-up carries the same two inputs as the first call, so
 `build_testgen_prompt`'s own signature stays the security boundary either
-way: `problem_statement` and the pristine bodies of the patch's changed
-files are structurally the only inputs a candidate's prompt can carry. No
-test file, no acceptance path, no seed patch, and nothing outside the
-`sources` the caller hands in can leak into what the model sees, because the
-function that builds the prompt has no parameter through which to receive
-them.
+way: `problem_statement` and the pristine bodies of whatever the caller's
+`sources` dict holds, changed source files and their one-hop pristine
+imports alike, are structurally the only inputs a candidate's prompt can
+carry.
 
-`screen_imports` is rung 5 of the promotion ladder, run host-side before any
+The prompt carries exactly two things: `problem_statement`, and the pristine
+bodies of whatever the caller put in `sources`. `build_testgen_prompt` has no
+other parameter, so nothing else can arrive through this function. That is a
+statement about this function, not a holdout guarantee over the pipeline: the
+guarantee holds only while every caller's `sources` dict is itself clean, and
+in the wave A eval sweep one caller's was not (`cli.py` built the dict from
+the candidate diff's changed files with no `src_dirs` filter, so two runs put
+repo test-file bodies in front of the model). The filter now lives at that
+call site and an end-to-end test drives the real path to pin it. A new caller
+owes the same filter; this signature will not enforce it.
+
+`screen_imports` is rung 2 of the promotion ladder, run host-side before any
 container work: a candidate may import the standard library
 (`sys.stdlib_module_names`), `pytest`, and the package(s) under
 `spec.environment.src_dirs`, nothing else. `generate_candidates` derives
@@ -98,7 +107,7 @@ def build_testgen_prompt(problem_statement: str, sources: dict[str, str]) -> str
     )
     return (
         f"Problem statement:\n{problem_statement}\n\n"
-        f"Pristine, pre-patch source of the changed files:\n\n{files}\n"
+        f"Pristine, pre-patch source of the changed files and their imports:\n\n{files}\n"
     )
 
 
@@ -107,9 +116,15 @@ def one_hop_sources(tree_root: Path, changed_files: list[str], src_dirs: list[st
     """Pristine one-hop imports of the changed files, smallest-first under a cap.
 
     Widens what the caller may put in `build_testgen_prompt`'s sources dict
-    (DECISIONS row 129 amendment): still pristine source text only, never a
-    test file, never a changed file again. cap_chars ~ 30k tokens at 4
-    chars/token, the spec's per-call input bound.
+    (DECISIONS row 129 amendment).
+
+    Pristine source text only: the resolver cannot walk outside `src_dirs`,
+    and it never returns a file already in `changed_files`. It says nothing
+    about the rest of the caller's dict, which the caller filters (`cli.py`
+    passes only the src-dir subset of the changed files, for the reason its
+    comment there gives).
+
+    cap_chars ~ 30k tokens at 4 chars/token, the spec's per-call input bound.
     """
     packages: dict[str, Path] = {}
     for src in src_dirs:
@@ -224,10 +239,10 @@ def screen_imports(source: str, allowed_packages: frozenset[str]) -> str | None:
 def _allowed_packages(spec: TaskSpec) -> frozenset[str]:
     """Top-level package names importable from `spec.environment.src_dirs`.
 
-    A basename split of each entry, e.g. `"src/click/"` -> `"click"`. This
-    module does no file I/O, so it cannot see a src-layout package whose
-    importable name differs from its directory name; the precise version,
-    walking the pristine tree, is the ladder's job (task 6).
+    A basename split of each entry, e.g. `"src/click/"` -> `"click"`.
+    `_allowed_packages` does no file I/O, so it cannot see a src-layout
+    package whose importable name differs from its directory name; the
+    precise version, walking the pristine tree, is the ladder's job (task 6).
     """
     return frozenset(src.rstrip("/").rsplit("/", 1)[-1] for src in spec.environment.src_dirs)
 

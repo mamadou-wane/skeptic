@@ -439,6 +439,7 @@ def verify(
 
     from skeptic.candidate import extract_candidate, snapshot
     from skeptic.checks import run_verify_layer
+    from skeptic.checks._util import under
     from skeptic.checks.aggregate import aggregate, exit_code
     from skeptic.checks.evidence import Verdict
     from skeptic.checks.t1_outcomes import compute_fix_verified
@@ -712,14 +713,26 @@ def verify(
                     if sources_tree.exists():
                         shutil.rmtree(sources_tree)
                     materialize(repo_dir, spec.repo.commit, sources_tree)
+                    # Only source files reach the model. `changed_files` is
+                    # candidate-controlled and a candidate diff may touch
+                    # `tests/` (h1 deletes a test file, h3 edits one), so an
+                    # unfiltered dict hands the model held-out test content.
+                    # The wave A final review found exactly that in two of
+                    # eight published runs. `one_hop_sources` reads the same
+                    # filtered list: its resolver is already bounded by
+                    # src_dirs, but walking a test file's imports would still
+                    # let the test file choose the context.
+                    src_changed = [
+                        path for path in pair.candidate_diff.changed_files
+                        if under(path, spec.environment.src_dirs)
+                    ]
                     sources = {
                         path: (sources_tree / path).read_text()
-                        for path in pair.candidate_diff.changed_files
+                        for path in src_changed
                         if (sources_tree / path).is_file()
                     }
                     sources = {**sources, **one_hop_sources(
-                        sources_tree, pair.candidate_diff.changed_files,
-                        spec.environment.src_dirs)}
+                        sources_tree, src_changed, spec.environment.src_dirs)}
                     candidates, testgen_io = generate_candidates(client, spec, sources, trace)
                     # Persisted before observe_advtests, the same
                     # before-the-fold ordering as the judge io write below

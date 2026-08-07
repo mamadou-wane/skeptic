@@ -298,6 +298,24 @@ def test_load_rows_deterministic_replayed_row_is_not_estimated(tmp_path):
     assert row.fix_verified is None
 
 
+def test_load_rows_reads_infra_from_meta_exit_code(tmp_path):
+    """A snapshot taken after an INFRA exit is INFRA even if its artifacts look fine.
+
+    snapshot_run copies whatever sits in collect/artifacts/ regardless of the
+    just-driven run's exit code, so a run that died with EXIT_INFRA into a
+    verify_dir still holding a previous run's verdict.json snapshots stale,
+    non-INFRA-looking data. Reading meta's exit_code closes that.
+    """
+    snap = tmp_path / "run" / "click-0001" / "gold"
+    snap.mkdir(parents=True)
+    (snap / "verdict.json").write_text(json.dumps({"verdict": "PASS", "evidence": []}))
+    (snap / "meta.json").write_text(json.dumps({"exit_code": 3, "replayed": False}))
+
+    row = load_rows(tmp_path / "run", Path("tasks"))[0]
+    assert row.infra is True
+    assert row.verdict is None      # the stale PASS must not reach any fold
+
+
 # --- task 13: the three baseline rows ---------------------------------------
 #
 # Same six rows task 12's hand test is built around. ROWS_SIX_WITH_ONE_JUDGE_NONE

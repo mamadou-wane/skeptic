@@ -152,6 +152,12 @@ class EvalRow:
     infra: bool
 
 
+# cli's EXIT_INFRA, duplicated rather than imported: cli imports evalkit, so
+# the reverse import is a cycle. aggregate.exit_code is the other producer of
+# this value (a null verdict maps to 3).
+INFRA_EXIT_CODE = 3
+
+
 def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
     """Walk `<run_dir>/<task>/<variant>/`, one `EvalRow` per snapshot.
 
@@ -199,6 +205,13 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
 
             meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
             replayed = meta.get("replayed", False)
+
+            # An INFRA exit means the artifacts in this snapshot may belong to
+            # a previous run of the same pair (snapshot_run copies whatever
+            # collect/artifacts/ holds, and nothing clears it between drives).
+            # Drop the payload rather than letting a stale PASS into a fold.
+            if meta.get("exit_code") == INFRA_EXIT_CODE:
+                verdict, top1, anywhere = None, None, frozenset()
 
             prev_path = variant_dir / "trace.prev.jsonl"
             trace_path = variant_dir / "trace.jsonl"

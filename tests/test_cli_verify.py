@@ -842,6 +842,71 @@ def test_verify_sources_include_one_hop(monkeypatch, tmp_path):
     assert any(path.endswith("one_hop_target.py") for path in seen)
 
 
+HOLDOUT_SENTINEL = "SENTINEL_FROM_A_HELD_OUT_TEST_FILE"
+
+
+def _write(tmp_path: Path, relpath: str, content: str) -> None:
+    path = tmp_path / relpath
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+
+
+def test_testgen_prompt_never_sees_a_changed_test_file(monkeypatch, tmp_path):
+    """The wave A final review's finding, pinned on the real path.
+
+    A candidate diff that touches `tests/` used to put that file's pristine
+    body straight into the `sources` dict (cli.py's comprehension filtered on
+    `is_file()` alone), and from there into the testgen prompt. Two of the
+    eight published wave A runs hit it. The guard test that existed pinned
+    `build_testgen_prompt`'s two-parameter signature, which cannot bound a
+    dict the caller fills, so this one asserts on what the caller built.
+
+    The source and test paths below sit under click-0001's real
+    `src_dirs`/`test_dirs` (`src/click/`, `tests/`), the same real spec the
+    CLI's `--task click-0001` resolves to, since the filter under test reads
+    `spec.environment.src_dirs`.
+    """
+    import dataclasses
+
+    from skeptic import workspace
+
+    seen = {}
+
+    def fake_generate(client, spec, sources, trace):
+        seen.update(sources)
+        return (), {"model": "fake", "system": "", "prompt": "", "responses": []}
+
+    def fake_materialize(repo_dir, commit, dest):
+        _write(dest, "src/click/target.py", "def f():\n    return 1\n")
+        _write(dest, "tests/test_target.py",
+               f"# {HOLDOUT_SENTINEL}\ndef test_f():\n    pass\n")
+        return dest
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    pair = pair.model_copy(update={
+        "candidate_diff": dataclasses.replace(
+            pair.candidate_diff,
+            changed_files=["src/click/target.py", "tests/test_target.py"]),
+    })
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    _fake_advtests_and_judge(monkeypatch)
+    monkeypatch.setattr(cli, "generate_candidates", fake_generate)
+    monkeypatch.setattr(workspace, "materialize", fake_materialize)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert seen, "the paid lane never reached testgen; the harness is wrong"
+    assert not any(path.startswith("tests/") for path in seen)
+    assert not any(HOLDOUT_SENTINEL in body for body in seen.values())
+    assert "src/click/target.py" in seen
+
+
 def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypatch):
     """The amended judge-io-artifact contract (DECISIONS row 132's flagged
     gap): `t2_judge_io.json` exists after a faked paid run and carries

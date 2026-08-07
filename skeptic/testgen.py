@@ -5,22 +5,19 @@ calls. It makes at most two `call_with_retry` requests (`SKEPTIC_MODEL`, one
 shot each, `max_tokens=16000`) built from `build_testgen_prompt`: a first
 call asking for `n_candidates` blocks, and, only if that call returns fewer
 blocks than asked (zero included), one top-up call asking for exactly the
-shortfall. The top-up carries the same two inputs as the first call, so
-`build_testgen_prompt`'s own signature stays the security boundary either
-way: `problem_statement` and the pristine bodies of whatever the caller's
-`sources` dict holds, changed source files and their one-hop pristine
-imports alike, are structurally the only inputs a candidate's prompt can
-carry.
+shortfall. The top-up carries the same two inputs as the first call:
+`problem_statement`, and whatever the caller's `sources` dict holds, changed
+source files and their one-hop pristine imports alike.
 
 The prompt carries exactly two things: `problem_statement`, and the pristine
 bodies of whatever the caller put in `sources`. `build_testgen_prompt` has no
-other parameter, so nothing else can arrive through this function. That is a
-statement about this function, not a holdout guarantee over the pipeline: the
-guarantee holds only while every caller's `sources` dict is itself clean, and
-in the wave A eval sweep one caller's was not (`cli.py` built the dict from
-the candidate diff's changed files with no `src_dirs` filter, so two runs put
-repo test-file bodies in front of the model). The filter now lives at that
-call site and an end-to-end test drives the real path to pin it. A new caller
+other parameter, so nothing else can arrive through this function. The
+guarantee is about this function's signature. The pipeline's guarantee
+depends on every caller's `sources` dict being clean, and in the wave A eval
+sweep one caller's was not (`cli.py` built the dict from the candidate
+diff's changed files with no `src_dirs` filter, so two runs put repo
+test-file bodies in front of the model). The filter now lives at that call
+site and an end-to-end test drives the real path to pin it. A new caller
 owes the same filter; this signature will not enforce it.
 
 `screen_imports` is rung 2 of the promotion ladder, run host-side before any
@@ -28,10 +25,11 @@ container work: a candidate may import the standard library
 (`sys.stdlib_module_names`), `pytest`, and the package(s) under
 `spec.environment.src_dirs`, nothing else. `generate_candidates` derives
 that allowed set from `src_dirs` by basename alone (`"src/click/"` ->
-`"click"`) since this module does no file I/O and cannot list a pristine
-tree; the ladder's own precise derivation, by directory listing on a real
-materialized tree, is task 6's job and supersedes this heuristic wherever
-the two would disagree.
+`"click"`), a derivation that does no file I/O and cannot list a pristine
+tree, even though this module now does file I/O elsewhere
+(`one_hop_sources`); the ladder's own precise derivation, by directory
+listing on a real materialized tree, is task 6's job and supersedes this
+heuristic wherever the two would disagree.
 
 A block can fail before the ladder in three ways, two of which share a rung.
 A block that does not parse as Python (`ast.parse` raises `SyntaxError`)

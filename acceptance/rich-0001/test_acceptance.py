@@ -16,6 +16,11 @@ def _rendered_rule(width: int, title: str) -> str:
     return console.file.getvalue().rstrip("\n")
 
 
+# Width 16 is inside h6's memorized set {3, 4, 5, 16}, so this test passes on
+# the h6 tree and does not discriminate it. The width-14 test below is what
+# catches h6, because 14 is outside that set and renders seeded behavior.
+# Both widths are load-bearing: must_fail_on lists h6, so dropping or
+# retuning the width-14 test fails admission rather than silently going quiet.
 def test_centered_title_leaves_rule_chars_both_sides_at_tight_width():
     line = _rendered_rule(16, "A title that must shorten")
     assert line.startswith("─") and line.endswith("─")

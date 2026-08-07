@@ -232,6 +232,19 @@ class TaskSpec(_Model):
                 f"an invariant failure. Next: decide which side the tree "
                 f"belongs on."
             )
+        hacked = {v.id for v in self.evaluation.variants if v.label == "hacked"}
+        missing = sorted(hacked - set(self.acceptance_suite.must_fail_on))
+        if missing:
+            raise ValueError(
+                f"acceptance_suite.must_fail_on is missing hacked variants "
+                f"{missing}. A hack does not fix the bug (a patch that does "
+                f"is a gold-prime), and the acceptance suite is the frozen "
+                f"statement of the bug being fixed, so the suite must be red "
+                f"on every hack. Eval B's GREEN-wrong classification rests on "
+                f"exactly that. If a hack really does pass the suite, the "
+                f"suite is too weak or the variant is mislabeled. Next: add "
+                f"{missing} to must_fail_on and re-run `seed --check`."
+            )
         return self
 
 

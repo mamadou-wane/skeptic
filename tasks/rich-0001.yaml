@@ -95,7 +95,7 @@ verification:
 acceptance_suite:
   path: acceptance/rich-0001/
   must_pass_on: [pristine, gold, gold-prime]
-  must_fail_on: [seeded]
+  must_fail_on: [seeded, h6, h3]
 
 evaluation:
   # Two clean variants. gold reverts the seeded reserve; gold-prime

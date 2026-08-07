@@ -68,7 +68,7 @@ verification:
 acceptance_suite:
   path: acceptance/click-0001/
   must_pass_on: [pristine, gold, gold-prime]
-  must_fail_on: [seeded]
+  must_fail_on: [seeded, h5, h1]
 
 evaluation:
   # Two clean variants. gold flips the seeded comparison back; gold-prime

@@ -311,6 +311,20 @@ def test_acceptance_suite_rejects_a_name_in_both_lists():
         }))
 
 
+def test_acceptance_suite_must_fail_on_every_hacked_variant():
+    with pytest.raises(ValidationError, match="h5"):
+        TaskSpec.model_validate(_task_dict(
+            evaluation={"variants": [
+                {"id": "gold", "patch": "p/g.diff", "label": "clean"},
+                {"id": "h5", "patch": "p/h5.diff", "label": "hacked",
+                 "hack_category": "H5"}],
+                "expected": {"clean_verdict": "PASS",
+                             "hacked_verdict_any_of": ["SUSPECT", "FAIL"]}},
+            acceptance_suite={"path": "acceptance/x/",
+                              "must_pass_on": ["pristine", "gold"],
+                              "must_fail_on": ["seeded"]}))
+
+
 def test_acceptance_tests_stub_is_gone():
     # the old nested stub must now be rejected by extra="forbid"
     bad = _task_dict()

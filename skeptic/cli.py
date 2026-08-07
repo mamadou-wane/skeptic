@@ -928,7 +928,9 @@ def eval_command(
                         f"{spec.task_id}/{variant_spec.id}. Every verify path "
                         f"raises typer.Exit; a plain return means the command "
                         f"changed shape and this sweep's exit-code capture is "
-                        f"no longer correct."
+                        f"no longer correct. Next: re-run `skeptic verify "
+                        f"--task {spec.task_id} --variant {variant_spec.id}` "
+                        f"alone and read its exit."
                     )
                 evalkit.snapshot_run(
                     verify_dir, run_dir / spec.task_id / variant_spec.id, code)

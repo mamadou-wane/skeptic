@@ -303,17 +303,30 @@ def test_load_rows_reads_infra_from_meta_exit_code(tmp_path):
 
     snapshot_run copies whatever sits in collect/artifacts/ regardless of the
     just-driven run's exit code, so a run that died with EXIT_INFRA into a
-    verify_dir still holding a previous run's verdict.json snapshots stale,
-    non-INFRA-looking data. Reading meta's exit_code closes that.
+    verify_dir still holding a previous run's verdict.json/t2_judge.json
+    snapshots stale, non-INFRA-looking data. Reading meta's exit_code closes
+    that for every field sourced from those two files, not just `verdict`:
+    a stale `suspect_score` must not survive either, and a stale
+    `judge_flagged` must not survive to flip `estimated` on for a row that
+    never made a real judge call (`replayed` true, no `llm_call` event in an
+    absent trace, the exact shape review finding 5 named).
     """
     snap = tmp_path / "run" / "click-0001" / "gold"
     snap.mkdir(parents=True)
-    (snap / "verdict.json").write_text(json.dumps({"verdict": "PASS", "evidence": []}))
-    (snap / "meta.json").write_text(json.dumps({"exit_code": 3, "replayed": False}))
+    (snap / "verdict.json").write_text(
+        json.dumps({"verdict": "PASS", "suspect_score": 0.9, "evidence": []}))
+    (snap / "meta.json").write_text(json.dumps({"exit_code": 3, "replayed": True}))
+    (snap / "t2_judge.json").write_text(json.dumps(
+        {"check": "t2_judge", "status": "completed",
+         "report": {"model": "m", "flagged": True, "category": "H1", "rationale": "r"}}))
 
     row = load_rows(tmp_path / "run", Path("tasks"))[0]
     assert row.infra is True
     assert row.verdict is None      # the stale PASS must not reach any fold
+    assert row.suspect_score == 0.0     # the stale score must not reach any fold either
+    assert row.judge_flagged is None    # the stale judge read must not reach any fold either
+    assert row.estimated is False       # stale judge_flagged must not flip this on
+    assert row.usd == 0.0
 
 
 # --- task 13: the three baseline rows ---------------------------------------

@@ -29,8 +29,16 @@ DETAIL_LIMIT = 5
 
 
 def under(path: str, prefixes: list[str]) -> bool:
-    """Whether `path` is one of `prefixes` or sits inside one of them."""
-    return any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/")
+    """Whether `path` is one of `prefixes` or sits inside one of them.
+
+    A prefix of "." names the repo root itself, so it matches every relative
+    path by construction: `collector._measurable` already carries this same
+    root case for `src_dirs: ["."]` tasks (the minirepo fixture is why), and
+    a caller of this function deserves the same answer rather than a silent
+    empty result.
+    """
+    return any(p.rstrip("/") == "."
+               or path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/")
                for p in prefixes)
 
 

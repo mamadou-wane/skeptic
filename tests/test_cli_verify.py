@@ -907,6 +907,62 @@ def test_testgen_prompt_never_sees_a_changed_test_file(monkeypatch, tmp_path):
     assert "src/click/target.py" in seen
 
 
+def test_one_hop_sources_ignores_a_held_out_test_files_own_imports(monkeypatch, tmp_path):
+    """The `one_hop_sources` half of the holdout fix: cli.py hands it
+    `src_changed`, not the raw `changed_files`.
+
+    `one_hop_sources`'s own resolver already refuses to return a `tests/`
+    path (bounded by `src_dirs` on both branches), so a held-out test file
+    with no imports of its own, the shape the sibling
+    `test_testgen_prompt_never_sees_a_changed_test_file` uses, cannot tell
+    filtered from unfiltered apart: revert cli.py's `one_hop_sources` call
+    back to the raw list and that test still passes. This one gives the
+    held-out test file an import of a real `src_dirs` module nothing else
+    reaches, so the observable difference is the module's presence in
+    `sources`, not its own body: unfiltered, the test file's AST seeds the
+    one-hop walk and the module leaks in; filtered, the test file is never
+    parsed and the module never surfaces.
+    """
+    import dataclasses
+
+    from skeptic import workspace
+
+    seen = {}
+
+    def fake_generate(client, spec, sources, trace):
+        seen.update(sources)
+        return (), {"model": "fake", "system": "", "prompt": "", "responses": []}
+
+    def fake_materialize(repo_dir, commit, dest):
+        _write(dest, "src/click/target.py", "def f():\n    return 1\n")
+        _write(dest, "src/click/test_only_target.py", "TEST_ONLY = 1\n")
+        _write(dest, "tests/test_target.py",
+               "import click.test_only_target\n\n\ndef test_f():\n    pass\n")
+        return dest
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    pair = pair.model_copy(update={
+        "candidate_diff": dataclasses.replace(
+            pair.candidate_diff,
+            changed_files=["src/click/target.py", "tests/test_target.py"]),
+    })
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    _fake_advtests_and_judge(monkeypatch)
+    monkeypatch.setattr(cli, "generate_candidates", fake_generate)
+    monkeypatch.setattr(workspace, "materialize", fake_materialize)
+
+    workdir = tmp_path.resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--profile", "paid", "--yes",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert seen, "the paid lane never reached testgen; the harness is wrong"
+    assert "src/click/test_only_target.py" not in seen
+
+
 def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypatch):
     """The amended judge-io-artifact contract (DECISIONS row 132's flagged
     gap): `t2_judge_io.json` exists after a faked paid run and carries

@@ -187,6 +187,7 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
 
             verdict_data = json.loads(verdict_path.read_text()) if verdict_path.is_file() else {}
             verdict = verdict_data.get("verdict")
+            suspect_score = verdict_data.get("suspect_score", 0.0)
             evidence = verdict_data.get("evidence", [])
             top1 = evidence[0]["category"] if evidence else None
             anywhere = frozenset(e["category"] for e in evidence)
@@ -209,9 +210,13 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
             # An INFRA exit means the artifacts in this snapshot may belong to
             # a previous run of the same pair (snapshot_run copies whatever
             # collect/artifacts/ holds, and nothing clears it between drives).
-            # Drop the payload rather than letting a stale PASS into a fold.
+            # Drop every field sourced from a verdict-shaped snapshot file
+            # rather than letting a stale PASS, score, or judge flag into a
+            # fold; judge_flagged=None also keeps `estimated` below from
+            # reading a stale judge call as a real one.
             if meta.get("exit_code") == INFRA_EXIT_CODE:
-                verdict, top1, anywhere = None, None, frozenset()
+                verdict, top1, anywhere, suspect_score, judge_flagged = (
+                    None, None, frozenset(), 0.0, None)
 
             prev_path = variant_dir / "trace.prev.jsonl"
             trace_path = variant_dir / "trace.jsonl"
@@ -233,7 +238,7 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
             rows.append(EvalRow(
                 task_id=task_dir.name, variant=variant_dir.name,
                 label=variant_spec.label, hack_category=variant_spec.hack_category,
-                verdict=verdict, suspect_score=verdict_data.get("suspect_score", 0.0),
+                verdict=verdict, suspect_score=suspect_score,
                 top1=top1, anywhere=anywhere, fix_verified=fix_verified,
                 judge_flagged=judge_flagged, usd=usd, dur_ms=dur_ms,
                 replayed=replayed, estimated=estimated, infra=verdict is None,

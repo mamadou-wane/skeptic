@@ -931,11 +931,18 @@ def eval_command(
         write_manifest(run_dir / "manifest.json", manifest)
         write_manifest(out / "manifest.json", manifest)
 
+        rows = evalkit.load_rows(run_dir, tasks_dir)
+        baselines = [evalkit.baseline_always_suspect(rows),
+                     evalkit.baseline_suite_green_only(rows),
+                     evalkit.baseline_judge_alone(rows)]
+        table_path = run_dir / "table.md"
+        table_path.write_text(evalkit.render_table(rows, baselines))
+
         typer.echo(f"{n_runs} runs · {len(infra)} INFRA")
         typer.echo(f"run dir: {run_dir}")
         if infra:
             typer.echo(f"INFRA: {', '.join(infra)}")
-        typer.echo("Next: render the table from the run dir.")
+        typer.echo(f"table: {table_path}")
         raise typer.Exit(EXIT_INFRA if infra else EXIT_OK)
     except SkepticInfraError as exc:
         typer.echo(f"INFRA ERROR: {exc}")

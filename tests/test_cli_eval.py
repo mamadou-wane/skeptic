@@ -29,6 +29,26 @@ def test_eval_command_sweeps_every_variant_and_writes_manifest(monkeypatch, tmp_
     assert (run_dirs[0] / "click-0001" / "gold" / "verdict.json").is_file()
 
 
+def test_eval_writes_the_table_beside_the_snapshots(monkeypatch, tmp_path):
+    def fake_verify(**kw):
+        write_fake_run(tmp_path, kw["task"], kw["variant"])
+        raise typer.Exit(0)
+
+    monkeypatch.setattr("skeptic.cli.verify", fake_verify)
+    result = runner.invoke(app, ["eval", "--tasks", "click-0001",
+                                 "--profile", "deterministic",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")])
+    assert result.exit_code == 0, result.output
+    run_dir = next((tmp_path / "evals" / "runs").iterdir())
+    table = (run_dir / "table.md").read_text()
+    assert "| detection (lenient) |" in table
+    assert "| always-SUSPECT |" in table
+    assert str(run_dir / "table.md") in result.output
+    assert "tasks 12-13" not in result.output
+    assert "render the table from the run dir" not in result.output
+
+
 def test_eval_command_records_infra_and_exits_3(monkeypatch, tmp_path):
     monkeypatch.setattr("skeptic.cli.verify",
                         lambda **kw: (_ for _ in ()).throw(typer.Exit(3)))
@@ -38,6 +58,10 @@ def test_eval_command_records_infra_and_exits_3(monkeypatch, tmp_path):
                                  "--out", str(tmp_path / "evals")])
     assert result.exit_code == 3
     assert "INFRA" in result.output
+    run_dir = next((tmp_path / "evals" / "runs").iterdir())
+    table = (run_dir / "table.md").read_text()
+    assert "INFRA: 4" in table
+    assert str(run_dir / "table.md") in result.output
 
 
 # --- the paid preflight (review finding 3): pure arithmetic and

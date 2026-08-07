@@ -452,3 +452,23 @@ def test_render_table_with_baselines_keeps_task_12_content():
     assert "INFRA: 1" in table
     assert "| always-SUSPECT | 3/3 | 0/3 |" in table
     assert "| suite-green-only | 0/3 | 0/3 |" in table
+
+
+def test_render_table_byte_matches_the_committed_wave_a_table():
+    """`evals/v1/runs/eval-20260806-215743/table.md` was hand-rendered from
+    exactly `load_rows` plus the three `baseline_*` calls (M5 wave A, task
+    13). Task 10 makes `skeptic eval` write this same table at sweep end;
+    this pins that a command-written table for the same run dir reproduces
+    the hand-rendered one verbatim up to its hand-appended `## Notes`
+    section, which is prose about this specific run that no renderer can
+    know (DECISIONS row for task 10). Read-only against evals/: nothing
+    under evals/ is written or modified here."""
+    run_dir = Path("evals/v1/runs/eval-20260806-215743")
+    rows = load_rows(run_dir, Path("tasks"))
+    baselines = [baseline_always_suspect(rows), baseline_suite_green_only(rows),
+                 baseline_judge_alone(rows)]
+    rendered = render_table(rows, baselines)
+
+    committed = (run_dir / "table.md").read_text()
+    pre_notes, _, _ = committed.partition("## Notes")
+    assert rendered == pre_notes.rstrip("\n")

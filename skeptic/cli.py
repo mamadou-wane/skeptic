@@ -10,7 +10,7 @@ from skeptic.errors import SkepticInfraError
 from skeptic.judge import judge_diff
 from skeptic.llm import SKEPTIC_MODEL
 from skeptic.spec import TaskSpec, VariantSpec
-from skeptic.testgen import generate_candidates, one_hop_sources
+from skeptic.testgen import generate_candidates, one_hop_sources, read_source
 
 EXIT_OK = 0
 EXIT_SUSPECT = 1
@@ -727,7 +727,7 @@ def verify(
                         if under(path, spec.environment.src_dirs)
                     ]
                     sources = {
-                        path: (sources_tree / path).read_text()
+                        path: read_source(sources_tree / path)
                         for path in src_changed
                         if (sources_tree / path).is_file()
                     }

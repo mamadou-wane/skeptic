@@ -109,6 +109,20 @@ def build_testgen_prompt(problem_statement: str, sources: dict[str, str]) -> str
     )
 
 
+def read_source(path: Path) -> str:
+    """Read a target-repo source file for the prompt, never raising on bytes.
+
+    Target repos are not ours and a single latin-1 byte in a comment is not a
+    reason to lose the whole paid lane for a pair: the decode error lands in
+    cli's `except Exception` around the advtests block, which degrades to no
+    candidates, no evidence, and no io artifact to inspect. `errors="replace"`
+    costs a replacement character in the prompt text and shifts the cap's
+    character arithmetic by at most one char per bad byte, both cheap next to
+    a silently empty check.
+    """
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
 def one_hop_sources(tree_root: Path, changed_files: list[str], src_dirs: list[str],
                     cap_chars: int = 120_000) -> dict[str, str]:
     """Pristine one-hop imports of the changed files, smallest-first under a cap.
@@ -164,7 +178,7 @@ def one_hop_sources(tree_root: Path, changed_files: list[str], src_dirs: list[st
         if not source_path.is_file():
             continue
         try:
-            tree = ast.parse(source_path.read_text())
+            tree = ast.parse(read_source(source_path))
         except SyntaxError:
             continue
         for node in ast.walk(tree):
@@ -185,11 +199,11 @@ def one_hop_sources(tree_root: Path, changed_files: list[str], src_dirs: list[st
                 continue
             found.update(h for h in hops if h is not None and str(h) not in changed)
 
-    budget = cap_chars - sum(len((tree_root / f).read_text()) for f in changed
+    budget = cap_chars - sum(len(read_source(tree_root / f)) for f in changed
                              if (tree_root / f).is_file())
     out: dict[str, str] = {}
     for path in sorted(found, key=lambda p: ((tree_root / p).stat().st_size, str(p))):
-        body = (tree_root / path).read_text()
+        body = read_source(tree_root / path)
         if len(body) > budget:
             continue
         out[str(path)] = body

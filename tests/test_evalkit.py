@@ -7,6 +7,7 @@ import pytest
 from skeptic.evalkit import (
     BaselineRow,
     EvalRow,
+    _is_na_stub,
     attribution,
     baseline_always_suspect,
     baseline_judge_alone,
@@ -62,6 +63,12 @@ def test_snapshot_skips_na_stub_t2_judge_but_keeps_a_real_one(tmp_path):
         "report": {"model": "m", "flagged": False, "category": None, "rationale": "clean"}})
     snapshot_run(real_dir, tmp_path / "snap-real")
     assert (tmp_path / "snap-real" / "t2_judge.json").is_file()
+
+
+def test_is_na_stub_treats_undecodable_as_not_a_stub(tmp_path):
+    path = tmp_path / "t2_judge.json"
+    path.write_bytes(b'{"status": "not_applicable", "x": "\xff"}')
+    assert _is_na_stub(path) is False  # unreadable artifact still copies
 
 
 def test_build_manifest_shape_and_image_id_fallback(tmp_path):

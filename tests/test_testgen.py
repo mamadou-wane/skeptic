@@ -504,3 +504,14 @@ def test_one_hop_returns_empty_when_changed_files_alone_exceed_the_cap(tmp_path)
     out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"], cap_chars=10)
 
     assert out == {}
+
+
+def test_one_hop_survives_a_non_utf8_source(tmp_path):
+    (tmp_path / "src/pkg").mkdir(parents=True)
+    (tmp_path / "src/pkg/a.py").write_bytes(b"import pkg.b\n# caf\xe9\n")
+    (tmp_path / "src/pkg/b.py").write_bytes(b"B = 1  # \xff\n")
+
+    out = one_hop_sources(tmp_path, ["src/pkg/a.py"], ["src/pkg/"])
+
+    assert set(out) == {"src/pkg/b.py"}
+    assert "B = 1" in out["src/pkg/b.py"]

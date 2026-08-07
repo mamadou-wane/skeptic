@@ -50,10 +50,11 @@ def _is_na_stub(path: Path) -> bool:
     applies generically to whatever `SNAPSHOT_ARTIFACTS` entry it is handed
     rather than special-casing the filename. Unparseable JSON reads as
     "not a stub": a corrupt artifact is still evidence and still copies.
+    Undecodable bytes reach the same conclusion by the same argument.
     """
     try:
         payload = json.loads(path.read_text())
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return False
     return isinstance(payload, dict) and payload.get("status") == "not_applicable"
 

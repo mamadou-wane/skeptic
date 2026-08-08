@@ -9,6 +9,7 @@ from skeptic.collector import observe_advtests
 from skeptic.errors import SkepticInfraError
 from skeptic.judge import judge_diff
 from skeptic.llm import SKEPTIC_MODEL
+from skeptic.seedcheck import SuiteResult
 from skeptic.spec import TaskSpec, VariantSpec
 from skeptic.testgen import generate_candidates, one_hop_sources, read_source
 
@@ -238,6 +239,18 @@ def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str,
     return config_hash(payload)
 
 
+def _build_dir(workdir: Path, task_id: str, attempt: int) -> Path:
+    """`workdir/<task>/build`, or its `attempt-<n>` subdirectory above
+    attempt 1 (task 15). Shared by `build()` and `build-arm` (task 17): the
+    arm has to compute this same path before calling `build()`, to rotate
+    that attempt's trace ahead of the call, and after, to read its
+    `result.json`, so one function is what keeps the two from drifting
+    apart on this arithmetic.
+    """
+    base = workdir / task_id / "build"
+    return base if attempt == 1 else base / f"attempt-{attempt}"
+
+
 @app.command()
 def build(
     task: str = typer.Option(..., "--task"),
@@ -319,9 +332,7 @@ def build(
             raise typer.Exit(EXIT_INFRA)
 
         workdir = workdir.resolve()
-        build_dir = workdir / spec.task_id / "build"
-        if attempt != 1:
-            build_dir = build_dir / f"attempt-{attempt}"
+        build_dir = _build_dir(workdir, spec.task_id, attempt)
         build_dir.mkdir(parents=True, exist_ok=True)
         repo = clone_pinned(spec.repo.url, spec.repo.commit,
                             workdir / spec.task_id / "repo-cache")
@@ -438,6 +449,247 @@ def build(
     except VenvBuildRefused as exc:
         typer.echo(f"REFUSED: {exc}")
         raise typer.Exit(EXIT_INFRA) from exc
+    except SkepticInfraError as exc:
+        typer.echo(f"INFRA ERROR: {exc}")
+        raise typer.Exit(EXIT_INFRA) from exc
+
+
+def _acceptance_venv_dir(workdir: Path, task_id: str) -> Path:
+    """The venv `seed --check` builds for a task's `seeded` workspace
+    (`cli.py`'s own `seed` command: `task_workdir / "venvs" / workspace.name`,
+    here with `workspace.name` fixed to `"seeded"`, the tree invariant 4
+    always materializes regardless of whether the task declares an
+    acceptance suite). `build-arm` reuses this venv rather than building a
+    fresh one per attempt: it is verify-only work (running a test suite
+    against a materialized tree), the same shape admission itself runs.
+    """
+    return workdir / task_id / "venvs" / "seeded"
+
+
+def _run_attempt_acceptance(
+    spec: TaskSpec, result: dict, workdir: Path, attempt: int
+) -> SuiteResult:
+    """Classify one green, non-empty BUILD attempt's candidate against its
+    task's acceptance suite, on a FRESH materialized tree.
+
+    Never the BUILD workspace: `candidate.EXCLUDE_GLOBS` does not match
+    `.skeptic-acceptance`, so a copy landing there would leak into the
+    candidate diff the next time `extract_candidate` ran. Instead: fresh
+    `materialize`, apply the seed patch, apply the candidate diff
+    (`workspace.apply_candidate`), copy the suite in, run
+    (`seedcheck.run_acceptance`) -- the same sequence VERIFY uses to judge a
+    variant, with the seed's own tree materialized once and the extracted
+    diff played back onto it.
+
+    Runs on a venv runner, not the docker session BUILD itself ran in
+    (`run_suite`'s protocol is `SandboxRunnerLike.exec`, which only
+    `VenvRunner` satisfies today; a docker-side acceptance run would need a
+    `RunContainer` script in the BUILD/VERIFY mold). The tradeoff --
+    classification runs outside the container the candidate was built in --
+    is recorded in DECISIONS. The venv itself is admission's own, reused
+    rather than rebuilt per attempt (`_acceptance_venv_dir`); a task this
+    machine has never run `seed --check` against, or one declaring no
+    `acceptance_suite` at all, raises `SkepticInfraError`, which the caller
+    catches per attempt so a missing venv on one task does not end the arm.
+    """
+    import shutil
+
+    from skeptic.sandbox import VenvRunner
+    from skeptic.seedcheck import run_acceptance
+    from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
+
+    if spec.acceptance_suite is None:
+        raise SkepticInfraError(
+            f"{spec.task_id} declares no acceptance_suite: build-arm's "
+            f"GREEN-correct/GREEN-wrong split needs one to tell a real fix "
+            f"from a build that only made the seeded suite pass (task 7's "
+            f"invariant). Next: add acceptance_suite to "
+            f"tasks/{spec.task_id}.yaml."
+        )
+
+    task_workdir = workdir / spec.task_id
+    venv_dir = _acceptance_venv_dir(workdir, spec.task_id)
+    if not venv_dir.is_dir():
+        raise SkepticInfraError(
+            f"no admission venv at {venv_dir} for {spec.task_id}: build-arm "
+            f"classifies acceptance on the venv `seed --check` builds for "
+            f"the seeded tree, and this machine has never run it for this "
+            f"task. Next: `skeptic seed --task {spec.task_id} --check`, "
+            f"then re-run `skeptic build-arm`."
+        )
+
+    tree = task_workdir / "build-arm-classify" / f"attempt-{attempt}" / "seeded"
+    if tree.parent.exists():
+        shutil.rmtree(tree.parent)
+    repo = clone_pinned(spec.repo.url, spec.repo.commit, task_workdir / "repo-cache")
+    materialize(repo, spec.repo.commit, tree)
+    apply_patch(tree, Path(spec.seed.bug_patch))
+    apply_candidate(tree, Path(result["candidate"]))
+
+    def runner_factory(workspace: Path) -> VenvRunner:
+        venv_runner = VenvRunner(workspace=workspace, venv_dir=venv_dir)
+        venv_runner.setup(spec.environment.install)
+        return venv_runner
+
+    return run_acceptance(
+        tree, Path(spec.acceptance_suite.path), runner_factory,
+        spec.environment.timeout_s, spec.seed.quarantine,
+    )
+
+
+@app.command(name="build-arm")
+def build_arm(
+    name: str = typer.Option(..., "--name", help="Arm name, e.g. base or tight-budget."),
+    tasks: str = typer.Option(..., "--tasks", help="Comma-separated task ids."),
+    attempts: int = typer.Option(..., "--attempts", help="Attempts to run per task."),
+    model: str = typer.Option("claude-opus-5", "--model"),
+    tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
+    workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
+    out: Path = typer.Option(Path("evals/v1"), "--out"),  # noqa: B008
+    yes: bool = typer.Option(False, "--yes", help="Skip the arm-wide cost confirmation."),
+) -> None:
+    """Drive `build` across every (task, attempt) pair for one arm and
+    classify each attempt on a fresh tree (Eval B's base arm and, later,
+    M6's pressure arms)."""
+    import dataclasses
+    import json
+    import os
+    import shutil
+
+    from skeptic import evalkit
+    from skeptic.spec import find_task
+
+    try:
+        if attempts < 1:
+            typer.echo(
+                f"--attempts must be >= 1, got {attempts}. Next: pass "
+                f"--attempts 1 or higher."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        specs = [find_task(task_id.strip(), tasks_dir) for task_id in tasks.split(",")]
+
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            typer.echo(
+                "ANTHROPIC_API_KEY is not set. Each build-arm attempt calls "
+                "the Anthropic API from the host (the key never enters the "
+                "sandbox). Next: export ANTHROPIC_API_KEY and re-run."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        if model not in PRICING:
+            typer.echo(
+                f"No pricing entry for {model!r}; the cost ceiling cannot be "
+                f"enforced. Next: add a sourced price to PRICING in "
+                f"skeptic/builder.py."
+            )
+            raise typer.Exit(EXIT_INFRA)
+
+        workdir = workdir.resolve()
+        out = out.resolve()
+        n_builds = len(specs) * attempts
+        est_max = attempts * sum(spec.constraints.cost_ceiling_usd for spec in specs)
+        typer.echo(
+            f"Build arm: name={name} · {len(specs)} tasks x {attempts} "
+            f"attempts = {n_builds} builds · model={model} · estimated max "
+            f"cost ${est_max:.2f} (each task's own cost_ceiling_usd x "
+            f"{attempts} attempts). This one confirm covers the whole arm; "
+            f"each build's own confirm is skipped."
+        )
+        if not yes and not typer.confirm("Proceed (this spends real API money)?"):
+            typer.echo(
+                "Declined: the arm was not started, so no API spend "
+                "happened. Skeptic confirms once before a build-arm sweep "
+                f"unless --yes is passed. Next: re-run `skeptic build-arm "
+                f"--name {name} --tasks {tasks} --attempts {attempts} "
+                f"--yes` once you're ready to spend."
+            )
+            raise typer.Exit(EXIT_INFRA)
+
+        run_id = evalkit.arm_run_id(name)
+        run_dir = out / "arms" / run_id
+        rows: list[evalkit.AttemptRow] = []
+        infra: list[str] = []
+
+        for spec in specs:
+            for attempt in range(1, attempts + 1):
+                label = f"{spec.task_id}/attempt-{attempt}"
+                build_dir = _build_dir(workdir, spec.task_id, attempt)
+                evalkit.rotate_trace(build_dir)
+                try:
+                    build(task=spec.task_id, model=model, tasks_dir=tasks_dir,
+                          workdir=workdir, runner="docker", yes=True,
+                          attempt=attempt)
+                except typer.Exit as exc:
+                    code = exc.exit_code
+                else:  # pragma: no cover - build always exits
+                    raise SkepticInfraError(
+                        f"build returned without exiting for {label}. Every "
+                        f"build path raises typer.Exit; a plain return "
+                        f"means the command changed shape and this arm's "
+                        f"exit-code capture is no longer correct. Next: "
+                        f"re-run `skeptic build --task {spec.task_id} "
+                        f"--attempt {attempt}` alone and read its exit."
+                    )
+
+                attempt_dir = run_dir / spec.task_id / f"attempt-{attempt}"
+                meta = evalkit.snapshot_run(build_dir, attempt_dir, exit_code=code)
+                result_path = build_dir / "result.json"
+
+                if code == EXIT_INFRA or not result_path.is_file():
+                    typer.echo(f"  INFRA  {label}: build exited {code} with "
+                               f"no result.json to classify.")
+                    infra.append(label)
+                    row = evalkit.AttemptRow(
+                        task_id=spec.task_id, attempt=attempt,
+                        classification="INFRA_ERROR", usd=0.0, usd_cache_gap=0.0,
+                        iterations=0, stop_reason="infra", cache_read_tokens=0,
+                        cache_creation_tokens=0, estimated=False,
+                    )
+                    rows.append(row)
+                    (attempt_dir / "classification.json").write_text(
+                        json.dumps(dataclasses.asdict(row), indent=2, sort_keys=True) + "\n")
+                    continue
+
+                result = json.loads(result_path.read_text())
+                shutil.copy2(result_path, attempt_dir / "result.json")
+
+                acceptance = None
+                if result.get("green") and not result.get("is_empty"):
+                    try:
+                        acceptance = _run_attempt_acceptance(spec, result, workdir, attempt)
+                    except SkepticInfraError as exc:
+                        typer.echo(f"  INFRA  {label}: {exc}")
+
+                classification = evalkit.classify_attempt(result, acceptance)
+                if classification == "INFRA_ERROR":
+                    infra.append(label)
+
+                estimated = meta["replayed"]
+                usd = 0.0 if estimated else result.get("usd", 0.0)
+                usd_cache_gap = 0.0 if estimated else result.get("usd_cache_gap", 0.0)
+
+                row = evalkit.AttemptRow(
+                    task_id=spec.task_id, attempt=attempt,
+                    classification=classification, usd=usd,
+                    usd_cache_gap=usd_cache_gap,
+                    iterations=result.get("iterations", 0),
+                    stop_reason=result.get("stop_reason", ""),
+                    cache_read_tokens=result.get("cache_read_tokens", 0),
+                    cache_creation_tokens=result.get("cache_creation_tokens", 0),
+                    estimated=estimated,
+                )
+                rows.append(row)
+                (attempt_dir / "classification.json").write_text(
+                    json.dumps(dataclasses.asdict(row), indent=2, sort_keys=True) + "\n")
+
+        table_path = run_dir / "arm.md"
+        table_path.write_text(evalkit.render_arm_table(rows))
+
+        typer.echo(f"{len(rows)} attempts · {len(infra)} INFRA")
+        typer.echo(f"run dir: {run_dir}")
+        if infra:
+            typer.echo(f"INFRA: {', '.join(infra)}")
+        typer.echo(f"table: {table_path}")
+        raise typer.Exit(EXIT_INFRA if infra else EXIT_OK)
     except SkepticInfraError as exc:
         typer.echo(f"INFRA ERROR: {exc}")
         raise typer.Exit(EXIT_INFRA) from exc

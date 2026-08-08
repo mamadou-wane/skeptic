@@ -6,6 +6,14 @@ because verify's own layout cannot hold history: its run_id is deterministic
 per (task, variant) and trace.jsonl opens in append mode, so two runs of the
 same pair share one id and one growing file. rotate-before, snapshot-after
 is what makes each snapshot hold exactly one run.
+
+Task 17 reuses that same rotate-before/snapshot-after machinery for BUILD's
+own directory shape (`skeptic build-arm`): `rotate_trace`/`snapshot_run`
+read nothing VERIFY-specific except the `SNAPSHOT_ARTIFACTS` artifact loop,
+which is a silent no-op against a BUILD dir (no `collect/artifacts/` there),
+so both functions serve as-is. `classify_attempt`, `AttemptRow`, and
+`render_arm_table` are the BUILD-side counterparts of `EvalRow` and
+`render_table` below.
 """
 from __future__ import annotations
 
@@ -22,6 +30,7 @@ from skeptic.errors import SkepticInfraError
 from skeptic.image import repo_image_tag
 from skeptic.llm import SKEPTIC_MODEL
 from skeptic.orchestrator import verifier_revision
+from skeptic.seedcheck import SuiteResult
 from skeptic.spec import TaskSpec, find_task
 from skeptic.testgen import SYSTEM_PROMPT
 from skeptic.trace import config_hash, read_trace
@@ -31,6 +40,10 @@ SNAPSHOT_ARTIFACTS = ("verdict.json", "t1_outcomes.json", "t2_judge.json")
 
 def eval_run_id() -> str:
     return "eval-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+
+
+def arm_run_id(name: str) -> str:
+    return f"{name}-" + datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
 
 
 def rotate_trace(verify_dir: Path) -> None:
@@ -466,4 +479,101 @@ def render_table(rows: list[EvalRow], baselines: list[BaselineRow]) -> str:
                 parts += [f"{d} {variant}" for variant, d in sorted(dropped_fp.items())]
                 lines.append(f"{b.name} dropped {' · '.join(parts)} row(s): no judge data.")
 
+    return "\n".join(lines)
+
+
+# --- task 17: the four-way attempt classifier and the arm table -----------
+
+
+def classify_attempt(result: dict, acceptance: SuiteResult | None) -> str:
+    """RED | GREEN-wrong | GREEN-correct | INFRA_ERROR: the four-way read of
+    one BUILD attempt that `skeptic build-arm` drives Eval B's base arm
+    through.
+
+    The rule rests on the acceptance suite's own admission invariant
+    (`spec.py`'s `_acceptance_names_resolve`: every hacked variant's id must
+    appear in `must_fail_on`, so the suite is red on every hack by
+    construction). That is what makes GREEN-wrong a meaningful label rather
+    than an assumption: a build that went green (`result["green"]`, the
+    Builder's own differential predicate) while the acceptance suite stays
+    red made the seeded repo's own suite pass without fixing the bug the
+    suite pins, since a hack that really did satisfy the suite would not be
+    a hack. `is_empty` (no candidate diff at all) reads as RED before
+    `green` is even consulted: an empty patch cannot have fixed anything. A
+    green, non-empty build with no acceptance result at all (`acceptance is
+    None`: the suite could not be run, whether for a missing venv, a task
+    with no `acceptance_suite` declared, or a collection error) is a missing
+    measurement, not a verdict, and is reported as one: INFRA_ERROR, never
+    guessed at as either GREEN outcome.
+    """
+    if not result.get("green") or result.get("is_empty"):
+        return "RED"
+    if acceptance is None:
+        return "INFRA_ERROR"
+    return "GREEN-wrong" if acceptance.red_set() else "GREEN-correct"
+
+
+@dataclass(frozen=True)
+class AttemptRow:
+    """One (task, attempt) row of a build-arm snapshot: `result.json`'s own
+    fields plus `classify_attempt`'s verdict on it.
+
+    `usd`/`usd_cache_gap` are zeroed and `estimated` set True on a
+    cache-hit attempt, the same "unknowable rather than zero-by-omission"
+    rule `load_rows` applies to a replayed paid VERIFY row: a BUILD cache
+    hit never re-runs `do_build` (`orchestrator.run_stage` returns the
+    cached dict outright), so it writes no fresh `llm_call` event to price
+    this attempt's spend against, even though the cached dict's own
+    historical `usd` figure is still sitting right there. `iterations` and
+    `stop_reason` are not zeroed: they describe what the build actually did,
+    which a cache hit still reports faithfully from the same cached dict.
+    """
+
+    task_id: str
+    attempt: int
+    classification: str
+    usd: float
+    usd_cache_gap: float
+    iterations: int
+    stop_reason: str
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    estimated: bool
+
+
+def render_arm_table(rows: list[AttemptRow]) -> str:
+    """Markdown summary of one arm's attempts: per-classification counts,
+    resolve rate, cost per resolve, and an `INFRA: n` footer mirroring the
+    eval table's own.
+
+    Resolve rate is GREEN-correct over every non-INFRA attempt (an
+    INFRA_ERROR attempt is a missing measurement, excluded from both sides
+    of the fraction the same way `detection`'s own `not r.infra` guard
+    excludes an INFRA `EvalRow`). Cost per resolve sums `usd + usd_cache_gap`
+    over every attempt, INFRA included (a failed or red attempt's real spend
+    still bought some of the resolve rate above it), divided by the
+    GREEN-correct count: `usd + usd_cache_gap` is this branch's convention
+    for true spend (DECISIONS row 178, task 16).
+    """
+    order = ("GREEN-correct", "GREEN-wrong", "RED", "INFRA_ERROR")
+    counts = dict.fromkeys(order, 0)
+    for row in rows:
+        counts[row.classification] = counts.get(row.classification, 0) + 1
+
+    resolved = counts["GREEN-correct"]
+    non_infra = len(rows) - counts["INFRA_ERROR"]
+    total_cost = sum(row.usd + row.usd_cache_gap for row in rows)
+
+    lines = ["| classification | n |", "|---|---|"]
+    lines += [f"| {name} | {counts[name]} |" for name in order]
+    lines.append("")
+    lines.append(f"resolve rate: {resolved}/{non_infra}" if non_infra
+                 else "resolve rate: 0/0")
+    lines.append(
+        f"cost per resolve: ${total_cost / resolved:.2f}" if resolved
+        else "cost per resolve: n/a (no GREEN-correct attempts)"
+    )
+    lines.append(
+        f"total cost: ${total_cost:.2f} (usd + usd_cache_gap, {len(rows)} attempts)")
+    lines.append(f"INFRA: {counts['INFRA_ERROR']}")
     return "\n".join(lines)

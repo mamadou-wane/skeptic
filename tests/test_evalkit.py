@@ -6,24 +6,29 @@ import pytest
 
 from skeptic.errors import SkepticInfraError
 from skeptic.evalkit import (
+    AttemptRow,
     BaselineRow,
     EvalRow,
     _image_id,
     _is_na_stub,
+    arm_run_id,
     attribution,
     baseline_always_suspect,
     baseline_judge_alone,
     baseline_suite_green_only,
     build_manifest,
+    classify_attempt,
     confusion,
     detection,
     false_positives,
     load_rows,
+    render_arm_table,
     render_table,
     rotate_trace,
     snapshot_run,
 )
 from skeptic.image import repo_image_tag
+from skeptic.seedcheck import SuiteResult
 from skeptic.spec import find_task
 from skeptic.trace import read_trace
 from tests.helpers import append_trace, fake_verify_layout, write_fake_artifacts
@@ -514,3 +519,93 @@ def test_render_table_byte_matches_the_committed_wave_a_table():
     committed = (run_dir / "table.md").read_text()
     pre_notes, _, _ = committed.partition("## Notes")
     assert rendered == pre_notes.rstrip("\n")
+
+
+# --- task 17: the four-way attempt classifier and the arm table -----------
+#
+# The brief's own five tests, verbatim (task-17-brief.md step 1).
+
+
+def test_classify_red_when_the_builder_never_went_green():
+    assert classify_attempt({"green": False, "is_empty": False}, None) == "RED"
+
+
+def test_classify_red_on_an_empty_patch():
+    assert classify_attempt({"green": True, "is_empty": True}, None) == "RED"
+
+
+def test_classify_green_correct_when_the_acceptance_suite_passes():
+    assert classify_attempt({"green": True, "is_empty": False},
+                            SuiteResult(outcomes={"acc::t": "passed"},
+                                        collection_errors=0)) == "GREEN-correct"
+
+
+def test_classify_green_wrong_when_the_acceptance_suite_fails():
+    assert classify_attempt({"green": True, "is_empty": False},
+                            SuiteResult(outcomes={"acc::t": "failed"},
+                                        collection_errors=0)) == "GREEN-wrong"
+
+
+def test_classify_infra_when_the_suite_could_not_run():
+    # a green build whose acceptance suite never produced a result is not a
+    # classification, it is a missing measurement
+    assert classify_attempt({"green": True, "is_empty": False}, None) == "INFRA_ERROR"
+
+
+def test_arm_run_id_names_the_arm():
+    assert arm_run_id("base").startswith("base-")
+    assert arm_run_id("tight-budget").startswith("tight-budget-")
+
+
+ATTEMPT_GREEN_CORRECT = AttemptRow(
+    task_id="click-0001", attempt=1, classification="GREEN-correct",
+    usd=0.10, usd_cache_gap=0.02, iterations=4, stop_reason="green",
+    cache_read_tokens=100, cache_creation_tokens=50, estimated=False,
+)
+ATTEMPT_GREEN_WRONG = AttemptRow(
+    task_id="click-0001", attempt=2, classification="GREEN-wrong",
+    usd=0.08, usd_cache_gap=0.01, iterations=3, stop_reason="green",
+    cache_read_tokens=80, cache_creation_tokens=0, estimated=False,
+)
+ATTEMPT_RED = AttemptRow(
+    task_id="rich-0001", attempt=1, classification="RED",
+    usd=0.05, usd_cache_gap=0.0, iterations=4, stop_reason="iteration_cap",
+    cache_read_tokens=0, cache_creation_tokens=0, estimated=False,
+)
+ATTEMPT_INFRA = AttemptRow(
+    task_id="rich-0001", attempt=2, classification="INFRA_ERROR",
+    usd=0.0, usd_cache_gap=0.0, iterations=0, stop_reason="infra",
+    cache_read_tokens=0, cache_creation_tokens=0, estimated=False,
+)
+
+
+def test_render_arm_table_counts_and_resolve_rate():
+    rows = [ATTEMPT_GREEN_CORRECT, ATTEMPT_GREEN_WRONG, ATTEMPT_RED, ATTEMPT_INFRA]
+    table = render_arm_table(rows)
+
+    assert "| GREEN-correct | 1 |" in table
+    assert "| GREEN-wrong | 1 |" in table
+    assert "| RED | 1 |" in table
+    assert "| INFRA_ERROR | 1 |" in table
+    # resolve rate excludes the INFRA attempt from the denominator: 1 of 3
+    assert "resolve rate: 1/3" in table
+    assert "INFRA: 1" in table
+
+
+def test_render_arm_table_cost_per_resolve_sums_usd_and_cache_gap():
+    rows = [ATTEMPT_GREEN_CORRECT, ATTEMPT_GREEN_WRONG]
+    table = render_arm_table(rows)
+    # total = (0.10+0.02) + (0.08+0.01) = 0.21, one resolve (the GREEN-correct row)
+    assert "cost per resolve: $0.21" in table
+
+
+def test_render_arm_table_no_resolves_reads_n_a_not_a_zero_division():
+    rows = [ATTEMPT_GREEN_WRONG, ATTEMPT_RED]
+    table = render_arm_table(rows)
+    assert "cost per resolve: n/a" in table
+
+
+def test_render_arm_table_empty_rows_reads_zero_over_zero():
+    table = render_arm_table([])
+    assert "resolve rate: 0/0" in table
+    assert "cost per resolve: n/a" in table

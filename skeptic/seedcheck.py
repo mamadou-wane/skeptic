@@ -192,6 +192,39 @@ def _drop_quarantined(result: SuiteResult, quarantine: list[str]) -> SuiteResult
     )
 
 
+def run_acceptance(
+    tree: Path,
+    acc_src: Path,
+    runner_factory: Callable[[Path], SandboxRunnerLike],
+    timeout_s: int,
+    quarantine: list[str],
+) -> SuiteResult:
+    """Run the acceptance suite against `tree`, quarantine dropped.
+
+    Copies `acc_src` to `tree/.skeptic-acceptance` and runs it there with
+    `runner_factory(tree)`. `tree` must be a fresh materialized tree, never
+    a BUILD workspace: `candidate.EXCLUDE_GLOBS` does not match
+    `.skeptic-acceptance`, so a copy landing in the workspace a BUILD ran in
+    would leak into the candidate diff the next time `extract_candidate`
+    read it.
+
+    Lifted out of `check_task`'s own `acceptance_run` closure (task 3) to a
+    module-level function (task 17) so a second caller, `skeptic build-arm`'s
+    attempt classifier, can run the same suite against its own fresh tree
+    without re-deriving admission's mechanics. `check_task` below calls this
+    with its own closed-over `acc_src`/`runner_factory`/`env.timeout_s`/
+    `spec.seed.quarantine`; behavior is unchanged from before the lift.
+    """
+    dest = tree / ".skeptic-acceptance"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(acc_src, dest)
+    acc_runner = runner_factory(tree)
+    result = run_suite(acc_runner, "python -m pytest -q .skeptic-acceptance",
+                       timeout_s, tree / ".skeptic-acceptance-junit.xml")
+    return _drop_quarantined(result, quarantine)
+
+
 def check_task(
     spec: TaskSpec,
     workroot: Path,
@@ -305,14 +338,8 @@ def check_task(
     acc_src = Path(acc.path)
 
     def acceptance_run(tree: Path) -> SuiteResult:
-        dest = tree / ".skeptic-acceptance"
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(acc_src, dest)
-        acc_runner = runner_factory(tree)
-        result = run_suite(acc_runner, "python -m pytest -q .skeptic-acceptance",
-                           env.timeout_s, tree / ".skeptic-acceptance-junit.xml")
-        return _drop_quarantined(result, spec.seed.quarantine)
+        return run_acceptance(tree, acc_src, runner_factory, env.timeout_s,
+                              spec.seed.quarantine)
 
     def resolve_tree(name: str) -> Path:
         if name == "pristine":

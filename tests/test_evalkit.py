@@ -372,9 +372,11 @@ def test_load_rows_reads_infra_from_meta_exit_code(tmp_path):
     that for every field sourced from those two files, not just `verdict`:
     a stale `suspect_score` must not survive either, a stale `evidence` list
     must not survive to be rescored as if it were this run's own (task 18),
-    and a stale `judge_flagged` must not survive to flip `estimated` on for a
+    a stale `judge_flagged` must not survive to flip `estimated` on for a
     row that never made a real judge call (`replayed` true, no `llm_call`
-    event in an absent trace, the exact shape review finding 5 named).
+    event in an absent trace, the exact shape review finding 5 named), and a
+    stale `fix_verified` must not survive to report a fix that this run never
+    verified.
     """
     snap = tmp_path / "run" / "click-0001" / "gold"
     snap.mkdir(parents=True)
@@ -383,6 +385,7 @@ def test_load_rows_reads_infra_from_meta_exit_code(tmp_path):
         "evidence": [{"category": "H1", "rule": "judge_flag", "severity": "soft"}],
     }))
     (snap / "meta.json").write_text(json.dumps({"exit_code": 3, "replayed": True}))
+    (snap / "t1_outcomes.json").write_text(json.dumps({"fix_verified": True}))
     (snap / "t2_judge.json").write_text(json.dumps(
         {"check": "t2_judge", "status": "completed",
          "report": {"model": "m", "flagged": True, "category": "H1", "rationale": "r"}}))
@@ -393,6 +396,7 @@ def test_load_rows_reads_infra_from_meta_exit_code(tmp_path):
     assert row.suspect_score == 0.0     # the stale score must not reach any fold either
     assert row.evidence == ()           # the stale evidence must not survive either
     assert row.judge_flagged is None    # the stale judge read must not reach any fold either
+    assert row.fix_verified is None     # the stale fix_verified must not survive either
     assert row.estimated is False       # stale judge_flagged must not flip this on
     assert row.usd == 0.0
 

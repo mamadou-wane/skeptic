@@ -133,6 +133,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from skeptic.checks._util import under
 from skeptic.checks.observations import CoverageReport, ObservationPair, parse_unified_diff
 from skeptic.errors import SkepticInfraError
 
@@ -167,15 +168,6 @@ class Mutant:
     population: Literal["changed", "caller"]
     mutated_source: str                  # full post-mutation file text (ast.unparse), or "" when invalid
     valid: bool                          # compile() succeeded at generation time
-
-
-def _under(path: str, prefixes: list[str]) -> bool:
-    """Whether `path` is one of `prefixes` or sits inside one of them.
-
-    A local copy of `skeptic.checks._util.under`, whose docstring declares it
-    private to `skeptic.checks`; this module lives outside that package.
-    """
-    return any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/") for p in prefixes)
 
 
 def _line_overlaps(span: tuple[int, int], ranges: tuple[tuple[int, int], ...]) -> bool:
@@ -256,7 +248,7 @@ def changed_function_spans(pair: ObservationPair) -> dict[str, tuple[tuple[int, 
     for path, ranges in sorted(diff_spans.items()):
         if not path.endswith(".py") or not ranges:
             continue
-        if _under(path, test_dirs) or Path(path).name == CONFTEST:
+        if under(path, test_dirs) or Path(path).name == CONFTEST:
             continue
         module = _parse_file(pair.candidate.tree, path)
         spans = tuple(sorted(
@@ -331,7 +323,7 @@ def caller_function_spans(
     src_dirs = list(pair.spec.environment.src_dirs)
     result: dict[str, tuple[tuple[int, int], ...]] = {}
     for path in sorted(_src_py_files(pair.candidate.tree, src_dirs)):
-        if _under(path, test_dirs) or Path(path).name == CONFTEST:
+        if under(path, test_dirs) or Path(path).name == CONFTEST:
             continue
         module = _parse_file(pair.candidate.tree, path)
         own_changed = set(changed.get(path, ()))

@@ -6,7 +6,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from skeptic.cli import _build_dir, _run_attempt_acceptance, app
+from skeptic.cli import _build_cache_key, _build_dir, _run_attempt_acceptance, app
 from skeptic.errors import SkepticInfraError
 from skeptic.seedcheck import SuiteResult
 from skeptic.spec import AcceptanceSuiteSpec
@@ -60,6 +60,17 @@ def test_build_arm_refuses_unpriced_model(tmp_path, monkeypatch):
                                  "--workdir", str(tmp_path)])
     assert result.exit_code == 3
     assert "No pricing entry" in result.output
+
+
+def test_build_arm_rejects_a_name_that_would_escape_the_arms_directory(tmp_path):
+    # --name becomes a directory component under evals/v1/arms/ via
+    # arm_run_id; unvalidated, "../.." walks the run dir straight out of
+    # that directory.
+    result = runner.invoke(app, ["build-arm", "--name", "../..", "--tasks", "click-0001",
+                                 "--attempts", "1", "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "--name" in result.output
+    assert "Next:" in result.output
 
 
 def test_build_arm_rejects_non_positive_attempts(tmp_path, monkeypatch):
@@ -329,6 +340,71 @@ def test_build_arm_a_replayed_attempt_joins_the_originating_runs_real_cost(monke
     assert row["estimated"] is False
     assert row["usd"] == 0.5
     assert row["usd_cache_gap"] == 0.1
+
+
+def test_build_arm_replay_after_two_direct_builds_snapshots_one_runs_prev_trace(
+    monkeypatch, tmp_path,
+):
+    """Two REAL direct `build` invocations first (both cache hits on the same
+    key, no sweep between them, each writing one `stage_cached` + one
+    `baseline_suite` event), then a build-arm sweep on the same pair.
+
+    build-arm's own sweep-level `rotate_trace` only ever MOVES whatever
+    trace.jsonl currently holds into trace.prev.jsonl; it cannot un-combine a
+    file the two prior direct calls already merged. Pre-fix, `build()` never
+    rotates its own trace, so the two direct calls leave ONE trace.jsonl
+    holding both calls' events (4 total: 2 `stage_cached` + 2
+    `baseline_suite`), and the sweep's rotate carries that combined file into
+    trace.prev.jsonl unchanged. Post-fix, each direct call rotates before it
+    writes, so trace.jsonl always holds exactly one call's events (2), and
+    the sweep's rotate carries forward a clean single run.
+    """
+    from types import SimpleNamespace
+
+    from skeptic import candidate, cli, image, workspace
+    from skeptic.orchestrator import StageCache
+    from skeptic.spec import find_task
+    from skeptic.trace import config_hash, read_trace
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(workspace, "clone_pinned",
+                        lambda url, commit, cache: cache)
+    monkeypatch.setattr(workspace, "materialize",
+                        lambda repo, commit, dest: dest.mkdir(parents=True))
+    monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
+    monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
+    monkeypatch.setattr(
+        image, "ensure_repo_image",
+        lambda task_spec, context, out: SimpleNamespace(tag="t:1", image_id="img-id"))
+
+    workdir = tmp_path.resolve()
+    spec = find_task("click-0001", Path("tasks"))
+    seed_hash = config_hash({"seed": Path(spec.seed.bug_patch).read_text()})
+    key = _build_cache_key(spec, "claude-opus-5", "img-id", seed_hash)
+    build_dir = _build_dir(workdir, "click-0001", 1)
+    cached = {**BASE_RESULT, "green": False, "out_of_scope": [], "image_id": "img-id"}
+    StageCache(build_dir / "cache").put(key, cached)
+
+    for _ in range(2):  # two direct builds, both cache hits, no sweep between them
+        result = runner.invoke(app, ["build", "--task", "click-0001",
+                                     "--workdir", str(workdir), "--yes"])
+        assert result.exit_code == 0, result.output
+
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
+                                 "--attempts", "1", "--workdir", str(workdir),
+                                 "--out", str(tmp_path / "evals"), "--yes"])
+    assert result.exit_code == 0, result.output
+
+    run_dir = _one_run_dir(tmp_path / "evals")
+    snap_prev = run_dir / "click-0001" / "attempt-1" / "trace.prev.jsonl"
+    assert snap_prev.is_file()
+    events, _ = read_trace(snap_prev)
+    stage_cached_count = sum(1 for e in events if e["event"] == "stage_cached")
+    assert stage_cached_count == 1, (
+        f"the snapshot's trace.prev.jsonl must hold exactly one run's "
+        f"events (one stage_cached marker); found {stage_cached_count} "
+        f"among {[e['event'] for e in events]}")
 
 
 def test_build_arm_a_replayed_row_missing_usd_cache_gap_is_estimated(monkeypatch, tmp_path):

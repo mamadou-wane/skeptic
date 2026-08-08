@@ -13,5 +13,8 @@ dist/
 build/
 *.egg-info/
 
+# smoke arms are machinery validation, not a published measurement; real arms commit
+evals/v1/arms/smoke-*/
+
 # macOS
 .DS_Store

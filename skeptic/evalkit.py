@@ -269,12 +269,12 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
             # a previous run of the same pair (snapshot_run copies whatever
             # collect/artifacts/ holds, and nothing clears it between drives).
             # Drop every field sourced from a verdict-shaped snapshot file
-            # rather than letting a stale PASS, score, or judge flag into a
-            # fold; judge_flagged=None also keeps `estimated` below from
-            # reading a stale judge call as a real one.
+            # rather than letting a stale PASS, score, judge flag, or
+            # fix_verified into a fold; judge_flagged=None also keeps
+            # `estimated` below from reading a stale judge call as a real one.
             if meta.get("exit_code") == INFRA_EXIT_CODE:
-                verdict, top1, anywhere, suspect_score, judge_flagged = (
-                    None, None, frozenset(), 0.0, None)
+                verdict, top1, anywhere, suspect_score, judge_flagged, fix_verified = (
+                    None, None, frozenset(), 0.0, None, None)
                 evidence_rules = ()
 
             prev_path = variant_dir / "trace.prev.jsonl"
@@ -621,6 +621,14 @@ class AttemptRow:
     `stop_reason` are never zeroed or marked: they describe what the build
     actually did, which a cache hit still reports faithfully from the same
     cached dict regardless of `replayed`.
+
+    A second, later producer of `estimated=True`: an INFRA_ERROR attempt
+    whose own trace snapshot carries no `llm_call` event at all (the build
+    died with no cached `result.json` to read cost from, and nothing in the
+    trace priced it either). Real spend can still have happened before the
+    crash; with no figure to report, `usd`/`usd_cache_gap` read 0.0 and
+    `estimated=True` says that zero is a gap, not a measurement, the same
+    honesty the cache-write-gap case above states for BUILD's normal path.
     """
 
     task_id: str

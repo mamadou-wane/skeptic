@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -232,3 +233,65 @@ def test_build_writes_a_baseline_suite_trace_event_on_a_cache_hit(tmp_path, monk
     assert payload["seed_red"] == cached["baseline_seed_red"]
     assert payload["environmental_red"] == cached["baseline_environmental_red"]
     assert payload["collection_errors"] == 0
+
+
+def test_build_rotates_its_own_trace_before_a_second_direct_run(tmp_path, monkeypatch):
+    # run_id is deterministic per cache key (f"build-{cache_key}"), and
+    # TraceWriter opens in append mode: two direct `skeptic build` calls for
+    # the same task+attempt, with no sweep rotating between them, used to
+    # share one growing trace.jsonl. build() now rotates its own trace dir
+    # before writing, so a second direct call starts clean regardless of
+    # whether a sweep ever drives it. The first "run" is simulated the same
+    # way test_build_arm_rotates_the_trace_before_calling_build simulates
+    # one for the sweep: a stale trace.jsonl already on disk.
+    from skeptic import candidate, cli, image, workspace
+    from skeptic.orchestrator import StageCache
+    from skeptic.spec import find_task
+    from skeptic.trace import config_hash, read_trace
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(workspace, "clone_pinned",
+                        lambda url, commit, cache: cache)
+    monkeypatch.setattr(workspace, "materialize",
+                        lambda repo, commit, dest: dest.mkdir(parents=True))
+    monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
+    monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
+    monkeypatch.setattr(
+        image, "ensure_repo_image",
+        lambda task_spec, context, out: SimpleNamespace(tag="t:1", image_id="img-id"))
+
+    workdir = tmp_path.resolve()
+    spec = find_task("click-0001", Path("tasks"))
+    seed_hash = config_hash({"seed": Path(spec.seed.bug_patch).read_text()})
+    key = _build_cache_key(spec, "claude-opus-5", "img-id", seed_hash)
+    build_dir = workdir / spec.task_id / "build"
+    build_dir.mkdir(parents=True)
+    # The first direct build's own trace, left on disk exactly as a real
+    # run would leave it: a real llm_call with real cost.
+    (build_dir / "trace.jsonl").write_text(
+        json.dumps({"event": "llm_call", "usage": {"usd": 0.05}}) + "\n")
+    cached = {
+        "stop_reason": "green", "iterations": 2, "in_tokens": 10,
+        "out_tokens": 5, "usd": 0.01, "green": True,
+        "green_rule": "differential-1",
+        "baseline_seed_red": [], "baseline_environmental_red": [],
+        "baseline_total": 3, "baseline_collection_errors": 0,
+        "candidate": str(build_dir / "candidate.diff"),
+        "changed_files": [], "out_of_scope": [],
+        "is_empty": False, "image_id": "img-id",
+    }
+    StageCache(build_dir / "cache").put(key, cached)
+
+    result = runner.invoke(app, ["build", "--task", "click-0001",
+                                 "--workdir", str(workdir), "--yes"])
+
+    assert result.exit_code == 0, result.output
+    events, _ = read_trace(build_dir / "trace.jsonl")
+    assert all(e["event"] != "llm_call" for e in events), (
+        "the second run's own trace.jsonl must not carry the first run's "
+        "llm_call event")
+    prev_events, _ = read_trace(build_dir / "trace.prev.jsonl")
+    assert [e["event"] for e in prev_events] == ["llm_call"], (
+        "trace.prev.jsonl must hold exactly the first run's event, not a "
+        "mix of the first and second")

@@ -269,6 +269,7 @@ def build(
     import shutil
     import time
 
+    from skeptic import evalkit
     from skeptic.builder import GREEN_RULE_VERSION, PRICING, run_build
     from skeptic.builder_tools import ToolContext, run_baseline_suite
     from skeptic.candidate import extract_candidate, snapshot
@@ -334,6 +335,15 @@ def build(
         workdir = workdir.resolve()
         build_dir = _build_dir(workdir, spec.task_id, attempt)
         build_dir.mkdir(parents=True, exist_ok=True)
+        # Rotate this build dir's own trace before touching it: run_id is
+        # deterministic per cache key, so a second direct `build` of the same
+        # task+attempt would otherwise append onto the first run's trace.jsonl
+        # (TraceWriter opens in append mode) rather than starting clean. The
+        # sweep commands (build-arm) also rotate before calling into `build`;
+        # doing it here too is not redundant paranoia; it is what makes a
+        # direct `skeptic build` rerun safe on its own, with no sweep in the
+        # loop at all (DECISIONS, this wave's trace-rotation row).
+        evalkit.rotate_trace(build_dir)
         repo = clone_pinned(spec.repo.url, spec.repo.commit,
                             workdir / spec.task_id / "repo-cache")
 
@@ -562,6 +572,7 @@ def build_arm(
     import dataclasses
     import json
     import os
+    import re
     import shutil
 
     from skeptic import evalkit
@@ -569,6 +580,16 @@ def build_arm(
     from skeptic.trace import read_trace
 
     try:
+        if not re.fullmatch(r"[a-z0-9-]+", name):
+            typer.echo(
+                f"--name must match [a-z0-9-]+, got {name!r}. The name "
+                f"becomes a directory component under evals/v1/arms/ "
+                f"(`arm_run_id`), so a path separator or a `..` segment can "
+                f"escape that directory instead of naming an arm inside it. "
+                f"Next: pass a name made only of lowercase letters, digits, "
+                f"and hyphens, e.g. base or tight-budget."
+            )
+            raise typer.Exit(EXIT_INFRA)
         if attempts < 1:
             typer.echo(
                 f"--attempts must be >= 1, got {attempts}. Next: pass "
@@ -794,6 +815,7 @@ def verify(
     import shutil
     import time
 
+    from skeptic import evalkit
     from skeptic.candidate import extract_candidate, snapshot
     from skeptic.checks import run_verify_layer
     from skeptic.checks._util import under
@@ -917,6 +939,14 @@ def verify(
 
         workdir = workdir.resolve()
         verify_dir = workdir / spec.task_id / "verify" / variant
+        # See build()'s own comment: rotate this verify dir's own trace before
+        # touching it, so a second direct `skeptic verify` of the same
+        # task+variant starts a clean trace.jsonl instead of appending onto
+        # the first run's (run_id is deterministic per cache key). Harmless
+        # alongside the eval sweep's own pre-rotation: by the time this call
+        # runs from within a sweep, the sweep has already rotated, so this
+        # finds nothing to rotate.
+        evalkit.rotate_trace(verify_dir)
         trace = TraceWriter(
             verify_dir / "trace.jsonl",
             run_id=f"verify-{config_hash({'task': spec.task_id, 'variant': variant})}",

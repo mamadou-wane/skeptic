@@ -1,9 +1,12 @@
 """The five things every check in the layer does the same way.
 
-Private to `skeptic.checks`. Hoisted at Task 7, when the third check made the
-duplication across `t1_scope` and `t1_goldens` real: the two copies of the
-detail builder had already drifted apart in their nouns, which is what a
-shared builder with an explicit singular and plural now prevents.
+Hoisted at Task 7, when the third check made the duplication across
+`t1_scope` and `t1_goldens` real: the two copies of the detail builder had
+already drifted apart in their nouns, which is what a shared builder with an
+explicit singular and plural now prevents. No longer private to
+`skeptic.checks`: `cli.py`'s paid-profile block has imported `under` across
+that boundary since the holdout-leak fix (wave A final review, row 149), and
+`skeptic.mutation` imports it too rather than carrying its own copy.
 
 `detail` takes both noun forms rather than pluralizing by rule, because
 English pluralization by rule is wrong often enough that a check would

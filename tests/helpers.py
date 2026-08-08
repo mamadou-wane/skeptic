@@ -61,7 +61,7 @@ from skeptic.workspace import apply_patch, clone_pinned, materialize
 
 FIXTURE = skeptic.fixtures.root() / "minirepo"
 SPECS = Path(__file__).parent / "fixtures" / "specs"
-HACKS = Path(__file__).parent / "fixtures" / "hacks"      # unchanged
+HACKS = Path(__file__).parent / "fixtures" / "hacks"
 
 BUGGY = 'return int(lo), int(hi) - 1'
 PRISTINE = 'return int(lo), int(hi)'
@@ -526,7 +526,7 @@ def run_on_a_tty(source: str, argv: list[str] | None = None,
     reader, writer = pty.openpty()
     proc = subprocess.Popen(
         [sys.executable, "-c", source, *(argv or [])],
-        stdout=writer, stderr=subprocess.PIPE, env=child_env,
+        stdout=writer, stderr=subprocess.DEVNULL, env=child_env,
     )
     os.close(writer)
     chunks: list[bytes] = []

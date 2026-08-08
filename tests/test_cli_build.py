@@ -101,6 +101,87 @@ def test_build_cache_key_changes_with_green_rule_version(monkeypatch):
     assert base != changed
 
 
+# Task 15: attempt-salted BUILD cache keys and per-attempt build dirs.
+#
+# PRE_SALT_KEY_FOR_SPEC is the literal `_build_cache_key(make_task_spec(),
+# "claude-opus-5", "sha256:abc", "seed")` produced on this tree before the
+# `attempt` parameter existed. config_hash is a pure function of the
+# payload dict, and the payload holds only spec-derived data (task id, repo
+# commit, and the constraints/builder_input/environment sub-models, all
+# plain strings/ints/lists per skeptic/spec.py, no absolute paths and
+# nothing machine-local), so this literal is stable across machines.
+PRE_SALT_KEY_FOR_SPEC = "06c04a648d53"
+
+
+def test_two_attempts_are_two_cache_entries():
+    spec = make_task_spec()
+    a = _build_cache_key(spec, "claude-opus-5", "sha256:abc", "seed", attempt=1)
+    b = _build_cache_key(spec, "claude-opus-5", "sha256:abc", "seed", attempt=2)
+    assert a != b
+
+
+def test_attempt_one_keeps_the_pre_attempt_key():
+    """Attempt 1 must hash exactly as it did before the salt existed.
+
+    Every cached BUILD in a live workdir was written under the old key. If
+    attempt 1 changes shape, the whole existing cache misses and the base
+    arm silently pays to re-run work it already has.
+    """
+    spec = make_task_spec()
+    assert _build_cache_key(spec, "claude-opus-5", "sha256:abc", "seed",
+                            attempt=1) == PRE_SALT_KEY_FOR_SPEC
+
+
+def test_attempt_salts_the_trace_run_id_too():
+    # cli.py builds run_id as f"build-{cache_key}", so a salted attempt's
+    # cache key difference propagates to the trace identity for free, with
+    # no separate wiring to test at the TraceWriter call site.
+    spec = make_task_spec()
+    key1 = _build_cache_key(spec, "claude-opus-5", "sha256:abc", "seed", attempt=1)
+    key2 = _build_cache_key(spec, "claude-opus-5", "sha256:abc", "seed", attempt=2)
+    assert f"build-{key1}" != f"build-{key2}"
+
+
+def test_attempt_two_gets_its_own_build_dir(monkeypatch, tmp_path):
+    from skeptic import workspace
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli._docker_available", lambda: True)
+
+    def _stop(*args, **kwargs):
+        raise RuntimeError("stop-after-mkdir")
+
+    monkeypatch.setattr(workspace, "clone_pinned", _stop)
+    runner.invoke(app, ["build", "--task", "click-0001", "--attempt", "2",
+                        "--workdir", str(tmp_path), "--yes"])
+    assert (tmp_path / "click-0001" / "build" / "attempt-2").is_dir()
+
+
+def test_attempt_one_keeps_todays_build_dir_path(monkeypatch, tmp_path):
+    from skeptic import workspace
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli._docker_available", lambda: True)
+
+    def _stop(*args, **kwargs):
+        raise RuntimeError("stop-after-mkdir")
+
+    monkeypatch.setattr(workspace, "clone_pinned", _stop)
+    runner.invoke(app, ["build", "--task", "click-0001",
+                        "--workdir", str(tmp_path), "--yes"])
+    assert (tmp_path / "click-0001" / "build").is_dir()
+    assert not (tmp_path / "click-0001" / "build" / "attempt-1").exists()
+
+
+def test_build_rejects_non_positive_attempt(tmp_path):
+    for bad in ("0", "-1"):
+        result = runner.invoke(app, ["build", "--task", "click-0001",
+                                     "--attempt", bad, "--workdir", str(tmp_path)])
+        assert result.exit_code == 3, result.output
+        assert "--attempt" in result.output
+        assert "Next:" in result.output
+
+
 def test_build_writes_a_baseline_suite_trace_event_on_a_cache_hit(tmp_path, monkeypatch):
     # DECISIONS row 74 puts the baseline red set in the trace on every run.
     # A stage-cache hit never executes do_build, so the CLI replays the event

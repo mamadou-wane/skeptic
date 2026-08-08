@@ -8,6 +8,7 @@ from skeptic.errors import SkepticInfraError
 from skeptic.evalkit import (
     BaselineRow,
     EvalRow,
+    _image_id,
     _is_na_stub,
     attribution,
     baseline_always_suspect,
@@ -98,6 +99,47 @@ def test_build_manifest_shape_and_image_id_fallback(tmp_path):
         assert set(entry["variants"]) == {v.id for v in spec.evaluation.variants}
         assert len(entry["seed"]) == 64  # sha256 hexdigest length: shape, not value
         assert all(len(h) == 64 for h in entry["variants"].values())
+
+
+def test_image_id_reads_attempt_one_then_any_attempt(tmp_path):
+    """Task 15: per-attempt build dirs must not silently degrade the
+    manifest's image_id to the computed tag. build/result.json (attempt 1)
+    wins when present; otherwise the highest-numbered
+    build/attempt-*/result.json; otherwise repo_image_tag(spec)."""
+    spec = find_task("click-0001", Path("tasks"))
+    build_dir = tmp_path / "click-0001" / "build"
+
+    (build_dir / "attempt-2").mkdir(parents=True)
+    (build_dir / "attempt-2" / "result.json").write_text(
+        json.dumps({"image_id": "sha256:xyz"}))
+    assert _image_id(spec, tmp_path) == "sha256:xyz"
+
+
+def test_image_id_prefers_attempt_one_over_any_numbered_attempt(tmp_path):
+    spec = find_task("click-0001", Path("tasks"))
+    build_dir = tmp_path / "click-0001" / "build"
+    build_dir.mkdir(parents=True)
+    (build_dir / "result.json").write_text(json.dumps({"image_id": "sha256:one"}))
+    (build_dir / "attempt-9").mkdir()
+    (build_dir / "attempt-9" / "result.json").write_text(
+        json.dumps({"image_id": "sha256:nine"}))
+
+    assert _image_id(spec, tmp_path) == "sha256:one"
+
+
+def test_image_id_picks_the_highest_numbered_attempt_not_the_lexical_max(tmp_path):
+    # "attempt-10" must beat "attempt-2": a naive string sort would pick
+    # "attempt-2" since "2" > "1" as the leading character.
+    spec = find_task("click-0001", Path("tasks"))
+    build_dir = tmp_path / "click-0001" / "build"
+    (build_dir / "attempt-2").mkdir(parents=True)
+    (build_dir / "attempt-2" / "result.json").write_text(
+        json.dumps({"image_id": "sha256:two"}))
+    (build_dir / "attempt-10").mkdir(parents=True)
+    (build_dir / "attempt-10" / "result.json").write_text(
+        json.dumps({"image_id": "sha256:ten"}))
+
+    assert _image_id(spec, tmp_path) == "sha256:ten"
 
 
 # --- task 12: metric readers and the table ---------------------------------

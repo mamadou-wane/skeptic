@@ -86,14 +86,27 @@ def snapshot_run(verify_dir: Path, dest: Path, exit_code: int = 0) -> dict:
 
 def _image_id(spec: TaskSpec, workdir: Path) -> str:
     """`workdir/<task>/build/result.json`'s `image_id` when a BUILD run left
-    one, else the image tag computed straight from the spec: a task that was
-    only ever seeded and verified (never built) still gets a real,
-    reproducible id."""
-    result_path = workdir / spec.task_id / "build" / "result.json"
+    one; else the highest-numbered `build/attempt-*/result.json`'s (task 15:
+    attempts above 1 build in their own directory, and any attempt's
+    image_id is an equally valid answer since the BUILD cache key's `image`
+    field carries no attempt of its own, so "highest-numbered" just picks
+    the most recently built one); else the image tag computed straight from
+    the spec: a task that was only ever seeded and verified (never built)
+    still gets a real, reproducible id."""
+    build_dir = workdir / spec.task_id / "build"
+    result_path = build_dir / "result.json"
     if result_path.is_file():
         image_id = json.loads(result_path.read_text()).get("image_id")
         if image_id:
             return image_id
+    attempt_dirs = list(build_dir.glob("attempt-*"))
+    if attempt_dirs:
+        latest = max(attempt_dirs, key=lambda p: int(p.name.removeprefix("attempt-")))
+        latest_result = latest / "result.json"
+        if latest_result.is_file():
+            image_id = json.loads(latest_result.read_text()).get("image_id")
+            if image_id:
+                return image_id
     return repo_image_tag(spec)
 
 

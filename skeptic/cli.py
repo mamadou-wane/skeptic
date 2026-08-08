@@ -202,7 +202,8 @@ def _baseline_payload(
             "total": total, "collection_errors": collection_errors}
 
 
-def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str) -> str:
+def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str,
+                     attempt: int = 1) -> str:
     """BUILD stage cache key.
 
     Every input that shapes the Builder's run, or the first message it reads
@@ -216,7 +217,7 @@ def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str) 
     from skeptic.builder import GREEN_RULE_VERSION, prompt_version
     from skeptic.trace import config_hash
 
-    return config_hash({
+    payload = {
         "stage": "BUILD", "task": spec.task_id, "seed": seed_hash,
         "model": model, "prompt": prompt_version(),
         "green_rule": GREEN_RULE_VERSION,
@@ -225,7 +226,16 @@ def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str) 
         "constraints": spec.constraints.model_dump(),
         "builder_input": spec.builder_input.model_dump(),
         "environment": spec.environment.model_dump(),
-    })
+    }
+    if attempt != 1:
+        # Attempt 1 hashes exactly as it did before attempts existed, so
+        # every BUILD already cached in a live workdir still hits. Later
+        # attempts differ only by this key, which is the point: the base
+        # arm's second attempt (and any pressure arm) must not replay
+        # attempt 1. Budgets already live in the key above, so arms that
+        # differ only by budget separate on their own.
+        payload["attempt"] = attempt
+    return config_hash(payload)
 
 
 @app.command()
@@ -236,6 +246,9 @@ def build(
     workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
     runner: str = typer.Option("docker", "--runner", help="docker; venv is refused."),
     yes: bool = typer.Option(False, "--yes", help="Skip the cost confirmation."),
+    attempt: int = typer.Option(1, "--attempt",
+                                help="Which attempt this is; salts the cache key "
+                                     "and build dir above 1."),
 ) -> None:
     """Run the Builder against a task's seeded bug inside the tool-exec sandbox."""
     import json
@@ -255,6 +268,15 @@ def build(
     from skeptic.workspace import apply_patch, clone_pinned, materialize
 
     try:
+        if attempt < 1:
+            typer.echo(
+                f"--attempt must be >= 1, got {attempt}. Attempt is an "
+                f"ordinal that salts the BUILD cache key and build dir "
+                f"above 1; 0 or a negative number names no real attempt. "
+                f"Next: pass --attempt 1 for the first run (the default) "
+                f"or 2 for the second."
+            )
+            raise typer.Exit(EXIT_INFRA)
         spec = find_task(task, tasks_dir)
         if runner == "venv":
             VenvRunner(workspace=Path("."), venv_dir=Path(".")).build_stage_guard()
@@ -298,6 +320,8 @@ def build(
 
         workdir = workdir.resolve()
         build_dir = workdir / spec.task_id / "build"
+        if attempt != 1:
+            build_dir = build_dir / f"attempt-{attempt}"
         build_dir.mkdir(parents=True, exist_ok=True)
         repo = clone_pinned(spec.repo.url, spec.repo.commit,
                             workdir / spec.task_id / "repo-cache")
@@ -320,7 +344,7 @@ def build(
         snapshot(seeded, baseline_tree)
 
         seed_hash = config_hash({"seed": Path(spec.seed.bug_patch).read_text()})
-        cache_key = _build_cache_key(spec, model, image.image_id, seed_hash)
+        cache_key = _build_cache_key(spec, model, image.image_id, seed_hash, attempt)
         trace = TraceWriter(build_dir / "trace.jsonl",
                             run_id=f"build-{cache_key}", task_id=spec.task_id)
         ro = tuple(spec.environment.test_dirs) \

@@ -382,6 +382,47 @@ def test_verify_requires_docker_daemon(tmp_path, monkeypatch):
     assert "Docker" in result.output
 
 
+# --- task 2b: `--candidate-diff`, mutually exclusive with `--variant`. The
+# guard needs neither `spec` nor docker, so it fires before either (`called`
+# stays empty), the same "guard comes before find_task and docker" shape the
+# profile/runner guards above already hold.
+
+def test_verify_rejects_neither_variant_nor_candidate_diff(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    result = runner.invoke(app, ["verify", "--task", "no-such-task",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "--variant" in result.output and "--candidate-diff" in result.output
+    assert "Next:" in result.output
+    assert called == []
+
+
+def test_verify_rejects_both_variant_and_candidate_diff(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    diff_path = tmp_path / "candidate.diff"
+    diff_path.write_text("--- a/x\n+++ b/x\n")
+    result = runner.invoke(app, ["verify", "--task", "no-such-task",
+                                 "--variant", "gold", "--candidate-diff", str(diff_path),
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "--variant" in result.output and "--candidate-diff" in result.output
+    assert "Next:" in result.output
+    assert called == []
+
+
+def test_verify_candidate_diff_missing_path_is_infra_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    missing = tmp_path / "nope.diff"
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--candidate-diff", str(missing),
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert str(missing) in result.output
+    assert "Next:" in result.output
+
+
 @pytest.mark.parametrize("status,verdict_name,expected_exit", [
     ("ok", "PASS", 0),
     ("ok", "SUSPECT", 1),
@@ -776,7 +817,11 @@ def _fake_heavy_stages_real_registry(monkeypatch, pair):
     `()` and `observe_probe` is faked to a harmless, real `ProbeReport(calls=
     ())`, the same "keep the sibling lanes healthy" shape
     `_fake_heavy_stages_dead_probe` uses, so the mutation and probe lanes
-    complete clean and only the paid lane under test varies."""
+    complete clean and only the paid lane under test varies. `apply_candidate`
+    is faked alongside `apply_patch` (task 2b): a `--candidate-diff` run calls
+    it instead of `apply_patch`, onto a `variant-tree` this harness's own
+    `materialize`/`snapshot` fakes never actually populate, so the real
+    function would try to `git apply` into a directory with no tree in it."""
     from skeptic import candidate, collector, mutation, workspace
     from skeptic.checks.observations import ProbeReport
 
@@ -785,6 +830,7 @@ def _fake_heavy_stages_real_registry(monkeypatch, pair):
         workspace, "materialize",
         lambda repo, commit, dest: dest.mkdir(parents=True, exist_ok=True))
     monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
+    monkeypatch.setattr(workspace, "apply_candidate", lambda ws, diff: None)
     monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
     monkeypatch.setattr(
         candidate, "extract_candidate",
@@ -794,6 +840,104 @@ def _fake_heavy_stages_real_registry(monkeypatch, pair):
         lambda spec, repo_dir, report, workdir, baseline_cache=None: pair)
     monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
     monkeypatch.setattr(collector, "observe_probe", lambda *a, **k: ProbeReport(calls=()))
+
+
+def test_verify_candidate_diff_drives_the_real_path_and_stamps_candidate_identity(
+    tmp_path, monkeypatch
+):
+    """Task 2b's whole point: `--candidate-diff` runs the real path (the
+    build-arm classifier's own shape: materialize + seed patch +
+    apply_candidate, in place of a corpus variant's own patch) through to a
+    genuine verdict, and the identity flowing into the verify dir, the trace
+    run_id, and the verdict's `variant` field is `candidate:<diff stem>`,
+    never a corpus variant id. Deterministic profile: task 2b builds only the
+    injection, not a paid-profile combination, and a would-be-PASS pair keeps
+    the assertion about a genuine verdict rather than an incidental one."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+
+    diff_path = tmp_path / "build" / "attempt-3" / "candidate.diff"
+    diff_path.parent.mkdir(parents=True)
+    diff_path.write_text("--- a/x\n+++ b/x\n")
+
+    workdir = (tmp_path / "workdir").resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--candidate-diff", str(diff_path),
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output
+
+    identity = "candidate:candidate"      # candidate.diff's own stem
+    # The on-disk verify dir swaps ':' for '-': a colon in the host path
+    # breaks docker's `-v host:container:ro` mount spec (too many colons),
+    # which RunContainer hits for real once collect_pair/enrichment run
+    # unfaked (see the docker end-to-end twin of this test below). The
+    # colon form still lands in the trace and the verdict (asserted below).
+    verify_dir = workdir / "click-0001" / "verify" / "candidate-candidate"
+    events, _ = read_trace(verify_dir / "trace.jsonl")
+    assert events, "the candidate-scoped verify dir must carry its own trace"
+    assert all(e["run_id"] == events[0]["run_id"] for e in events)
+    assert events[0]["run_id"].startswith("verify-")
+
+    verdict_path = pair.artifacts_dir / "verdict.json"
+    assert verdict_path.is_file()
+    saved = json.loads(verdict_path.read_text())
+    assert saved["verdict"] == "PASS"
+    assert saved["variant"] == identity
+
+
+def test_verify_candidate_diff_cache_replays_same_bytes_and_misses_on_different_bytes(
+    tmp_path, monkeypatch
+):
+    """The end-to-end half of task 2b's cache proof (the unit-level half is
+    `test_verify_cache_key_candidate_diff_is_bytes_not_path` above): the same
+    diff bytes at the same path, run twice, replays (`stage_cached`, the
+    faked collector not called again); overwriting that path with different
+    bytes is a fresh entry (the faked collector called again), mirroring
+    `test_verify_cache_hit_skips_collection_and_replays_the_banner`'s own
+    replay proof for a corpus variant."""
+    from skeptic import collector
+
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    calls: list[int] = []
+    faked_collect_pair = collector.collect_pair
+    monkeypatch.setattr(
+        collector, "collect_pair",
+        lambda *a, **k: (calls.append(1), faked_collect_pair(*a, **k))[1])
+
+    diff_path = tmp_path / "attempt.diff"
+    diff_path.write_text("--- a/x\n+++ b/x\n")
+    workdir = (tmp_path / "workdir").resolve()
+
+    first = runner.invoke(app, ["verify", "--task", "click-0001",
+                                "--candidate-diff", str(diff_path),
+                                "--workdir", str(workdir)])
+    assert first.exit_code == 0, first.output
+    assert calls == [1]
+
+    second = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--candidate-diff", str(diff_path),
+                                 "--workdir", str(workdir)])
+    assert second.exit_code == 0, second.output
+    assert calls == [1]           # cache hit: collect_pair not called again
+    assert "(cached)" in second.output
+
+    # On-disk dir is the hyphenated form (verify_dir never carries a colon:
+    # see the sibling identity test above); the colon form is the verdict's
+    # own `variant` field, checked in the sibling docker end-to-end test.
+    events, _ = read_trace(workdir / "click-0001" / "verify" / "candidate-attempt" / "trace.jsonl")
+    assert "stage_cached" in [e["event"] for e in events]
+
+    diff_path.write_text("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
+    third = runner.invoke(app, ["verify", "--task", "click-0001",
+                                "--candidate-diff", str(diff_path),
+                                "--workdir", str(workdir)])
+    assert third.exit_code == 0, third.output
+    assert calls == [1, 1]        # different bytes: fresh entry, collect_pair called again
 
 
 def _fake_advtests_and_judge(monkeypatch):
@@ -1256,6 +1400,41 @@ def test_cache_key_differs_by_profile():
             != _verify_cache_key(spec, variant, "paid"))
 
 
+def test_verify_cache_key_candidate_diff_is_bytes_not_path(tmp_path):
+    """Task 2b's cache-key extension: a candidate-diff run has no variant id
+    or variant patch, so the key's `variant`/`variant_patch` ingredients come
+    from the diff's own identity (`candidate:<stem>`) and its sha256 instead.
+    Two build-arm attempts share the classifier's own filename convention
+    (`candidate.diff` under an `attempt-N` directory, task 2b's brief), so two
+    different diffs with the SAME stem/identity still need two cache entries:
+    the sha256 ingredient, not the stem alone, is what tells them apart. A
+    same-path edit (the seed-patch precedent's own shape, `_flip_seed_patch_
+    bytes` above) is a fresh entry too, and the candidate namespace never
+    collides with a corpus variant's own key on the same spec."""
+    spec = make_task_spec()
+    variant = spec.evaluation.variants[0]
+    attempt_1 = tmp_path / "attempt-1" / "candidate.diff"
+    attempt_2 = tmp_path / "attempt-2" / "candidate.diff"
+    attempt_1.parent.mkdir(parents=True)
+    attempt_2.parent.mkdir(parents=True)
+    attempt_1.write_bytes(b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
+    attempt_2.write_bytes(b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+3\n")
+
+    key_1 = _verify_cache_key(spec, None, "deterministic", candidate_diff=attempt_1)
+    key_2 = _verify_cache_key(spec, None, "deterministic", candidate_diff=attempt_2)
+    assert key_1 != key_2      # same stem/identity ("candidate"), different bytes: two entries
+
+    # Same path, bytes unchanged: a second, identical call replays.
+    assert key_1 == _verify_cache_key(spec, None, "deterministic", candidate_diff=attempt_1)
+
+    # Same path, bytes edited: a fresh entry.
+    attempt_1.write_bytes(attempt_1.read_bytes() + b"\n# extra\n")
+    assert _verify_cache_key(spec, None, "deterministic", candidate_diff=attempt_1) != key_1
+
+    # The candidate: namespace never collides with a corpus variant's own key.
+    assert key_1 != _verify_cache_key(spec, variant, "deterministic")
+
+
 @pytest.mark.docker
 @pytest.mark.slow
 def test_verify_minirepo_gold_passes_end_to_end(tmp_path, minirepo_spec_and_repo):
@@ -1322,3 +1501,39 @@ def test_verify_minirepo_h1_fails_end_to_end(tmp_path):
 
     assert result.exit_code == 2, result.output
     assert "collect_shrinkage" in result.output
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_verify_candidate_diff_minirepo_gold_passes_end_to_end(tmp_path, minirepo_spec_and_repo):
+    """The real, docker-backed smoke for `--candidate-diff` (task 2b): the
+    gold variant's own patch bytes, applied as a candidate diff instead of a
+    corpus variant (the identical `git apply` mechanics `apply_candidate` and
+    `apply_patch` share, `workspace.py`'s own docstrings), drive the real
+    materialize + seed patch + apply_candidate path through to a genuine
+    PASS, with verdict.json landing under the candidate-scoped verify dir
+    rather than a variant one. Twin of `test_verify_minirepo_gold_passes_
+    end_to_end` above, `--candidate-diff` in place of `--variant gold`."""
+    spec, repo_dir = minirepo_spec_and_repo
+    tasks_dir = repo_dir.parent / "tasks"
+    workdir = (tmp_path / "workdir").resolve()
+    gold_variant = next(v for v in spec.evaluation.variants if v.id == "gold")
+
+    result = runner.invoke(app, ["verify", "--task", spec.task_id,
+                                 "--candidate-diff", gold_variant.patch,
+                                 "--tasks-dir", str(tasks_dir), "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output
+    identity = f"candidate:{Path(gold_variant.patch).stem}"
+    # The on-disk verify dir is the hyphenated form (a colon in the host path
+    # breaks docker's `-v host:container:ro` mount spec, "too many colons",
+    # which RunContainer would hit on every mount under this dir); the colon
+    # form is what verdict.json's own `variant` field still carries.
+    verdict_path = (workdir / spec.task_id / "verify" / identity.replace(":", "-")
+                     / "collect" / "artifacts" / "verdict.json")
+    assert verdict_path.is_file()
+    saved = json.loads(verdict_path.read_text())
+    assert saved["verdict"] == "PASS"
+    assert saved["task_id"] == spec.task_id
+    assert saved["variant"] == identity

@@ -761,7 +761,10 @@ def build_arm(
         raise typer.Exit(EXIT_INFRA) from exc
 
 
-def _verify_cache_key(spec: TaskSpec, variant: VariantSpec, profile: str) -> str:
+def _verify_cache_key(
+    spec: TaskSpec, variant: VariantSpec | None, profile: str,
+    *, candidate_diff: Path | None = None,
+) -> str:
     """VERIFY stage cache key.
 
     Every input that shapes an observation or a check belongs here: the
@@ -783,6 +786,17 @@ def _verify_cache_key(spec: TaskSpec, variant: VariantSpec, profile: str) -> str
     a future caller forget to pass the live profile and mis-key a paid run
     into the deterministic bucket without ever raising.
 
+    `variant` and `candidate_diff` are mutually exclusive, the same as
+    `verify`'s own `--variant`/`--candidate-diff` options: exactly one caller
+    supplies the id/patch pair, the other supplies the diff path whose bytes
+    stand in for it. A candidate-diff run has no corpus variant id, so its
+    `variant` ingredient is `candidate:<diff stem>` (matching the `identity`
+    `verify` stamps into the verdict and the trace) and its `variant_patch`
+    ingredient is the diff's own sha256 rather than a yaml variant's patch
+    sha256: two different diffs land two cache entries, and the same diff
+    bytes replay, task 2b's whole point (the diff, not its path, is what the
+    key needs to change on, same as the variant patch case above).
+
     This is the VERIFY half of the two-key design (plan decision 5); the other
     half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
     `COLLECTOR_VERSION`. The two age differently on purpose: a detector edit
@@ -794,10 +808,15 @@ def _verify_cache_key(spec: TaskSpec, variant: VariantSpec, profile: str) -> str
     from skeptic.orchestrator import verifier_revision
     from skeptic.trace import config_hash
 
-    variant_patch = hashlib.sha256(Path(variant.patch).read_bytes()).hexdigest()
+    if variant is not None:
+        variant_id = variant.id
+        variant_patch = hashlib.sha256(Path(variant.patch).read_bytes()).hexdigest()
+    else:
+        variant_id = f"candidate:{candidate_diff.stem}"
+        variant_patch = hashlib.sha256(Path(candidate_diff).read_bytes()).hexdigest()
     seed_patch = hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest()
     return config_hash({
-        "stage": "VERIFY", "task": spec.task_id, "variant": variant.id,
+        "stage": "VERIFY", "task": spec.task_id, "variant": variant_id,
         "variant_patch": variant_patch,
         "seed": {**spec.seed.model_dump(), "bug_patch": seed_patch},
         "commit": spec.repo.commit,
@@ -812,14 +831,21 @@ def _verify_cache_key(spec: TaskSpec, variant: VariantSpec, profile: str) -> str
 @app.command()
 def verify(
     task: str = typer.Option(..., "--task"),
-    variant: str = typer.Option(..., "--variant", help="Variant id from evaluation.variants."),
+    variant: str | None = typer.Option(
+        None, "--variant", help="Variant id from evaluation.variants. "
+        "Mutually exclusive with --candidate-diff."),
+    candidate_diff: Path | None = typer.Option(  # noqa: B008
+        None, "--candidate-diff", help="Diff to apply over the task's seeded "
+        "tree, in place of a corpus variant (Eval B's catch-rate surface, "
+        "the shape build-arm's classifier applies via apply_candidate). "
+        "Mutually exclusive with --variant."),
     profile: str = typer.Option("deterministic", "--profile"),
     tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
     workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
     runner: str = typer.Option("docker", "--runner", help="docker; venv verify is not wired yet."),
     yes: bool = typer.Option(False, "--yes", help="Skip the paid-profile cost confirmation."),
 ) -> None:
-    """Run the check layer against a task's variant."""
+    """Run the check layer against a task's variant or a candidate diff."""
     import json
     import os
     import shutil
@@ -839,9 +865,19 @@ def verify(
     from skeptic.render import render_verdict
     from skeptic.spec import find_task
     from skeptic.trace import TraceWriter, config_hash
-    from skeptic.workspace import apply_patch, clone_pinned, materialize
+    from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
 
     try:
+        if (variant is None) == (candidate_diff is None):
+            typer.echo(
+                f"Exactly one of --variant or --candidate-diff is required "
+                f"(variant={variant!r}, candidate_diff={candidate_diff!r}). "
+                f"--variant audits a corpus variant from evaluation.variants; "
+                f"--candidate-diff applies a diff over the task's seeded "
+                f"tree instead (Eval B's catch-rate surface). Next: pass "
+                f"exactly one of the two."
+            )
+            raise typer.Exit(EXIT_INFRA)
         if profile not in ("deterministic", "paid"):
             typer.echo(
                 f"Unknown profile {profile!r}: skeptic verify runs either "
@@ -871,18 +907,37 @@ def verify(
 
         # Variant validation also moves ahead of the paid preflight (review
         # round 1, minor 2): it only needs `spec`, already loaded above, and
-        # a typo'd --variant should never reach the spend confirm.
-        known = sorted(v.id for v in spec.evaluation.variants)
-        if variant not in known:
-            typer.echo(
-                f"No variant named {variant!r} in {spec.task_id}'s "
-                f"evaluation.variants (known: {known or 'none'}). Skeptic "
-                f"resolves --variant to one of the ids listed there. Next: "
-                f"pick one of the known ids, or add a new entry to "
-                f"evaluation.variants in the task spec."
-            )
-            raise typer.Exit(EXIT_INFRA)
-        variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
+        # a typo'd --variant should never reach the spend confirm. The
+        # candidate-diff path gets the same treatment: a typo'd path fails
+        # here too, not after a spend confirm.
+        variant_spec: VariantSpec | None = None
+        if variant is not None:
+            known = sorted(v.id for v in spec.evaluation.variants)
+            if variant not in known:
+                typer.echo(
+                    f"No variant named {variant!r} in {spec.task_id}'s "
+                    f"evaluation.variants (known: {known or 'none'}). Skeptic "
+                    f"resolves --variant to one of the ids listed there. Next: "
+                    f"pick one of the known ids, or add a new entry to "
+                    f"evaluation.variants in the task spec."
+                )
+                raise typer.Exit(EXIT_INFRA)
+            variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
+            identity = variant_spec.id
+            surface_flag = f"--variant {identity}"
+        else:
+            if not candidate_diff.is_file():
+                typer.echo(
+                    f"No candidate diff at {candidate_diff}: --candidate-diff "
+                    f"needs a readable diff file to apply over {spec.task_id}'s "
+                    f"seeded tree (Eval B's catch-rate surface, the same shape "
+                    f"build-arm's classifier applies via apply_candidate). "
+                    f"Next: check the path, or point --candidate-diff at a "
+                    f"build attempt's candidate.diff."
+                )
+                raise typer.Exit(EXIT_INFRA)
+            identity = f"candidate:{candidate_diff.stem}"
+            surface_flag = f"--candidate-diff {candidate_diff}"
 
         if profile == "paid":
             # Key, then pricing row, then the cost confirmation: all three
@@ -902,7 +957,7 @@ def verify(
                     "adversarial-tests and judge checks call the Anthropic "
                     "API from the host (the key never enters the sandbox). "
                     "Next: export ANTHROPIC_API_KEY and re-run `skeptic "
-                    f"verify --task {spec.task_id} --variant {variant} "
+                    f"verify --task {spec.task_id} {surface_flag} "
                     f"--profile paid`."
                 )
                 raise typer.Exit(EXIT_INFRA)
@@ -924,7 +979,7 @@ def verify(
             est = (_price(SKEPTIC_MODEL, 30_000, 16_000)
                    + _price(SKEPTIC_MODEL, 10_000, 2_000))
             typer.echo(
-                f"Paid verify: task={spec.task_id} variant={variant} "
+                f"Paid verify: task={spec.task_id} variant={identity} "
                 f"model={SKEPTIC_MODEL} estimated max cost ${est:.2f}"
             )
             if not yes and not typer.confirm("Proceed (this spends real API money)?"):
@@ -932,9 +987,8 @@ def verify(
                     "Declined: the run was not started, so no API spend "
                     "happened. Skeptic confirms before every billed paid "
                     "verify run unless --yes is passed. Next: re-run "
-                    f"`skeptic verify --task {spec.task_id} --variant "
-                    f"{variant} --profile paid --yes` once you're ready to "
-                    f"spend."
+                    f"`skeptic verify --task {spec.task_id} {surface_flag} "
+                    f"--profile paid --yes` once you're ready to spend."
                 )
                 raise typer.Exit(EXIT_INFRA)
 
@@ -948,22 +1002,28 @@ def verify(
             raise typer.Exit(EXIT_INFRA)
 
         workdir = workdir.resolve()
-        verify_dir = workdir / spec.task_id / "verify" / variant
+        # Docker's bind-mount flag (`-v host:container:ro`, what RunContainer
+        # uses to mount subpaths under this dir straight into the sandbox)
+        # splits on every colon in the host path, so `identity`'s `candidate:`
+        # form can reach verdict.json, the trace, and the cache key (all pure
+        # data, never a mount source) but not the directory name itself.
+        path_identity = identity.replace(":", "-")
+        verify_dir = workdir / spec.task_id / "verify" / path_identity
         # See build()'s own comment: rotate this verify dir's own trace before
         # touching it, so a second direct `skeptic verify` of the same
-        # task+variant starts a clean trace.jsonl instead of appending onto
-        # the first run's (run_id is deterministic per cache key). Harmless
-        # alongside the eval sweep's own pre-rotation: by the time this call
-        # runs from within a sweep, the sweep has already rotated, so this
-        # finds nothing to rotate.
+        # task+variant (or task+candidate-diff) starts a clean trace.jsonl
+        # instead of appending onto the first run's (run_id is deterministic
+        # per cache key). Harmless alongside the eval sweep's own
+        # pre-rotation: by the time this call runs from within a sweep, the
+        # sweep has already rotated, so this finds nothing to rotate.
         evalkit.rotate_trace(verify_dir)
         trace = TraceWriter(
             verify_dir / "trace.jsonl",
-            run_id=f"verify-{config_hash({'task': spec.task_id, 'variant': variant})}",
+            run_id=f"verify-{config_hash({'task': spec.task_id, 'variant': identity})}",
             task_id=spec.task_id)
         trace.event(stage="LOAD", actor="orchestrator", event="spec_loaded")
 
-        cache_key = _verify_cache_key(spec, variant_spec, profile)
+        cache_key = _verify_cache_key(spec, variant_spec, profile, candidate_diff=candidate_diff)
 
         def do_verify() -> dict:
             repo_dir = clone_pinned(spec.repo.url, spec.repo.commit,
@@ -976,7 +1036,10 @@ def verify(
             materialize(repo_dir, spec.repo.commit, seeded)
             apply_patch(seeded, Path(spec.seed.bug_patch))
             snapshot(seeded, variant_tree)
-            apply_patch(variant_tree, Path(variant_spec.patch))
+            if variant_spec is not None:
+                apply_patch(variant_tree, Path(variant_spec.patch))
+            else:
+                apply_candidate(variant_tree, candidate_diff)
 
             report = extract_candidate(
                 seeded, variant_tree, verify_dir / "candidate.diff",
@@ -1019,13 +1082,13 @@ def verify(
                 for record in mutation_report.records:
                     trace.event(
                         stage="VERIFY", actor="checks.t2_mutation", event="mutant_result",
-                        variant=variant_spec.id, dur_ms=record.dur_ms,
+                        variant=identity, dur_ms=record.dur_ms,
                         payload={"mutant_id": record.mutant_id, "status": record.status,
                                 "tests_run": len(record.tests_run)})
                 voided = sum(len(v.excluded_mutant_ids) for v in mutation_report.calibration_void)
                 trace.event(
                     stage="VERIFY", actor="checks.t2_mutation", event="mutation_batch",
-                    variant=variant_spec.id,
+                    variant=identity,
                     dur_ms=int((time.monotonic() - mutation_started) * 1000),
                     payload={"seed": mutation_report.seed, "budget": mutation_report.budget,
                             "generated": mutation_report.generated, "voided": voided})
@@ -1035,7 +1098,7 @@ def verify(
             except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
                 trace.event(
                     stage="VERIFY", actor="checks.t2_mutation",
-                    event="mutation_enrichment_failed", variant=variant_spec.id,
+                    event="mutation_enrichment_failed", variant=identity,
                     payload={"error": f"{type(exc).__name__}: {exc}"})
 
             # Probe enrichment: its own isolation block, parallel to the
@@ -1054,7 +1117,7 @@ def verify(
                     pair.artifacts_dir / "probe")
                 trace.event(
                     stage="VERIFY", actor="checks.t2_probe", event="probe_batch",
-                    variant=variant_spec.id,
+                    variant=identity,
                     dur_ms=int((time.monotonic() - probe_started) * 1000),
                     payload={"entrypoints": len(spec.verification.consumer_probe.entrypoints),
                             "calls": len(probe_report.calls) if probe_report else 0})
@@ -1063,7 +1126,7 @@ def verify(
             except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
                 trace.event(
                     stage="VERIFY", actor="checks.t2_probe",
-                    event="probe_enrichment_failed", variant=variant_spec.id,
+                    event="probe_enrichment_failed", variant=identity,
                     payload={"error": f"{type(exc).__name__}: {exc}"})
 
             # Adversarial-tests and judge enrichment: paid-profile only
@@ -1145,7 +1208,7 @@ def verify(
                         pair.artifacts_dir / "advtests", candidates, model=SKEPTIC_MODEL)
                     trace.event(
                         stage="VERIFY", actor="checks.t2_advtests", event="advtest_batch",
-                        variant=variant_spec.id,
+                        variant=identity,
                         dur_ms=int((time.monotonic() - advtests_started) * 1000),
                         payload={"n_candidates": advtests_report.n_candidates,
                                 "generated": len(advtests_report.candidates),
@@ -1157,7 +1220,7 @@ def verify(
                 except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
                     trace.event(
                         stage="VERIFY", actor="checks.t2_advtests",
-                        event="advtests_enrichment_failed", variant=variant_spec.id,
+                        event="advtests_enrichment_failed", variant=identity,
                         payload={"error": f"{type(exc).__name__}: {exc}"})
 
                 try:
@@ -1178,20 +1241,20 @@ def verify(
                         json.dumps(judge_io, indent=2, sort_keys=True) + "\n")
                     trace.event(
                         stage="VERIFY", actor="checks.t2_judge", event="judge_call",
-                        variant=variant_spec.id,
+                        variant=identity,
                         payload={"flagged": judge_report.flagged})
                     pair = pair.model_copy(update={
                         "candidate": pair.candidate.model_copy(update={"judge": judge_report})})
                 except Exception as exc:  # noqa: BLE001 - decision 8, see comment above
                     trace.event(
                         stage="VERIFY", actor="checks.t2_judge",
-                        event="judge_enrichment_failed", variant=variant_spec.id,
+                        event="judge_enrichment_failed", variant=identity,
                         payload={"error": f"{type(exc).__name__}: {exc}"})
 
             layer = run_verify_layer(pair, profile=profile)
             verdict = aggregate(
                 layer, run_id=trace.run_id, task_id=spec.task_id,
-                variant=variant_spec.id, isolation="docker-run",
+                variant=identity, isolation="docker-run",
                 profile=profile)
             return {
                 **verdict.model_dump(),

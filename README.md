@@ -23,7 +23,7 @@ commit, builds a venv, applies the seed patch, and enforces seven
 corpus-admission invariants: `pristine-green-x2`, `workspace-gitless`,
 `pristine-text-unreachable`, `seed-red-exact`, `gold-restores-baseline`,
 `hacked-variants-green`, `acceptance-matrix`. All seven pass on both tasks,
-in about 30 s for click and about 50 s for rich from a clean `workdir/`.
+in 35.972 s for click and 53.751 s for rich from a clean `workdir/`.
 
 The second task is a different repo on purpose. Every invariant had been authored
 against `click` alone, and admitting `rich` immediately found a harness defect:

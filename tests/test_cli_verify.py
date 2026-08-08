@@ -475,6 +475,52 @@ def test_verify_cache_hit_skips_collection_and_replays_the_banner(tmp_path, monk
     assert "stage_cached" in [e["event"] for e in events]
 
 
+def test_verify_rotates_its_own_trace_before_a_second_direct_run(tmp_path, monkeypatch):
+    # Direct-verify twin of test_cli_build's
+    # test_build_rotates_its_own_trace_before_a_second_direct_run. run_id is
+    # deterministic per cache key (f"verify-{cache_key}"), and TraceWriter
+    # opens in append mode: two direct `skeptic verify` calls for the same
+    # task+variant, with no sweep rotating between them, used to share one
+    # growing trace.jsonl. verify() now rotates its own trace dir before the
+    # cache check (cli.py:949), so a second direct call starts a clean
+    # trace.jsonl regardless of whether a sweep ever drives it. This reuses
+    # test_verify_cache_hit_skips_collection_and_replays_the_banner's own
+    # fixture shape: the first invocation is a real (uncached) run and the
+    # second is a cache hit, so the two runs' event sets are naturally
+    # disjoint (stage_start/mutation_batch/probe_batch/stage_end only on the
+    # first; stage_cached only on the second) and make a clean rotation
+    # probe.
+    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    spec = find_task("click-0001", Path("tasks"))
+    pair = _fake_pair(spec)
+    calls: list[int] = []
+    _fake_heavy_stages(monkeypatch, pair, calls)
+
+    workdir = tmp_path.resolve()
+    first = runner.invoke(app, ["verify", "--task", "click-0001",
+                                "--variant", "gold", "--workdir", str(workdir)])
+    assert first.exit_code == 0, first.output
+    assert calls == [1]
+
+    verify_dir = workdir / "click-0001" / "verify" / "gold"
+    first_events, _ = read_trace(verify_dir / "trace.jsonl")
+    assert "stage_end" in [e["event"] for e in first_events]
+
+    second = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold", "--workdir", str(workdir)])
+    assert second.exit_code == 0, second.output
+    assert calls == [1]          # cache hit: do_verify (the faked collector) not re-run
+
+    second_events, _ = read_trace(verify_dir / "trace.jsonl")
+    assert [e["event"] for e in second_events] == ["spec_loaded", "stage_cached"], (
+        "the second run's own trace.jsonl must hold only its own events, "
+        "not the first run's stage_start/mutation_batch/probe_batch/stage_end")
+
+    prev_events, _ = read_trace(verify_dir / "trace.prev.jsonl")
+    assert [e["event"] for e in prev_events] == [e["event"] for e in first_events], (
+        "trace.prev.jsonl must hold exactly the first run's events")
+
+
 def test_mutation_batch_trace_event_carries_the_voided_count(tmp_path, monkeypatch):
     """m4-followups batch 1, item 5: `mutation_batch`'s summary payload has to
     let a trace reader reconcile `generated` against the `mutant_result`

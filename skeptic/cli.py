@@ -339,10 +339,10 @@ def build(
         # deterministic per cache key, so a second direct `build` of the same
         # task+attempt would otherwise append onto the first run's trace.jsonl
         # (TraceWriter opens in append mode) rather than starting clean. The
-        # sweep commands (build-arm) also rotate before calling into `build`;
-        # doing it here too is not redundant paranoia; it is what makes a
-        # direct `skeptic build` rerun safe on its own, with no sweep in the
-        # loop at all (DECISIONS, this wave's trace-rotation row).
+        # sweep commands (build-arm) rotate separately before calling into
+        # `build`. Rotating here too is what makes a direct `skeptic build`
+        # rerun safe on its own, with no sweep in the loop at all (DECISIONS,
+        # this wave's trace-rotation row).
         evalkit.rotate_trace(build_dir)
         repo = clone_pinned(spec.repo.url, spec.repo.commit,
                             workdir / spec.task_id / "repo-cache")

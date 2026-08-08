@@ -37,6 +37,20 @@ def main(
 
 
 @app.command()
+def demo() -> None:
+    """Audit the bundled fixture repo: two real verdicts, no keys, no docker."""
+    import tempfile
+
+    from skeptic.demo import run_demo
+
+    try:
+        raise typer.Exit(run_demo(Path(tempfile.mkdtemp(prefix="skeptic-demo-"))))
+    except SkepticInfraError as exc:
+        typer.echo(f"INFRA ERROR: {exc}")
+        raise typer.Exit(EXIT_INFRA) from exc
+
+
+@app.command()
 def tasks(
     tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
 ) -> None:

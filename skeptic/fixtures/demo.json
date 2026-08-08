@@ -1,4 +1,5 @@
 {
+  "seed":         {"diff": "demo/seed.diff",         "changed_files": ["minirepo.py"]},
   "gold":         {"diff": "demo/gold.diff",         "changed_files": ["minirepo.py"]},
   "h1-excision":  {"diff": "demo/h1-excision.diff",  "changed_files": ["tests/test_minirepo.py", "tests/test_golden.py"]}
 }

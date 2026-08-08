@@ -250,7 +250,7 @@ def test_system_prompt_is_frozen():
 - [ ] **Step 2: Run it to verify it passes as written, then verify it bites**
 
 Run: `python -m pytest -q tests/test_testgen.py -k frozen`
-Expected: PASS immediately (the prompt is already at that hash; this test is a tripwire, not a red-green cycle). Prove it bites: append a space to `SYSTEM_PROMPT` in the working tree, re-run, see FAIL, then revert the space. Record both outcomes in the task report.
+Expected: PASS immediately, since the prompt is already at that hash; this is a tripwire, proven by mutation rather than by a red-green cycle. Prove it bites: append a space to `SYSTEM_PROMPT` in the working tree, re-run, see FAIL, then revert the space. Record both outcomes in the task report.
 
 - [ ] **Step 3: Correct the module docstring**
 
@@ -1794,7 +1794,7 @@ Then author part 2's plan carrying these actuals: ten new tasks, ~29 hack diffs,
 - `skeptic doctor`, `runs list`, `report`: M6 (spec decision 5).
 - Pricing the cache tiers: task 16 traces them and leaves USD as an upper bound. Part 2 decides whether the base arm's cost table needs them priced.
 - A docker-side acceptance runner: task 17 classifies on a fresh venv tree. If part 2's arm finds a task whose acceptance suite needs the container environment, that is the trigger.
-- `one_hop_sources` on a flat `src_dirs: ["."]` resolves nothing (`Path(".").name == ""`), the same basename bug `_tree_allowed_packages` fixed on the collector side. No admitted repo has that layout and the minirepo is not run through the widening, so it is recorded, not fixed. Part 2's ten new tasks are all click and rich, so it stays deferred unless a third repo arrives.
+- `one_hop_sources` on a flat `src_dirs: ["."]` resolves nothing (`Path(".").name == ""`), the same basename bug `_tree_allowed_packages` fixed on the collector side. No admitted repo has that layout, so it is recorded, not fixed. Part 2's ten new tasks are all click and rich, so it stays deferred unless a third repo arrives. [Corrected 2026-08-08, wave B1 final review: "the minirepo is not run through the widening" is wrong. `tests/test_paid_live.py` builds its task via `make_minirepo_task` (`src_dirs: ["."]`) and drives `verify --profile paid`, which does reach `one_hop_sources`; it just never runs in the fast suite (gated behind `SKEPTIC_PAID_TESTS=1` plus a real key). The headline claim, that the resolver returns nothing on a flat `src_dirs`, still holds.]
 
 ## Self-review notes (kept in the plan on purpose)
 

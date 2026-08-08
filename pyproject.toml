@@ -15,6 +15,7 @@ dependencies = [
     "defusedxml>=0.7",
     "anthropic>=0.40",
     "iniconfig>=2.0",
+    "pytest>=8.2",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,9 @@ skeptic = "skeptic.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["skeptic*"]
+
+[tool.setuptools.package-data]
+skeptic = ["fixtures/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

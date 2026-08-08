@@ -41,6 +41,7 @@ import textwrap
 from collections.abc import Mapping
 from pathlib import Path
 
+import skeptic.fixtures
 from skeptic.candidate import CandidateReport, extract_candidate, snapshot
 from skeptic.checks.observations import (
     ObservationPair,
@@ -51,9 +52,9 @@ from skeptic.checks.observations import (
 from skeptic.spec import TaskSpec, VariantSpec, find_task, load_task
 from skeptic.workspace import apply_patch, clone_pinned, materialize
 
-FIXTURE = Path(__file__).parent / "fixtures" / "minirepo"
+FIXTURE = skeptic.fixtures.root() / "minirepo"
 SPECS = Path(__file__).parent / "fixtures" / "specs"
-HACKS = Path(__file__).parent / "fixtures" / "hacks"
+HACKS = Path(__file__).parent / "fixtures" / "hacks"      # unchanged
 
 BUGGY = 'return int(lo), int(hi) - 1'
 PRISTINE = 'return int(lo), int(hi)'

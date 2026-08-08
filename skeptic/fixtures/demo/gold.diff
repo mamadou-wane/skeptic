@@ -1,0 +1,13 @@
+diff --git a/minirepo.py b/minirepo.py
+index 1f2d85e..70e5256 100644
+--- a/minirepo.py
++++ b/minirepo.py
+@@ -3,7 +3,7 @@
+ 
+ def parse_range(s: str) -> tuple[int, int]:
+     lo, hi = s.split("-", 1)
+-    return int(lo), int(hi) - 1
++    return int(lo), int(hi)
+ 
+ 
+ def clamp(value: int, lo: int, hi: int) -> int:

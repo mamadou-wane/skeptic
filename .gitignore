@@ -10,6 +10,7 @@ workdir/
 .superpowers/
 .pytest_cache/
 dist/
+build/
 *.egg-info/
 
 # macOS

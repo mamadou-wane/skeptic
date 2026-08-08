@@ -66,6 +66,7 @@ class BuildResult:
     green: bool
     cache_read_tokens: int
     cache_creation_tokens: int
+    usd_cache_gap: float
 
 
 def _price(model: str, in_tok: int, out_tok: int) -> float:
@@ -80,6 +81,23 @@ def _price(model: str, in_tok: int, out_tok: int) -> float:
     return (in_tok * rates["in"] + out_tok * rates["out"]) / 1_000_000
 
 
+def _cache_gap(model: str, cache_read_tok: int, cache_creation_tok: int) -> float:
+    """The dollar gap _price's naive in_tok/out_tok formula misses: cache
+    reads bill at 0.1x the input rate, cache creation at 1.25x. Every
+    breakpoint _call_with_retry sends `{"type": "ephemeral"}` with no `ttl`,
+    so every write is the default 5-minute TTL and 1.25x is a fixed
+    constant here, not a range across TTL tiers (see DECISIONS.md row 178).
+    true cost = _price(...) + this gap. Kept as a separate term rather than
+    folded into _price so pre-caching usd figures stay comparable and the
+    two components stay individually inspectable in the trace. Callers
+    always call _price for the same model first, which validates it is in
+    PRICING; this function relies on that and does not repeat the check.
+    """
+    rate_in = PRICING[model]["in"]
+    return (cache_read_tok * 0.1 * rate_in
+           + cache_creation_tok * 1.25 * rate_in) / 1_000_000
+
+
 def _user_prompt(spec: TaskSpec) -> str:
     return (
         f"{spec.builder_input.problem_statement}\n\n"
@@ -87,6 +105,37 @@ def _user_prompt(spec: TaskSpec) -> str:
         f"Test command: {spec.environment.test_cmd}\n"
         f"Start by listing files and reading the failing area."
     )
+
+
+def _mark_cache_boundary(messages: list[dict]) -> None:
+    """The second cache_control breakpoint (the first sits on the system
+    block, set in _call_with_retry): the last content block of the newest
+    user message, which is always messages[-1] when run_build calls this,
+    since the loop only ever calls the API right after the initial user
+    prompt or right after appending a fresh assistant+user pair. The
+    system+tools prefix (~800 tokens) alone can sit under the per-model
+    minimum cacheable prefix off Opus (DECISIONS.md row 180); anchoring the
+    second breakpoint to the growing message history is what actually
+    captures the loop's dominant cost, the tool results (file bodies,
+    pytest output) that accumulate turn over turn.
+
+    The initial user message stores its content as the bare string
+    _user_prompt() returns; normalizing it to a one-element block list
+    happens here, once, the first time it is newest, and the shape never
+    reverts, so every later request renders it identically. Every earlier
+    user message has its marker cleared before the newest one is set, so
+    exactly two breakpoints exist on the wire per call (of the 4 the API
+    allows).
+    """
+    newest = messages[-1]
+    if isinstance(newest["content"], str):
+        newest["content"] = [{"type": "text", "text": newest["content"]}]
+    for msg in messages[:-1]:
+        if msg["role"] != "user":
+            continue
+        for block in msg["content"]:
+            block.pop("cache_control", None)
+    newest["content"][-1]["cache_control"] = {"type": "ephemeral"}
 
 
 def _call_with_retry(client, *, model: str, messages: list, trace: TraceWriter):
@@ -155,6 +204,7 @@ def run_build(
     trace.event(stage="BUILD", actor="builder", event="build_start",
                 payload={"model": model, "prompt_version": prompt_version()})
     while True:
+        _mark_cache_boundary(messages)
         response = _call_with_retry(client, model=model, messages=messages,
                                     trace=trace)
         last_model_stop_reason = response.stop_reason
@@ -175,22 +225,23 @@ def run_build(
         in_tokens += response.usage.input_tokens
         out_tokens += response.usage.output_tokens
         # per-call marginal cost in the event, so llm_call rows sum to the
-        # build_end total; the cumulative figure drives the ceiling check.
-        # _price bills in_tok/out_tok at the standard rate only: it does not
-        # see cache_read_tok or cache_creation_tok at all, so a cache-active
-        # call's real cost (reads at 0.1x input, creation at 1.25x input) is
-        # not reflected here. Since cache activity costs something nonzero
-        # that this formula assigns $0, reported USD is a LOWER bound on true
-        # spend once caching is on: exact when both cache fields are zero,
-        # an increasing understatement as cache activity grows. Teaching
-        # _price the cache tiers is a separate decision (DECISIONS.md).
+        # build_end total; the cumulative figures drive the ceiling check.
+        # _price bills in_tok/out_tok at the standard rate only: it never
+        # sees cache_read_tok or cache_creation_tok, so it alone is a LOWER
+        # bound on true cost once caching is on. usd_cache_gap below closes
+        # that gap exactly (reads at 0.1x input, creation at 1.25x input;
+        # DECISIONS.md row 178), so usd + usd_cache_gap is the true figure,
+        # which is why the ceiling check below compares against the sum.
         call_usd = _price(model, response.usage.input_tokens,
                           response.usage.output_tokens)
+        call_usd_gap = _cache_gap(model, cache_read_tok, cache_creation_tok)
         usd = _price(model, in_tokens, out_tokens)
+        usd_gap = _cache_gap(model, cache_read_tokens, cache_creation_tokens)
         trace.event(stage="BUILD", actor="builder.llm", event="llm_call",
                     usage={"in_tok": response.usage.input_tokens,
                            "out_tok": response.usage.output_tokens,
                            "usd": round(call_usd, 4),
+                           "usd_cache_gap": round(call_usd_gap, 4),
                            "cache_read_tok": cache_read_tok,
                            "cache_creation_tok": cache_creation_tok})
         tool_uses = [b for b in response.content if b.type == "tool_use"]
@@ -239,7 +290,11 @@ def run_build(
         if in_tokens + out_tokens >= spec.constraints.token_budget:
             stop_reason = "token_budget"
             break
-        if usd >= spec.constraints.cost_ceiling_usd:
+        # Compared against the sum, not usd alone: usd is a lower bound once
+        # caching is on (see the comment above call_usd), and enforcing the
+        # ceiling against an undercounted figure would let a run spend past
+        # its real cap.
+        if usd + usd_gap >= spec.constraints.cost_ceiling_usd:
             stop_reason = "cost_ceiling"
             break
         if not tool_uses:
@@ -250,6 +305,7 @@ def run_build(
                            else "model_ended")
             break
     final_usd = _price(model, in_tokens, out_tokens)
+    final_usd_gap = _cache_gap(model, cache_read_tokens, cache_creation_tokens)
     trace.event(stage="BUILD", actor="builder", event="build_end",
                 payload={"stop_reason": stop_reason, "iterations": iterations,
                          "green": green,
@@ -261,10 +317,12 @@ def run_build(
                          "model_stop_reason": last_model_stop_reason},
                 usage={"in_tok": in_tokens, "out_tok": out_tokens,
                        "usd": round(final_usd, 4),
+                       "usd_cache_gap": round(final_usd_gap, 4),
                        "cache_read_tok": cache_read_tokens,
                        "cache_creation_tok": cache_creation_tokens})
     return BuildResult(stop_reason=stop_reason, iterations=iterations,
                        in_tokens=in_tokens, out_tokens=out_tokens,
                        usd=final_usd, green=green,
                        cache_read_tokens=cache_read_tokens,
-                       cache_creation_tokens=cache_creation_tokens)
+                       cache_creation_tokens=cache_creation_tokens,
+                       usd_cache_gap=final_usd_gap)

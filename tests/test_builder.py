@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -57,7 +58,14 @@ class FakeResponse:
 
 
 class FakeClient:
-    """Replays a script of responses; records the request kwargs."""
+    """Replays a script of responses; records the request kwargs.
+
+    Records a deep copy, not the live kwargs dict: `messages=messages` in
+    _call_with_retry passes run_build's own list by reference, and that list
+    keeps getting appended to and mutated (cache_control set and cleared by
+    _mark_cache_boundary) for the rest of the build. Without the copy,
+    every recorded request's "messages" would alias the same list and end
+    up showing its final state, not what was actually sent at call time."""
 
     def __init__(self, script):
         self._script = list(script)
@@ -65,7 +73,7 @@ class FakeClient:
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kwargs):
-        self.requests.append(kwargs)
+        self.requests.append(copy.deepcopy(kwargs))
         return self._script.pop(0)
 
 
@@ -176,6 +184,55 @@ def test_run_build_reports_cache_tokens_in_trace_and_result(build_env):
     assert call["usage"]["cache_creation_tok"] == 800
     assert result.cache_read_tokens == 1200
     assert result.cache_creation_tokens == 800
+    # sonnet-5 rate_in $3: (1200 * 0.1 * 3 + 800 * 1.25 * 3) / 1e6 = 0.00336.
+    # The trace rounds to 4 places like every other usage figure; BuildResult
+    # keeps the raw value, same convention as its usd field. Single-iteration
+    # build, so cumulative == per-call.
+    assert call["usage"]["usd_cache_gap"] == 0.0034
+    assert result.usd_cache_gap == pytest.approx(0.00336)
+
+
+def test_cache_boundary_moves_to_the_newest_user_message(build_env):
+    # The second breakpoint (the first sits on the system block) must track
+    # the newest user message each turn, not stay pinned to the first one:
+    # the loop's dominant cost is the growing tool-result history, not the
+    # ~800-token system+tools prefix alone.
+    spec, ctx, trace = build_env
+    read = FakeResponse([FakeBlock("tool_use", name="read_file",
+                                   input={"path": "pkg/mod.py"})])
+    green = FakeResponse([FakeBlock("tool_use", name="run_tests", input={})])
+    client = FakeClient([read, green])
+    run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
+
+    first_messages = client.requests[0]["messages"]
+    assert len(first_messages) == 1
+    assert first_messages[0]["content"][-1]["cache_control"] == {
+        "type": "ephemeral"}
+
+    second_messages = client.requests[1]["messages"]
+    assert len(second_messages) == 3
+    # The message that carried the marker on call 1 is no longer newest;
+    # its marker must be cleared, not just superseded by a second one.
+    assert "cache_control" not in second_messages[0]["content"][-1]
+    # The new newest message (the tool_result reply) carries it instead.
+    assert second_messages[-1]["content"][-1]["cache_control"] == {
+        "type": "ephemeral"}
+
+
+def test_run_build_enforces_cost_ceiling_using_cache_gap(build_env):
+    # usd alone ($0.00105, the existing sonnet-5 fixture math) sits under
+    # this ceiling; only usd + usd_cache_gap ($0.00441 with these cache
+    # fields) reaches it. If the ceiling check compared usd alone, this
+    # build would run past its real cost ceiling undetected.
+    spec, ctx, trace = build_env
+    spec = spec.model_copy(deep=True)
+    spec.constraints.cost_ceiling_usd = 0.002
+    usage = FakeUsageWithCache(cache_read_input_tokens=1200,
+                               cache_creation_input_tokens=800)
+    client = FakeClient([FakeResponse([FakeBlock("text", text="I'm done")],
+                                      stop_reason="end_turn", usage=usage)])
+    result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
+    assert result.stop_reason == "cost_ceiling"
 
 
 def test_run_build_stops_on_green(build_env):

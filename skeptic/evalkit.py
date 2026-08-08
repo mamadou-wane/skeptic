@@ -501,14 +501,23 @@ def classify_attempt(result: dict, acceptance: SuiteResult | None) -> str:
     a hack. `is_empty` (no candidate diff at all) reads as RED before
     `green` is even consulted: an empty patch cannot have fixed anything. A
     green, non-empty build with no acceptance result at all (`acceptance is
-    None`: the suite could not be run, whether for a missing venv, a task
-    with no `acceptance_suite` declared, or a collection error) is a missing
-    measurement, not a verdict, and is reported as one: INFRA_ERROR, never
-    guessed at as either GREEN outcome.
+    None`: the suite could not be run, whether for a missing venv or a task
+    with no `acceptance_suite` declared) is a missing measurement, not a
+    verdict, and is reported as one: INFRA_ERROR, never guessed at as either
+    GREEN outcome. So is a suite that ran but hit a collection error
+    (`acceptance.collection_errors`): admission's own `run_suite` shield
+    against a non-collecting tree lives two modules away from this
+    function, in `seedcheck.run_suite`, and a target repo whose config sets
+    `--continue-on-collection-errors` in its own pytest addopts can still
+    hand back a `SuiteResult` with `collection_errors > 0` and an empty
+    `red_set()`, which would otherwise read as a clean GREEN-correct pass on
+    a suite that never actually finished collecting.
     """
     if not result.get("green") or result.get("is_empty"):
         return "RED"
     if acceptance is None:
+        return "INFRA_ERROR"
+    if acceptance.collection_errors:
         return "INFRA_ERROR"
     return "GREEN-wrong" if acceptance.red_set() else "GREEN-correct"
 
@@ -518,15 +527,20 @@ class AttemptRow:
     """One (task, attempt) row of a build-arm snapshot: `result.json`'s own
     fields plus `classify_attempt`'s verdict on it.
 
-    `usd`/`usd_cache_gap` are zeroed and `estimated` set True on a
-    cache-hit attempt, the same "unknowable rather than zero-by-omission"
-    rule `load_rows` applies to a replayed paid VERIFY row: a BUILD cache
-    hit never re-runs `do_build` (`orchestrator.run_stage` returns the
-    cached dict outright), so it writes no fresh `llm_call` event to price
-    this attempt's spend against, even though the cached dict's own
-    historical `usd` figure is still sitting right there. `iterations` and
-    `stop_reason` are not zeroed: they describe what the build actually did,
-    which a cache hit still reports faithfully from the same cached dict.
+    A cache-hit attempt (`orchestrator.run_stage` returned the cached dict
+    without calling `do_build`) carries `replayed=True` and joins the
+    originating run's own `usd`/`usd_cache_gap` figures: the spec's own
+    words ("Cache-hit rows join cost/latency from the originating run's
+    trace and are marked replayed") are the ruling here, not a guess. That
+    number is real, historical spend, not an estimate; `estimated` marks a
+    narrower, genuinely unrecoverable case instead: a cache entry written
+    before `usd_cache_gap` existed on this branch (commit b7f7f2e) that
+    carries `usd` but not `usd_cache_gap`, or one missing `usd` outright,
+    where the harness has no figure to report and `.get(..., 0.0)` would
+    silently launder that gap into a real-looking zero. `iterations` and
+    `stop_reason` are never zeroed or marked: they describe what the build
+    actually did, which a cache hit still reports faithfully from the same
+    cached dict regardless of `replayed`.
     """
 
     task_id: str
@@ -539,21 +553,30 @@ class AttemptRow:
     cache_read_tokens: int
     cache_creation_tokens: int
     estimated: bool
+    replayed: bool
 
 
 def render_arm_table(rows: list[AttemptRow]) -> str:
     """Markdown summary of one arm's attempts: per-classification counts,
-    resolve rate, cost per resolve, and an `INFRA: n` footer mirroring the
-    eval table's own.
+    resolve rate, cost per resolve, a replayed-attempt note, an
+    estimated-cost note, and an `INFRA: n` footer mirroring the eval
+    table's own.
 
     Resolve rate is GREEN-correct over every non-INFRA attempt (an
     INFRA_ERROR attempt is a missing measurement, excluded from both sides
     of the fraction the same way `detection`'s own `not r.infra` guard
-    excludes an INFRA `EvalRow`). Cost per resolve sums `usd + usd_cache_gap`
-    over every attempt, INFRA included (a failed or red attempt's real spend
-    still bought some of the resolve rate above it), divided by the
-    GREEN-correct count: `usd + usd_cache_gap` is this branch's convention
-    for true spend (DECISIONS row 178, task 16).
+    excludes an INFRA `EvalRow`). `non_infra` is 0 exactly when `resolved`
+    is also 0 (GREEN-correct is a subset of non-INFRA), so the fraction
+    itself already reads `0/0` with no separate branch needed. Cost per
+    resolve sums `usd + usd_cache_gap` over every attempt, INFRA included (a
+    failed or red attempt's real spend still bought some of the resolve
+    rate above it), divided by the GREEN-correct count: `usd + usd_cache_gap`
+    is this branch's convention for true spend (DECISIONS row 178, task 16).
+    That total is the cost to produce these results, not this session's own
+    incremental spend: a replayed attempt's cost is real, historical spend
+    joined from the run that first produced it (`AttemptRow`'s own
+    docstring), not money this arm run spent again, and the replayed-count
+    line says so.
     """
     order = ("GREEN-correct", "GREEN-wrong", "RED", "INFRA_ERROR")
     counts = dict.fromkeys(order, 0)
@@ -563,17 +586,26 @@ def render_arm_table(rows: list[AttemptRow]) -> str:
     resolved = counts["GREEN-correct"]
     non_infra = len(rows) - counts["INFRA_ERROR"]
     total_cost = sum(row.usd + row.usd_cache_gap for row in rows)
+    n_replayed = sum(1 for row in rows if row.replayed)
+    n_estimated = sum(1 for row in rows if row.estimated)
 
     lines = ["| classification | n |", "|---|---|"]
     lines += [f"| {name} | {counts[name]} |" for name in order]
     lines.append("")
-    lines.append(f"resolve rate: {resolved}/{non_infra}" if non_infra
-                 else "resolve rate: 0/0")
+    lines.append(f"resolve rate: {resolved}/{non_infra}")
     lines.append(
         f"cost per resolve: ${total_cost / resolved:.2f}" if resolved
         else "cost per resolve: n/a (no GREEN-correct attempts)"
     )
     lines.append(
-        f"total cost: ${total_cost:.2f} (usd + usd_cache_gap, {len(rows)} attempts)")
+        f"total cost: ${total_cost:.2f} (usd + usd_cache_gap, {len(rows)} "
+        f"attempts; cost to produce these results, not this session's own "
+        f"incremental spend)")
+    if n_replayed:
+        lines.append(
+            f"replayed: {n_replayed} of {len(rows)} attempts (cost is the "
+            f"originating run's)")
+    if n_estimated:
+        lines.append(f"estimated cost on {n_estimated} attempts")
     lines.append(f"INFRA: {counts['INFRA_ERROR']}")
     return "\n".join(lines)

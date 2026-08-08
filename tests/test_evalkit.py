@@ -552,6 +552,16 @@ def test_classify_infra_when_the_suite_could_not_run():
     assert classify_attempt({"green": True, "is_empty": False}, None) == "INFRA_ERROR"
 
 
+def test_classify_infra_when_the_acceptance_suite_hit_a_collection_error():
+    # a suite that hit a collection error proved nothing, red_set() or not:
+    # admission's own run_suite shield lives two modules away from this
+    # function and a repo whose own pytest addopts sets
+    # --continue-on-collection-errors can still hand back an empty red_set
+    # with collection_errors > 0
+    acceptance = SuiteResult(outcomes={"acc::t": "passed"}, collection_errors=1)
+    assert classify_attempt({"green": True, "is_empty": False}, acceptance) == "INFRA_ERROR"
+
+
 def test_arm_run_id_names_the_arm():
     assert arm_run_id("base").startswith("base-")
     assert arm_run_id("tight-budget").startswith("tight-budget-")
@@ -561,21 +571,37 @@ ATTEMPT_GREEN_CORRECT = AttemptRow(
     task_id="click-0001", attempt=1, classification="GREEN-correct",
     usd=0.10, usd_cache_gap=0.02, iterations=4, stop_reason="green",
     cache_read_tokens=100, cache_creation_tokens=50, estimated=False,
+    replayed=False,
 )
 ATTEMPT_GREEN_WRONG = AttemptRow(
     task_id="click-0001", attempt=2, classification="GREEN-wrong",
     usd=0.08, usd_cache_gap=0.01, iterations=3, stop_reason="green",
     cache_read_tokens=80, cache_creation_tokens=0, estimated=False,
+    replayed=False,
 )
 ATTEMPT_RED = AttemptRow(
     task_id="rich-0001", attempt=1, classification="RED",
     usd=0.05, usd_cache_gap=0.0, iterations=4, stop_reason="iteration_cap",
     cache_read_tokens=0, cache_creation_tokens=0, estimated=False,
+    replayed=False,
 )
 ATTEMPT_INFRA = AttemptRow(
     task_id="rich-0001", attempt=2, classification="INFRA_ERROR",
     usd=0.0, usd_cache_gap=0.0, iterations=0, stop_reason="infra",
     cache_read_tokens=0, cache_creation_tokens=0, estimated=False,
+    replayed=False,
+)
+ATTEMPT_REPLAYED = AttemptRow(
+    task_id="click-0001", attempt=3, classification="GREEN-correct",
+    usd=0.10, usd_cache_gap=0.02, iterations=4, stop_reason="green",
+    cache_read_tokens=100, cache_creation_tokens=50, estimated=False,
+    replayed=True,
+)
+ATTEMPT_ESTIMATED = AttemptRow(
+    task_id="click-0001", attempt=4, classification="GREEN-wrong",
+    usd=0.0, usd_cache_gap=0.0, iterations=3, stop_reason="green",
+    cache_read_tokens=0, cache_creation_tokens=0, estimated=True,
+    replayed=True,
 )
 
 
@@ -609,3 +635,23 @@ def test_render_arm_table_empty_rows_reads_zero_over_zero():
     table = render_arm_table([])
     assert "resolve rate: 0/0" in table
     assert "cost per resolve: n/a" in table
+
+
+def test_render_arm_table_names_no_replayed_or_estimated_lines_when_neither_present():
+    table = render_arm_table([ATTEMPT_GREEN_CORRECT, ATTEMPT_RED])
+    assert "replayed:" not in table
+    assert "estimated cost" not in table
+
+
+def test_render_arm_table_counts_replayed_attempts_and_notes_their_cost_source():
+    table = render_arm_table([ATTEMPT_GREEN_CORRECT, ATTEMPT_REPLAYED])
+    assert "replayed: 1 of 2 attempts" in table
+    assert "originating run" in table
+    # the replayed row's real historical cost still counts toward the total
+    assert "total cost: $0.24" in table
+
+
+def test_render_arm_table_counts_estimated_attempts_separately_from_replayed():
+    table = render_arm_table([ATTEMPT_REPLAYED, ATTEMPT_ESTIMATED])
+    assert "replayed: 2 of 2 attempts" in table
+    assert "estimated cost on 1 attempts" in table

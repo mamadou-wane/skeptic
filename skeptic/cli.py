@@ -477,20 +477,25 @@ def _run_attempt_acceptance(
     candidate diff the next time `extract_candidate` ran. Instead: fresh
     `materialize`, apply the seed patch, apply the candidate diff
     (`workspace.apply_candidate`), copy the suite in, run
-    (`seedcheck.run_acceptance`) -- the same sequence VERIFY uses to judge a
+    (`seedcheck.run_acceptance`), the same sequence VERIFY uses to judge a
     variant, with the seed's own tree materialized once and the extracted
     diff played back onto it.
 
     Runs on a venv runner, not the docker session BUILD itself ran in
     (`run_suite`'s protocol is `SandboxRunnerLike.exec`, which only
     `VenvRunner` satisfies today; a docker-side acceptance run would need a
-    `RunContainer` script in the BUILD/VERIFY mold). The tradeoff --
-    classification runs outside the container the candidate was built in --
+    `RunContainer` script in the BUILD/VERIFY mold). The tradeoff
+    (classification runs outside the container the candidate was built in)
     is recorded in DECISIONS. The venv itself is admission's own, reused
     rather than rebuilt per attempt (`_acceptance_venv_dir`); a task this
     machine has never run `seed --check` against, or one declaring no
     `acceptance_suite` at all, raises `SkepticInfraError`, which the caller
     catches per attempt so a missing venv on one task does not end the arm.
+
+    The materialized tree is removed again once this attempt's run finishes,
+    win or lose: a base arm classifies 24 attempts, and leaving a full repo
+    checkout behind per attempt is disk nobody needs once its verdict is on
+    disk in `classification.json`.
     """
     import shutil
 
@@ -521,20 +526,23 @@ def _run_attempt_acceptance(
     tree = task_workdir / "build-arm-classify" / f"attempt-{attempt}" / "seeded"
     if tree.parent.exists():
         shutil.rmtree(tree.parent)
-    repo = clone_pinned(spec.repo.url, spec.repo.commit, task_workdir / "repo-cache")
-    materialize(repo, spec.repo.commit, tree)
-    apply_patch(tree, Path(spec.seed.bug_patch))
-    apply_candidate(tree, Path(result["candidate"]))
+    try:
+        repo = clone_pinned(spec.repo.url, spec.repo.commit, task_workdir / "repo-cache")
+        materialize(repo, spec.repo.commit, tree)
+        apply_patch(tree, Path(spec.seed.bug_patch))
+        apply_candidate(tree, Path(result["candidate"]))
 
-    def runner_factory(workspace: Path) -> VenvRunner:
-        venv_runner = VenvRunner(workspace=workspace, venv_dir=venv_dir)
-        venv_runner.setup(spec.environment.install)
-        return venv_runner
+        def runner_factory(workspace: Path) -> VenvRunner:
+            venv_runner = VenvRunner(workspace=workspace, venv_dir=venv_dir)
+            venv_runner.setup(spec.environment.install)
+            return venv_runner
 
-    return run_acceptance(
-        tree, Path(spec.acceptance_suite.path), runner_factory,
-        spec.environment.timeout_s, spec.seed.quarantine,
-    )
+        return run_acceptance(
+            tree, Path(spec.acceptance_suite.path), runner_factory,
+            spec.environment.timeout_s, spec.seed.quarantine,
+        )
+    finally:
+        shutil.rmtree(tree.parent, ignore_errors=True)
 
 
 @app.command(name="build-arm")
@@ -558,6 +566,7 @@ def build_arm(
 
     from skeptic import evalkit
     from skeptic.spec import find_task
+    from skeptic.trace import read_trace
 
     try:
         if attempts < 1:
@@ -620,7 +629,7 @@ def build_arm(
                           attempt=attempt)
                 except typer.Exit as exc:
                     code = exc.exit_code
-                else:  # pragma: no cover - build always exits
+                else:
                     raise SkepticInfraError(
                         f"build returned without exiting for {label}. Every "
                         f"build path raises typer.Exit; a plain return "
@@ -638,11 +647,27 @@ def build_arm(
                     typer.echo(f"  INFRA  {label}: build exited {code} with "
                                f"no result.json to classify.")
                     infra.append(label)
+                    # No result.json means the build died mid-flight (e.g. a
+                    # SkepticInfraError raised inside do_build after several
+                    # paid iterations already ran): real money can still be
+                    # spent here, and it is sitting in the trace snapshot_run
+                    # just copied, never in a cached result dict. Sum it the
+                    # way load_rows sums a VERIFY row's cost from its trace,
+                    # rather than reporting a free row for a spend that
+                    # happened.
+                    infra_trace = attempt_dir / "trace.jsonl"
+                    infra_events, _ = (
+                        read_trace(infra_trace) if infra_trace.is_file() else ([], 0))
+                    infra_llm_calls = [e for e in infra_events if e.get("event") == "llm_call"]
                     row = evalkit.AttemptRow(
                         task_id=spec.task_id, attempt=attempt,
-                        classification="INFRA_ERROR", usd=0.0, usd_cache_gap=0.0,
+                        classification="INFRA_ERROR",
+                        usd=sum(e["usage"].get("usd", 0.0) for e in infra_llm_calls),
+                        usd_cache_gap=sum(
+                            e["usage"].get("usd_cache_gap", 0.0) for e in infra_llm_calls),
                         iterations=0, stop_reason="infra", cache_read_tokens=0,
-                        cache_creation_tokens=0, estimated=False,
+                        cache_creation_tokens=0, estimated=not infra_llm_calls,
+                        replayed=False,
                     )
                     rows.append(row)
                     (attempt_dir / "classification.json").write_text(
@@ -656,16 +681,26 @@ def build_arm(
                 if result.get("green") and not result.get("is_empty"):
                     try:
                         acceptance = _run_attempt_acceptance(spec, result, workdir, attempt)
-                    except SkepticInfraError as exc:
-                        typer.echo(f"  INFRA  {label}: {exc}")
+                    except Exception as exc:  # noqa: BLE001 - one bad attempt must not end the arm
+                        typer.echo(f"  INFRA  {label}: {type(exc).__name__}: {exc}")
 
                 classification = evalkit.classify_attempt(result, acceptance)
                 if classification == "INFRA_ERROR":
                     infra.append(label)
 
-                estimated = meta["replayed"]
-                usd = 0.0 if estimated else result.get("usd", 0.0)
-                usd_cache_gap = 0.0 if estimated else result.get("usd_cache_gap", 0.0)
+                # A cache-hit attempt joins the originating run's own cost
+                # figures (spec's own words, docs/superpowers/specs/
+                # 2026-08-02-m5-publishable-core-design.md:99: "Cache-hit
+                # rows join cost/latency from the originating run's trace and
+                # are marked replayed"): that spend is real, not this run's,
+                # and AttemptRow.replayed says which. `estimated` marks the
+                # narrower, genuinely unrecoverable case instead: a cache
+                # entry written before usd_cache_gap existed on this branch
+                # (commit b7f7f2e) that is missing one or both cost keys.
+                replayed = meta["replayed"]
+                usd = result.get("usd", 0.0)
+                usd_cache_gap = result.get("usd_cache_gap", 0.0)
+                estimated = "usd" not in result or "usd_cache_gap" not in result
 
                 row = evalkit.AttemptRow(
                     task_id=spec.task_id, attempt=attempt,
@@ -675,7 +710,7 @@ def build_arm(
                     stop_reason=result.get("stop_reason", ""),
                     cache_read_tokens=result.get("cache_read_tokens", 0),
                     cache_creation_tokens=result.get("cache_creation_tokens", 0),
-                    estimated=estimated,
+                    estimated=estimated, replayed=replayed,
                 )
                 rows.append(row)
                 (attempt_dir / "classification.json").write_text(

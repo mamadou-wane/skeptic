@@ -1,4 +1,5 @@
 import json
+import typing
 from pathlib import Path
 
 import pytest
@@ -298,10 +299,13 @@ def test_build_arm_rotates_the_trace_before_calling_build(monkeypatch, tmp_path)
         "event": "stale_llm_call_from_a_previous_invocation"}
 
 
-def test_build_arm_marks_a_replayed_attempt_estimated_and_zeroes_its_cost(monkeypatch, tmp_path):
+def test_build_arm_a_replayed_attempt_joins_the_originating_runs_real_cost(monkeypatch, tmp_path):
+    # a cache hit: run_stage returns the cached dict without calling
+    # do_build, so trace.jsonl carries stage_cached and no llm_call. The
+    # design doc (docs/superpowers/specs/2026-08-02-m5-publishable-core-
+    # design.md:99) rules that a replayed row joins the originating run's
+    # own cost, marked replayed, not zeroed as a guess.
     def fake_build(**kw):
-        # a cache hit: run_stage returns the cached dict without calling
-        # do_build, so trace.jsonl carries stage_cached and no llm_call
         _write_build_result(kw["workdir"], kw["task"], kw["attempt"],
                             {**BASE_RESULT, "usd": 0.5, "usd_cache_gap": 0.1},
                             events=[{"event": "stage_cached"}])
@@ -321,12 +325,42 @@ def test_build_arm_marks_a_replayed_attempt_estimated_and_zeroes_its_cost(monkey
     row = json.loads(
         (run_dir / "click-0001" / "attempt-1" / "classification.json").read_text())
     assert row["classification"] == "GREEN-correct"
+    assert row["replayed"] is True
+    assert row["estimated"] is False
+    assert row["usd"] == 0.5
+    assert row["usd_cache_gap"] == 0.1
+
+
+def test_build_arm_a_replayed_row_missing_usd_cache_gap_is_estimated(monkeypatch, tmp_path):
+    # the one real zero-by-omission case: a cache entry written before
+    # usd_cache_gap existed on this branch (commit b7f7f2e) carries usd but
+    # not usd_cache_gap, and the harness has no figure for the missing key.
+    def fake_build(**kw):
+        pre_caching_result = {k: v for k, v in BASE_RESULT.items() if k != "usd_cache_gap"}
+        _write_build_result(kw["workdir"], kw["task"], kw["attempt"], pre_caching_result,
+                            events=[{"event": "stage_cached"}])
+        raise typer.Exit(0)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli.build", fake_build)
+    monkeypatch.setattr(
+        "skeptic.cli._run_attempt_acceptance",
+        lambda *a, **k: SuiteResult(outcomes={"acc::t": "passed"}, collection_errors=0))
+
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
+                                 "--attempts", "1", "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals"), "--yes"])
+    assert result.exit_code == 0, result.output
+    run_dir = _one_run_dir(tmp_path / "evals")
+    row = json.loads(
+        (run_dir / "click-0001" / "attempt-1" / "classification.json").read_text())
+    assert row["replayed"] is True
     assert row["estimated"] is True
-    assert row["usd"] == 0.0
+    assert row["usd"] == BASE_RESULT["usd"]
     assert row["usd_cache_gap"] == 0.0
 
 
-def test_build_arm_a_fresh_attempt_is_not_estimated_and_keeps_its_real_cost(monkeypatch, tmp_path):
+def test_build_arm_a_fresh_attempt_is_not_replayed_or_estimated(monkeypatch, tmp_path):
     def fake_build(**kw):
         _write_build_result(kw["workdir"], kw["task"], kw["attempt"], dict(BASE_RESULT),
                             events=[{"event": "llm_call", "usage": {"usd": 0.1}}])
@@ -345,9 +379,90 @@ def test_build_arm_a_fresh_attempt_is_not_estimated_and_keeps_its_real_cost(monk
     run_dir = _one_run_dir(tmp_path / "evals")
     row = json.loads(
         (run_dir / "click-0001" / "attempt-1" / "classification.json").read_text())
+    assert row["replayed"] is False
     assert row["estimated"] is False
     assert row["usd"] == BASE_RESULT["usd"]
     assert row["usd_cache_gap"] == BASE_RESULT["usd_cache_gap"]
+
+
+def test_build_arm_an_infra_attempt_publishes_the_spend_its_trace_shows(monkeypatch, tmp_path):
+    # a build that dies on SkepticInfraError after spending (a stage_error
+    # re-raise deep in do_build) writes no result.json, but real llm_call
+    # events still landed in trace.jsonl before it died; that spend must
+    # not publish as a free row.
+    def fake_build(**kw):
+        build_dir = _build_dir(Path(kw["workdir"]), kw["task"], kw["attempt"])
+        build_dir.mkdir(parents=True, exist_ok=True)
+        with (build_dir / "trace.jsonl").open("a") as fh:
+            fh.write(json.dumps(
+                {"event": "llm_call", "usage": {"usd": 0.3, "usd_cache_gap": 0.05}}) + "\n")
+            fh.write(json.dumps(
+                {"event": "llm_call", "usage": {"usd": 0.2, "usd_cache_gap": 0.0}}) + "\n")
+        raise typer.Exit(3)  # no result.json: the build died mid-flight
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli.build", fake_build)
+
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
+                                 "--attempts", "1", "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals"), "--yes"])
+    assert result.exit_code == 3
+    run_dir = _one_run_dir(tmp_path / "evals")
+    row = json.loads(
+        (run_dir / "click-0001" / "attempt-1" / "classification.json").read_text())
+    assert row["classification"] == "INFRA_ERROR"
+    assert row["usd"] == pytest.approx(0.5)
+    assert row["usd_cache_gap"] == pytest.approx(0.05)
+    assert row["estimated"] is False
+    assert row["replayed"] is False
+
+
+def test_build_arm_an_infra_attempt_with_no_trace_evidence_is_estimated(monkeypatch, tmp_path):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli.build", lambda **kw: (_ for _ in ()).throw(typer.Exit(3)))
+
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
+                                 "--attempts", "1", "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals"), "--yes"])
+    assert result.exit_code == 3
+    run_dir = _one_run_dir(tmp_path / "evals")
+    row = json.loads(
+        (run_dir / "click-0001" / "attempt-1" / "classification.json").read_text())
+    assert row["classification"] == "INFRA_ERROR"
+    assert row["usd"] == 0.0
+    assert row["estimated"] is True
+
+
+def test_build_arm_a_corrupt_acceptance_run_does_not_end_the_arm(monkeypatch, tmp_path):
+    # the per-attempt catch widens past SkepticInfraError: a corrupt junit
+    # report or any other unexpected failure inside acceptance must classify
+    # this attempt INFRA_ERROR, not kill the whole arm.
+    calls = []
+
+    def fake_build(**kw):
+        calls.append(kw["task"])
+        _write_build_result(kw["workdir"], kw["task"], kw["attempt"], dict(BASE_RESULT),
+                            events=[{"event": "llm_call", "usage": {"usd": 0.1}}])
+        raise typer.Exit(0)
+
+    def fake_acceptance(*args, **kwargs):
+        raise ValueError("not a SkepticInfraError at all")
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli.build", fake_build)
+    monkeypatch.setattr("skeptic.cli._run_attempt_acceptance", fake_acceptance)
+
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001,rich-0001",
+                                 "--attempts", "1", "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals"), "--yes"])
+    assert result.exit_code == 3
+    assert calls == ["click-0001", "rich-0001"]  # rich-0001 still ran
+    assert "ValueError" in result.output
+
+
+# classify_attempt's own collection-error case is pinned in tests/test_evalkit.py
+# (test_classify_infra_when_the_acceptance_suite_hit_a_collection_error), the
+# module classify_attempt itself lives in.
 
 
 # --- _run_attempt_acceptance: the two named INFRA conditions, unit-level ---
@@ -366,3 +481,90 @@ def test_run_attempt_acceptance_raises_when_the_admission_venv_is_missing(tmp_pa
         path=str(tmp_path / "acc"), must_pass_on=["pristine"], must_fail_on=["seeded"]))
     with pytest.raises(SkepticInfraError, match="seed --task .* --check"):
         _run_attempt_acceptance(spec, {"candidate": "x"}, tmp_path, 1)
+
+
+# --- pinning the classify path's own call sequence --------------------------
+#
+# The brief named these constraints "easy to get wrong in a new caller":
+# classify on a tree under build-arm-classify/, never under build/; the
+# candidate diff applied is THIS attempt's own; the venv is venvs/seeded;
+# timeout_s and quarantine forward from the spec. Nothing else in this file
+# fails if any one of them regresses, since every other test replaces
+# `_run_attempt_acceptance` wholesale.
+
+
+def test_run_attempt_acceptance_pins_the_classify_path_call_sequence(monkeypatch, tmp_path):
+    from skeptic import sandbox, seedcheck, workspace
+
+    spec = make_task_spec(
+        acceptance_suite=AcceptanceSuiteSpec(
+            path="acceptance/fake-suite", must_pass_on=["pristine"], must_fail_on=["seeded"]),
+        quarantine=["tests/t.py::test_flaky"],
+    )
+    (tmp_path / spec.task_id / "venvs" / "seeded").mkdir(parents=True)
+
+    calls = []
+
+    def fake_clone_pinned(url, commit, cache):
+        calls.append(("clone_pinned", url, commit, cache))
+        return Path("/fake/repo")
+
+    def fake_materialize(repo, commit, dest):
+        calls.append(("materialize", repo, commit, dest))
+        dest.mkdir(parents=True, exist_ok=True)
+        return dest
+
+    def fake_apply_patch(tree, patch_path):
+        calls.append(("apply_patch", tree, patch_path))
+
+    def fake_apply_candidate(tree, diff):
+        calls.append(("apply_candidate", tree, diff))
+
+    class FakeVenvRunner:
+        instances: typing.ClassVar[list] = []
+
+        def __init__(self, workspace, venv_dir):
+            self.workspace = workspace
+            self.venv_dir = venv_dir
+            FakeVenvRunner.instances.append(self)
+
+        def setup(self, install_cmds):
+            pass
+
+    def fake_run_acceptance(tree, acc_src, runner_factory, timeout_s, quarantine):
+        calls.append(("run_acceptance", tree, acc_src, timeout_s, quarantine))
+        runner_factory(tree)  # exercises the venv_dir wiring below
+        return SuiteResult(outcomes={}, collection_errors=0)
+
+    monkeypatch.setattr(workspace, "clone_pinned", fake_clone_pinned)
+    monkeypatch.setattr(workspace, "materialize", fake_materialize)
+    monkeypatch.setattr(workspace, "apply_patch", fake_apply_patch)
+    monkeypatch.setattr(workspace, "apply_candidate", fake_apply_candidate)
+    monkeypatch.setattr(seedcheck, "run_acceptance", fake_run_acceptance)
+    monkeypatch.setattr(sandbox, "VenvRunner", FakeVenvRunner)
+
+    result = {"candidate": "attempt-3-candidate.diff"}
+    _run_attempt_acceptance(spec, result, tmp_path, attempt=3)
+
+    assert [c[0] for c in calls] == [
+        "clone_pinned", "materialize", "apply_patch", "apply_candidate", "run_acceptance"]
+
+    assert calls[0] == (
+        "clone_pinned", spec.repo.url, spec.repo.commit, tmp_path / spec.task_id / "repo-cache")
+
+    tree = calls[1][3]
+    assert tree == tmp_path / spec.task_id / "build-arm-classify" / "attempt-3" / "seeded"
+    assert "build-arm-classify" in tree.parts
+    assert tree.parts[tree.parts.index(spec.task_id) + 1] != "build"  # never under build/
+    assert calls[1][1] == Path("/fake/repo")
+    assert calls[1][2] == spec.repo.commit
+
+    assert calls[2] == ("apply_patch", tree, Path(spec.seed.bug_patch))
+    # the diff applied is THIS attempt's own candidate, not some other one
+    assert calls[3] == ("apply_candidate", tree, Path("attempt-3-candidate.diff"))
+
+    assert calls[4] == (
+        "run_acceptance", tree, Path(spec.acceptance_suite.path),
+        spec.environment.timeout_s, spec.seed.quarantine)
+
+    assert FakeVenvRunner.instances[-1].venv_dir == tmp_path / spec.task_id / "venvs" / "seeded"

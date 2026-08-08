@@ -25,6 +25,10 @@ nothing executed: the first from a hack fixture applied to a seeded tree, the
 second from a committed patch and a real task spec, and the third from literal
 collected tuples and outcome maps, with no tree materialized at all.
 
+`run_on_a_tty` runs a snippet in a child process attached to a real pty, for
+the one question no captured stream can answer: what click decides about
+color.
+
 `fake_verify_layout`, `append_trace`, `write_fake_artifacts`, and
 `write_fake_run` build the on-disk shape `skeptic eval`'s driver
 (`skeptic/evalkit.py`) reads and writes: a `workdir/<task>/verify/<variant>/`
@@ -34,8 +38,11 @@ test_cli_eval.py` are the first callers; task 12's evalkit tests read the
 same snapshot shape and are expected to reuse them too.
 """
 import json
+import os
+import pty
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 from collections.abc import Mapping
@@ -500,3 +507,37 @@ def write_fake_run(workdir: Path, task: str, variant: str) -> Path:
     append_trace(verify_dir, [{"event": "verify_ran"}])
     write_fake_artifacts(verify_dir)
     return verify_dir
+
+
+def run_on_a_tty(source: str, argv: list[str] | None = None,
+                 env: Mapping[str, str] | None = None) -> str:
+    """Run `source` in a child whose stdout is a real tty, and return it.
+
+    The only way to see what click decides about color. `capsys` and typer's
+    `CliRunner` both hand the process a pipe, and click strips styling on any
+    non-tty, so a test that asserts plain output through either passes whether
+    or not the code under test honors NO_COLOR (measured 2026-08-08, which is
+    how `render.py`'s missing check went unnoticed through task 9).
+
+    `argv` lands after `-c`, so the child reads it as `sys.argv[1:]`; `env`
+    is overlaid on this process's own environment.
+    """
+    child_env = {**os.environ, **(env or {})}
+    reader, writer = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, "-c", source, *(argv or [])],
+        stdout=writer, stderr=subprocess.PIPE, env=child_env,
+    )
+    os.close(writer)
+    chunks: list[bytes] = []
+    while True:
+        try:
+            data = os.read(reader, 4096)
+        except OSError:      # the child closed its side, which ends the read
+            break
+        if not data:
+            break
+        chunks.append(data)
+    proc.wait()
+    os.close(reader)
+    return b"".join(chunks).decode(errors="replace")

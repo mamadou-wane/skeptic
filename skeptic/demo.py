@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -66,25 +67,57 @@ VARIANTS: tuple[tuple[str, str, str], ...] = (
     ("h1-excision", "FAIL", "the failing tests deleted, the bug left in place"),
 )
 
-# The bundle files a half-install drops. setuptools ships modules and skips
-# data unless told otherwise, so the .py files can be present while the
-# manifest, the diffs, and the fixture's own non-Python payload are not.
-REQUIRED = ("demo.json", "demo/seed.diff", "minirepo/minirepo.py",
-            "minirepo/pyproject.toml")
+# The bundle files a half-install drops that the manifest cannot name for
+# itself. setuptools ships modules and skips data unless told otherwise, so
+# the .py files can be present while the manifest and the fixture's own
+# non-Python payload are not. Every diff is checked too, read off the
+# manifest below, so this tuple stays the things outside it.
+REQUIRED = ("demo.json", "minirepo/minirepo.py", "minirepo/pyproject.toml")
 
 
-def _bundle() -> Path:
+def _require_git() -> None:
+    """Refuse before the first `git apply` when there is no git to apply with.
+
+    `skeptic demo` is the command a fresh `pip install` runs first, and
+    `workspace.apply_patch` reaches `subprocess.run(["git", ...])` before any
+    of its own return-code handling, so a missing binary would surface as a
+    `FileNotFoundError` traceback and exit 1 instead of a sentence.
+    """
+    if shutil.which("git") is None:
+        raise SkepticInfraError(
+            "No `git` binary on PATH. `skeptic demo` builds its three fixture "
+            "trees by applying committed diffs with `git apply`, so there is "
+            "nothing to build them with. Next: install git, then re-run "
+            "`skeptic demo`."
+        )
+
+
+def _incomplete(root: Path, missing: list[str]) -> SkepticInfraError:
+    return SkepticInfraError(
+        f"The bundled demo fixture is incomplete under {root}: {missing} "
+        f"absent. `skeptic demo` audits a minirepo that ships inside the "
+        f"package, so an install that carried the modules and dropped the "
+        f"fixture data has nothing to run against. Next: "
+        f"`pip install --force-reinstall skeptic`."
+    )
+
+
+def _bundle() -> tuple[Path, dict]:
+    """The fixture root and its manifest, with every file the run reads present.
+
+    The manifest names the diffs, so checking them is a walk over it rather
+    than a second hand-written list that could fall behind the data.
+    """
     root = fixtures_root()
     missing = [rel for rel in REQUIRED if not (root / rel).is_file()]
     if missing:
-        raise SkepticInfraError(
-            f"The bundled demo fixture is incomplete under {root}: {missing} "
-            f"absent. `skeptic demo` audits a minirepo that ships inside the "
-            f"package, so an install that carried the modules and dropped the "
-            f"fixture data has nothing to run against. Next: "
-            f"`pip install --force-reinstall skeptic`."
-        )
-    return root
+        raise _incomplete(root, missing)
+    manifest = json.loads((root / "demo.json").read_text())
+    absent = [entry["diff"] for entry in manifest.values()
+              if not (root / entry["diff"]).is_file()]
+    if absent:
+        raise _incomplete(root, absent)
+    return root, manifest
 
 
 def _spec(bundle: Path, manifest: dict) -> TaskSpec:
@@ -206,13 +239,15 @@ def _observe(spec: TaskSpec, tree: Path, artifacts: Path, side: Side) -> Variant
     )
 
 
-def _report(bundle: Path, entry: dict, allowed: list[str]) -> CandidateReport:
-    """One variant's diff read back as the report the checks judge.
+def _diff(bundle: Path, entry: dict) -> tuple[Path, list[str]]:
+    """One manifest entry's diff path and changed files, cross-checked.
 
     The diff is the source of truth and the manifest's `changed_files` list is
     hand-authored, so the two are compared here and a disagreement stops the
     run. A manifest that drifted from its diff would hand `t1_scope` and
-    `t1_goldens` a path set no tree ever had.
+    `t1_goldens` a path set no tree ever had. Every entry goes through this,
+    the seed included, so the row that builds the baseline is held to the same
+    standard as the two that build the variants.
     """
     diff_path = bundle / entry["diff"]
     changed = sorted(parse_unified_diff(diff_path.read_text()))
@@ -227,6 +262,12 @@ def _report(bundle: Path, entry: dict, allowed: list[str]) -> CandidateReport:
             f"bug, never evidence. Next: regenerate `demo.json` from the "
             f"committed diffs under {diff_path.parent}."
         )
+    return diff_path, changed
+
+
+def _report(bundle: Path, entry: dict, allowed: list[str]) -> CandidateReport:
+    """One variant's diff read back as the report the checks judge."""
+    diff_path, changed = _diff(bundle, entry)
     return CandidateReport(
         diff_path=diff_path, changed_files=changed,
         out_of_scope=[path for path in changed if not under(path, allowed)],
@@ -260,14 +301,15 @@ def run_demo(workdir: Path) -> int:
     skeptic moved under them, and a demo that renders the wrong verdict is
     broken however cleanly it printed.
     """
-    bundle = _bundle()
-    manifest = json.loads((bundle / "demo.json").read_text())
+    _require_git()
+    bundle, manifest = _bundle()
     spec = _spec(bundle, manifest)
     allowed = list(spec.builder_input.allowed_paths)
     workdir.mkdir(parents=True, exist_ok=True)
     artifacts_root = workdir / "artifacts"
 
-    seeded = _tree(bundle, workdir / "baseline", [Path(spec.seed.bug_patch)])
+    seed_diff, _ = _diff(bundle, manifest["seed"])
+    seeded = _tree(bundle, workdir / "baseline", [seed_diff])
     baseline = _observe(spec, seeded, artifacts_root / "baseline", "baseline")
     red = sum(1 for outcome in baseline.outcomes.values() if outcome in ("failed", "error"))
 
@@ -280,7 +322,7 @@ def run_demo(workdir: Path) -> int:
     for variant, expected, blurb in VARIANTS:
         report = _report(bundle, manifest[variant], allowed)
         tree = _tree(bundle, workdir / variant,
-                     [Path(spec.seed.bug_patch), report.diff_path])
+                     [seed_diff, report.diff_path])
         artifacts = artifacts_root / variant
         pair = ObservationPair(
             spec=spec, baseline=baseline,

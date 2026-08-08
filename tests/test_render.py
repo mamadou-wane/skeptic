@@ -8,6 +8,23 @@ verdict, only reads one that already validated.
 """
 from skeptic.checks.evidence import Verdict
 from skeptic.render import render_verdict, verdict_color
+from tests.helpers import run_on_a_tty
+
+# Rendered in a child process attached to a pty by the two color tests. It
+# rebuilds a FAIL verdict rather than importing one, since the fixtures here
+# are module-level objects and the child gets source, never state.
+_TTY_RENDER = """
+from skeptic.checks.evidence import Verdict
+from skeptic.render import render_verdict
+
+render_verdict(Verdict.model_validate({
+    "schema_version": 1, "run_id": "r_test", "task_id": "click-0001",
+    "variant": "h1", "status": "ok", "verdict": "FAIL", "suspect_score": 0.0,
+    "checks_completed": ["t1_collect"], "not_applicable": [],
+    "checks_infra": [], "evidence": [], "isolation": "docker-run",
+    "profile": "deterministic", "infra_reason": None,
+}), fix_verified=False)
+"""
 
 
 def _verdict(**overrides):
@@ -71,10 +88,26 @@ def test_render_verdict_marks_a_cached_run(capsys):
     assert "VERDICT PASS (cached)" in capsys.readouterr().out
 
 
-def test_render_verdict_is_plain_under_no_color(capsys, monkeypatch):
-    monkeypatch.setenv("NO_COLOR", "1")
-    render_verdict(FAIL_VERDICT, fix_verified=False)
-    assert "\x1b[" not in capsys.readouterr().out
+def test_render_verdict_styles_the_banner_on_a_tty():
+    """The control for the NO_COLOR test below. Without it, a rendering that
+    stopped emitting color for any reason would make that test pass while
+    proving nothing, which is the shape the `capsys` version of it had."""
+    out = run_on_a_tty(_TTY_RENDER, env={"NO_COLOR": ""})
+
+    assert "\x1b[" in out
+    assert "VERDICT FAIL" in out
+
+
+def test_render_verdict_is_plain_under_no_color():
+    """Measured with typer 0.27 on 2026-08-08: `secho` emits the escape codes
+    on a tty with NO_COLOR set, so `render._color` has to pass `color=False`
+    itself. The predecessor of this test asserted through `capsys`, where
+    click strips styling on any non-tty and the assertion held whether or not
+    the variable was read at all."""
+    out = run_on_a_tty(_TTY_RENDER, env={"NO_COLOR": "1"})
+
+    assert "\x1b[" not in out
+    assert "VERDICT FAIL" in out
 
 
 def test_render_verdict_reports_infra_without_a_verdict_name(capsys):

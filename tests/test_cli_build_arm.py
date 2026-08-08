@@ -104,6 +104,18 @@ def test_build_arm_prints_estimated_max_as_attempts_times_ceiling(monkeypatch, t
                                  "--out", str(tmp_path / "evals")], input="n\n")
     assert result.exit_code == 3
     assert "$6.00" in result.output
+    assert "3 attempts" in result.output
+
+
+def test_build_arm_confirm_message_uses_singular_attempt_for_one(monkeypatch, tmp_path):
+    # part 1 review noted the confirm message reads "1 attempts" at --attempts 1
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
+                                 "--attempts", "1", "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")], input="n\n")
+    assert result.exit_code == 3
+    assert "1 attempts" not in result.output
+    assert "1 attempt " in result.output or "1 attempt)" in result.output
 
 
 def test_build_arm_yes_skips_confirm_and_drives_the_arm(monkeypatch, tmp_path):
@@ -124,6 +136,82 @@ def test_build_arm_yes_skips_confirm_and_drives_the_arm(monkeypatch, tmp_path):
     assert "Proceed" not in result.output
     assert len(calls) == 1
     assert all(kw["yes"] is True for kw in calls)
+
+
+# --- task 2: the provenance manifest ----------------------------------------
+
+
+def test_build_arm_writes_manifest_json_beside_arm_md(monkeypatch, tmp_path):
+    def fake_build(**kw):
+        _write_build_result(kw["workdir"], kw["task"], kw["attempt"], dict(BASE_RESULT),
+                            events=[{"event": "llm_call", "usage": {"usd": 0.1}}])
+        raise typer.Exit(0)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli.build", fake_build)
+    monkeypatch.setattr(
+        "skeptic.cli._run_attempt_acceptance",
+        lambda *a, **k: SuiteResult(outcomes={"acc::t": "passed"}, collection_errors=0))
+
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
+                                 "--attempts", "1", "--model", "claude-opus-5",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals"), "--yes"])
+    assert result.exit_code == 0, result.output
+    run_dir = _one_run_dir(tmp_path / "evals")
+
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert manifest["arm_name"] == "base"
+    assert manifest["model"] == "claude-opus-5"
+    assert manifest["attempts"] == 1
+    assert set(manifest["tasks"]) == {"click-0001"}
+    assert manifest["schema_version"] == 1  # write_manifest's own injection
+
+    # render_arm_table's header is wired to this same manifest
+    table = (run_dir / "arm.md").read_text()
+    assert "arm: base" in table
+    assert "model: claude-opus-5" in table
+
+
+def test_build_arm_writes_manifest_even_when_every_attempt_is_infra(monkeypatch, tmp_path):
+    # the manifest is written where run_dir is created, before the attempt
+    # loop's outcome matters: an all-INFRA sweep still gets one.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli.build", lambda **kw: (_ for _ in ()).throw(typer.Exit(3)))
+
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
+                                 "--attempts", "1", "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals"), "--yes"])
+    assert result.exit_code == 3
+    run_dir = _one_run_dir(tmp_path / "evals")
+
+    manifest_path = run_dir / "manifest.json"
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["arm_name"] == "base"
+    assert set(manifest["tasks"]) == {"click-0001"}
+
+    row = json.loads(
+        (run_dir / "click-0001" / "attempt-1" / "classification.json").read_text())
+    assert row["classification"] == "INFRA_ERROR"  # the loop itself did run and classify
+
+
+def test_build_arm_manifest_survives_a_hard_abort_inside_the_attempt_loop(monkeypatch, tmp_path):
+    # build() returning without exiting raises SkepticInfraError from INSIDE
+    # the attempt loop, uncaught there: it propagates straight past arm.md's
+    # own write. Writing the manifest before the loop starts, not after it
+    # like eval's own manifest, is what makes it survive this abort.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli.build", lambda **kw: None)  # never raises typer.Exit
+
+    result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
+                                 "--attempts", "1", "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals"), "--yes"])
+    assert result.exit_code == 3
+    assert "returned without exiting" in result.output
+    run_dir = _one_run_dir(tmp_path / "evals")
+    assert (run_dir / "manifest.json").is_file()
+    assert not (run_dir / "arm.md").exists()  # the loop aborted before the table ever wrote
 
 
 # --- classification wiring --------------------------------------------------

@@ -577,7 +577,7 @@ def build_arm(
 
     from skeptic import evalkit
     from skeptic.spec import find_task
-    from skeptic.trace import read_trace
+    from skeptic.trace import read_trace, write_manifest
 
     try:
         if not re.fullmatch(r"[a-z0-9-]+", name):
@@ -617,12 +617,13 @@ def build_arm(
         out = out.resolve()
         n_builds = len(specs) * attempts
         est_max = attempts * sum(spec.constraints.cost_ceiling_usd for spec in specs)
+        attempt_word = "attempt" if attempts == 1 else "attempts"
         typer.echo(
             f"Build arm: name={name} · {len(specs)} tasks x {attempts} "
-            f"attempts = {n_builds} builds · model={model} · estimated max "
-            f"cost ${est_max:.2f} (each task's own cost_ceiling_usd x "
-            f"{attempts} attempts). This one confirm covers the whole arm; "
-            f"each build's own confirm is skipped."
+            f"{attempt_word} = {n_builds} builds · model={model} · estimated "
+            f"max cost ${est_max:.2f} (each task's own cost_ceiling_usd x "
+            f"{attempts} {attempt_word}). This one confirm covers the whole "
+            f"arm; each build's own confirm is skipped."
         )
         if not yes and not typer.confirm("Proceed (this spends real API money)?"):
             typer.echo(
@@ -636,6 +637,13 @@ def build_arm(
 
         run_id = evalkit.arm_run_id(name)
         run_dir = out / "arms" / run_id
+        # Written here, before the attempt loop, not after it: a published
+        # arm.md needs this provenance to mean anything (part 1 final
+        # review), and every run gets one, including a sweep where every
+        # attempt classifies INFRA_ERROR.
+        manifest = evalkit.build_arm_manifest(
+            specs, workdir, arm_name=name, model=model, attempts=attempts)
+        write_manifest(run_dir / "manifest.json", manifest)
         rows: list[evalkit.AttemptRow] = []
         infra: list[str] = []
 
@@ -738,7 +746,7 @@ def build_arm(
                     json.dumps(dataclasses.asdict(row), indent=2, sort_keys=True) + "\n")
 
         table_path = run_dir / "arm.md"
-        table_path.write_text(evalkit.render_arm_table(rows))
+        table_path.write_text(evalkit.render_arm_table(rows, header=manifest))
 
         typer.echo(f"{len(rows)} attempts · {len(infra)} INFRA")
         typer.echo(f"run dir: {run_dir}")

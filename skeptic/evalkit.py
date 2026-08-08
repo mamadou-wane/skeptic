@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from skeptic.builder import GREEN_RULE_VERSION, prompt_version
 from skeptic.checks.aggregate import score_evidence
 from skeptic.collector import COLLECTOR_VERSION
 from skeptic.errors import SkepticInfraError
@@ -644,7 +645,55 @@ class AttemptRow:
     replayed: bool
 
 
-def render_arm_table(rows: list[AttemptRow]) -> str:
+def build_arm_manifest(
+    specs: list[TaskSpec], workdir: Path, *, arm_name: str, model: str, attempts: int,
+) -> dict:
+    """The build-arm counterpart of `build_manifest` (task 2): same
+    template, two deliberate corrections plus the arm's own identity.
+
+    `model` is the arm's Builder model (`build-arm --model`, default
+    claude-opus-5), not `SKEPTIC_MODEL`: that constant names the haiku model
+    VERIFY's judge check calls, and has no bearing on which model built these
+    candidates. The prompt identity is likewise the Builder's own,
+    `builder.prompt_version()` (system + tools hash) plus
+    `builder.GREEN_RULE_VERSION`, never the testgen `SYSTEM_PROMPT` hash
+    `build_manifest` records: an arm never calls testgen, and a green build
+    that never fixed the bug is exactly what `GREEN_RULE_VERSION` names.
+    `verifier_revision()` stays, since the acceptance classification that
+    turns a BUILD attempt into RED/GREEN-wrong/GREEN-correct/INFRA_ERROR
+    (`classify_attempt`, `_run_attempt_acceptance`) runs through this same
+    harness code. `collector_version` is dropped rather than corrected: an
+    arm never calls the collector (`_run_attempt_acceptance` runs
+    `seedcheck.run_acceptance` against a freshly materialized tree, not
+    `collector.observe_variant`), so there is no collector behavior here to
+    version.
+
+    Per-task entries carry only the seed patch's sha256 and `_image_id(spec,
+    workdir)`, the same two fields `build_manifest` records; there is no
+    `variants` entry, because an arm drives BUILD attempts against a task's
+    seed, never a verify sweep against its variant patches. `arm_name` and
+    `attempts` carry the arm's own identity alongside the task list `tasks`
+    already enumerates by its keys. `schema_version` is not set here, same
+    as `build_manifest`: `write_manifest` injects it.
+    """
+    tasks = {}
+    for spec in specs:
+        tasks[spec.task_id] = {
+            "seed": hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest(),
+            "image_id": _image_id(spec, workdir),
+        }
+    return {
+        "verifier_revision": verifier_revision(),
+        "model": model,
+        "prompt_hash": prompt_version(),
+        "green_rule": GREEN_RULE_VERSION,
+        "arm_name": arm_name,
+        "attempts": attempts,
+        "tasks": tasks,
+    }
+
+
+def render_arm_table(rows: list[AttemptRow], header: dict | None = None) -> str:
     """Markdown summary of one arm's attempts: per-classification counts,
     resolve rate, cost per resolve, a replayed-attempt note, an
     estimated-cost note, and an `INFRA: n` footer mirroring the eval
@@ -665,6 +714,14 @@ def render_arm_table(rows: list[AttemptRow]) -> str:
     joined from the run that first produced it (`AttemptRow`'s own
     docstring), not money this arm run spent again, and the replayed-count
     line says so.
+
+    `header` (task 2), when given, is `build_arm_manifest`'s own return
+    value: the arm name, model, attempts, task count, verifier revision, and
+    prompt version print as two lines above the classification table, so a
+    published `arm.md` carries the provenance a bare set of counts cannot.
+    Omitted (the default), nothing renders: the sole production caller
+    passed `rows` alone before task 2 wired it to the manifest, and every
+    other caller (this module's own tests) still can.
     """
     order = ("GREEN-correct", "GREEN-wrong", "RED", "INFRA_ERROR")
     counts = dict.fromkeys(order, 0)
@@ -677,7 +734,16 @@ def render_arm_table(rows: list[AttemptRow]) -> str:
     n_replayed = sum(1 for row in rows if row.replayed)
     n_estimated = sum(1 for row in rows if row.estimated)
 
-    lines = ["| classification | n |", "|---|---|"]
+    lines: list[str] = []
+    if header is not None:
+        lines += [
+            (f"arm: {header['arm_name']} · model: {header['model']} · "
+             f"attempts: {header['attempts']} · tasks: {len(header['tasks'])}"),
+            (f"verifier_revision: {header['verifier_revision']} · "
+             f"prompt_version: {header['prompt_hash']}"),
+            "",
+        ]
+    lines += ["| classification | n |", "|---|---|"]
     lines += [f"| {name} | {counts[name]} |" for name in order]
     lines.append("")
     lines.append(f"resolve rate: {resolved}/{non_infra}")

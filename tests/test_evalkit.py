@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from skeptic.builder import GREEN_RULE_VERSION, prompt_version
 from skeptic.checks.aggregate import WEIGHTS
 from skeptic.errors import SkepticInfraError
 from skeptic.evalkit import (
@@ -18,6 +19,7 @@ from skeptic.evalkit import (
     baseline_always_suspect,
     baseline_judge_alone,
     baseline_suite_green_only,
+    build_arm_manifest,
     build_manifest,
     classify_attempt,
     confusion,
@@ -32,9 +34,11 @@ from skeptic.evalkit import (
     tune,
 )
 from skeptic.image import repo_image_tag
+from skeptic.llm import SKEPTIC_MODEL
 from skeptic.seedcheck import SuiteResult
 from skeptic.spec import find_task
-from skeptic.trace import read_trace
+from skeptic.testgen import SYSTEM_PROMPT
+from skeptic.trace import config_hash, read_trace
 from tests.helpers import append_trace, fake_verify_layout, write_fake_artifacts
 
 
@@ -108,6 +112,49 @@ def test_build_manifest_shape_and_image_id_fallback(tmp_path):
         assert set(entry["variants"]) == {v.id for v in spec.evaluation.variants}
         assert len(entry["seed"]) == 64  # sha256 hexdigest length: shape, not value
         assert all(len(h) == 64 for h in entry["variants"].values())
+
+
+def test_build_arm_manifest_shape_and_the_two_template_corrections(tmp_path):
+    """build_arm_manifest mirrors build_manifest's shape with two deliberate
+    corrections (task 2 brief): `model` is the arm's own Builder model, never
+    SKEPTIC_MODEL (the haiku verify-side model); the prompt identity is
+    builder.prompt_version() + GREEN_RULE_VERSION, never the testgen
+    SYSTEM_PROMPT hash. Per-task entries carry only seed + image_id: no
+    `variants`, since an arm drives BUILD attempts, never variant patches.
+    `collector_version` is absent too: build-arm never calls the collector."""
+    click = find_task("click-0001", Path("tasks"))
+    rich = find_task("rich-0001", Path("tasks"))
+
+    manifest = build_arm_manifest(
+        [click, rich], tmp_path, arm_name="base", model="claude-opus-5", attempts=2)
+
+    assert set(manifest) == {
+        "verifier_revision", "model", "prompt_hash", "green_rule",
+        "arm_name", "attempts", "tasks"}
+    assert manifest["model"] == "claude-opus-5"
+    assert manifest["model"] != SKEPTIC_MODEL
+    assert manifest["prompt_hash"] == prompt_version()
+    assert manifest["prompt_hash"] != config_hash({"system": SYSTEM_PROMPT})
+    assert manifest["green_rule"] == GREEN_RULE_VERSION
+    assert manifest["arm_name"] == "base"
+    assert manifest["attempts"] == 2
+
+    for task_id, spec in (("click-0001", click), ("rich-0001", rich)):
+        entry = manifest["tasks"][task_id]
+        assert set(entry) == {"seed", "image_id"}
+        assert len(entry["seed"]) == 64  # sha256 hexdigest length: shape, not value
+        assert entry["image_id"] == repo_image_tag(spec)  # no build/result.json yet
+
+
+def test_build_arm_manifest_image_id_reads_a_real_build_result(tmp_path):
+    click = find_task("click-0001", Path("tasks"))
+    build_dir = tmp_path / "click-0001" / "build"
+    build_dir.mkdir(parents=True)
+    (build_dir / "result.json").write_text(json.dumps({"image_id": "sha256:deadbeef"}))
+
+    manifest = build_arm_manifest(
+        [click], tmp_path, arm_name="base", model="claude-opus-5", attempts=1)
+    assert manifest["tasks"]["click-0001"]["image_id"] == "sha256:deadbeef"
 
 
 def test_image_id_reads_attempt_one_then_any_attempt(tmp_path):
@@ -719,3 +766,34 @@ def test_render_arm_table_counts_estimated_attempts_separately_from_replayed():
     table = render_arm_table([ATTEMPT_REPLAYED, ATTEMPT_ESTIMATED])
     assert "replayed: 2 of 2 attempts" in table
     assert "estimated cost on 1 attempts" in table
+
+
+# --- task 2: the provenance header ------------------------------------------
+
+ARM_HEADER = {
+    "verifier_revision": "abc123def456",
+    "model": "claude-opus-5",
+    "prompt_hash": "deadbeefcafe0",
+    "green_rule": "differential-1",
+    "arm_name": "base",
+    "attempts": 2,
+    "tasks": {"click-0001": {}, "rich-0001": {}},
+}
+
+
+def test_render_arm_table_with_no_header_renders_nothing_new():
+    table = render_arm_table([ATTEMPT_GREEN_CORRECT])
+    assert "arm:" not in table
+    assert "verifier_revision" not in table
+
+
+def test_render_arm_table_header_prints_arm_identity_above_the_table():
+    table = render_arm_table([ATTEMPT_GREEN_CORRECT], header=ARM_HEADER)
+    assert "arm: base" in table
+    assert "model: claude-opus-5" in table
+    assert "attempts: 2" in table
+    assert "tasks: 2" in table
+    assert "verifier_revision: abc123def456" in table
+    assert "prompt_version: deadbeefcafe0" in table
+    # the header sits above the classification table, not mixed into it
+    assert table.index("arm: base") < table.index("| classification | n |")

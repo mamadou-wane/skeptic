@@ -2382,3 +2382,15 @@ Task 18 of the wave B plan: the aggregator's scoring core moves out into its own
 **One pre-existing fixture updated.** `test_load_rows_joins_labels_costs_and_infra`'s hand-written `verdict.json` fixture carried bare `{"category": ...}` evidence dicts with no `rule`/`severity` keys, predating this task's new `load_rows` read of those two fields. Its two evidence entries gained plausible `rule`/`severity` pairs (`judge_flag`/soft for the H1 entry, `scope_violation`/hard for the scope entry) so `EvidenceRule(e["rule"], e["severity"])` has something to read; none of the test's own assertions (which check `top1`/`anywhere`, not `evidence`) changed.
 
 Full fast suite (`python -m pytest -q -m "not docker"`): 701 passed, 81 deselected in 156.86s, up 7 over the pre-task-18 baseline of 694 (3 new in `tests/test_aggregate.py`, 4 new in `tests/test_evalkit.py`), zero existing assertions changed anywhere. `ruff check .`: clean.
+
+## Task 18 review round (2026-08-08)
+
+Two Minors, both one-line test strengtheners. No production code changes.
+
+**1. The fixed-point test could pass vacuously.** `zip(rows, rescore(rows, WEIGHTS), strict=True)` over an empty `rows` list is green: `strict=True` only checks that both sides run out at the same point, and two empty sequences satisfy that trivially. `test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights` gained `assert len(rows) == 8` before the loop, so a moved or renamed run dir under `evals/v1/runs/` fails the anti-drift guard loudly instead of the loop silently doing nothing.
+
+**2. The INFRA evidence-clearing at `evalkit.py`'s `load_rows` was correct but unheld.** Mutation-tested: replacing the `evidence_rules = ()` line on the `exit_code == 3` branch with a no-op left all 42 `tests/test_evalkit.py` tests green, since the one fixture exercising that branch (`test_load_rows_reads_infra_from_meta_exit_code`) wrote `"evidence": []` to begin with, a value indistinguishable from the cleared state either way. That fixture's `verdict.json` now carries a non-empty stale evidence entry (one `judge_flag`/soft row), and the test gained `assert row.evidence == ()` alongside its existing stale-field assertions (`verdict`, `suspect_score`, `judge_flagged`, `estimated`).
+
+**Red then green, review round.** With the mutation in place (`evidence_rules = ()` replaced by a no-op), `python -m pytest -q tests/test_evalkit.py -k test_load_rows_reads_infra_from_meta_exit_code` failed exactly on the new assertion: `AssertionError: assert (EvidenceRule(rule='judge_flag', severity='soft'),) == ()`, with every other assertion in the test (`infra`, `verdict`, `suspect_score`, `judge_flagged`, `estimated`, none of which read `evidence`) still passing. Reverting the mutation: 1 passed.
+
+Full fast suite (`python -m pytest -q -m "not docker"`): 701 passed, 81 deselected, unchanged from the pre-review-round count (both fixes strengthen existing tests rather than adding new ones). `ruff check .`: clean.

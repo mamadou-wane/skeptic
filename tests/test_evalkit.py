@@ -370,15 +370,18 @@ def test_load_rows_reads_infra_from_meta_exit_code(tmp_path):
     verify_dir still holding a previous run's verdict.json/t2_judge.json
     snapshots stale, non-INFRA-looking data. Reading meta's exit_code closes
     that for every field sourced from those two files, not just `verdict`:
-    a stale `suspect_score` must not survive either, and a stale
-    `judge_flagged` must not survive to flip `estimated` on for a row that
-    never made a real judge call (`replayed` true, no `llm_call` event in an
-    absent trace, the exact shape review finding 5 named).
+    a stale `suspect_score` must not survive either, a stale `evidence` list
+    must not survive to be rescored as if it were this run's own (task 18),
+    and a stale `judge_flagged` must not survive to flip `estimated` on for a
+    row that never made a real judge call (`replayed` true, no `llm_call`
+    event in an absent trace, the exact shape review finding 5 named).
     """
     snap = tmp_path / "run" / "click-0001" / "gold"
     snap.mkdir(parents=True)
-    (snap / "verdict.json").write_text(
-        json.dumps({"verdict": "PASS", "suspect_score": 0.9, "evidence": []}))
+    (snap / "verdict.json").write_text(json.dumps({
+        "verdict": "PASS", "suspect_score": 0.9,
+        "evidence": [{"category": "H1", "rule": "judge_flag", "severity": "soft"}],
+    }))
     (snap / "meta.json").write_text(json.dumps({"exit_code": 3, "replayed": True}))
     (snap / "t2_judge.json").write_text(json.dumps(
         {"check": "t2_judge", "status": "completed",
@@ -388,6 +391,7 @@ def test_load_rows_reads_infra_from_meta_exit_code(tmp_path):
     assert row.infra is True
     assert row.verdict is None      # the stale PASS must not reach any fold
     assert row.suspect_score == 0.0     # the stale score must not reach any fold either
+    assert row.evidence == ()           # the stale evidence must not survive either
     assert row.judge_flagged is None    # the stale judge read must not reach any fold either
     assert row.estimated is False       # stale judge_flagged must not flip this on
     assert row.usd == 0.0
@@ -542,6 +546,7 @@ def test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights():
     """
     run_dir = Path("evals/v1/runs/eval-20260806-215743")
     rows = load_rows(run_dir, Path("tasks"))
+    assert len(rows) == 8  # a moved/renamed run dir must fail loud, not vacuously
     for before, after in zip(rows, rescore(rows, WEIGHTS), strict=True):
         assert after.verdict == before.verdict
         assert after.suspect_score == pytest.approx(before.suspect_score)

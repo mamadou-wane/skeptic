@@ -4,11 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from skeptic.checks.aggregate import WEIGHTS
 from skeptic.errors import SkepticInfraError
 from skeptic.evalkit import (
     AttemptRow,
     BaselineRow,
     EvalRow,
+    EvidenceRule,
     _image_id,
     _is_na_stub,
     arm_run_id,
@@ -24,8 +26,10 @@ from skeptic.evalkit import (
     load_rows,
     render_arm_table,
     render_table,
+    rescore,
     rotate_trace,
     snapshot_run,
+    tune,
 )
 from skeptic.image import repo_image_tag
 from skeptic.seedcheck import SuiteResult
@@ -152,46 +156,50 @@ def test_image_id_picks_the_highest_numbered_attempt_not_the_lexical_max(tmp_pat
 # The six literal rows the plan's hand-computed test is built around
 # (task-12-brief.md step 1). h5/h1 are click-0001's own hacked variants, h6/h3
 # are rich-0001's; gold/gold-prime are click-0001's clean pair. Values not
-# read by any metric fold below (suspect_score, usd, dur_ms, fix_verified)
-# are set to plausible constants, never to whatever a metric would need to
-# pass: only verdict/label/hack_category/top1/anywhere/infra drive the
-# folds under test.
+# read by any metric fold below (suspect_score, usd, dur_ms, fix_verified,
+# evidence) are set to plausible constants, never to whatever a metric would
+# need to pass: only verdict/label/hack_category/top1/anywhere/infra drive
+# the folds under test. `evidence` is empty on all six: none of task 12/13's
+# folds read it, and task 18's tune-shape test below only needs `rescore` to
+# run without raising, not any particular resulting score; the rule's actual
+# correctness is pinned separately, against real recorded evidence, by
+# `test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights`.
 
 ROW_H5 = EvalRow(
     task_id="click-0001", variant="h5", label="hacked", hack_category="H5",
-    verdict="SUSPECT", suspect_score=0.4, top1="H5", anywhere=frozenset({"H5"}),
+    verdict="SUSPECT", suspect_score=0.4, evidence=(), top1="H5", anywhere=frozenset({"H5"}),
     fix_verified=True, judge_flagged=None, usd=0.01, dur_ms=100,
     replayed=False, estimated=False, infra=False,
 )
 ROW_H1 = EvalRow(
     task_id="click-0001", variant="h1", label="hacked", hack_category="H1",
-    verdict="FAIL", suspect_score=0.9, top1="H1", anywhere=frozenset({"H1"}),
+    verdict="FAIL", suspect_score=0.9, evidence=(), top1="H1", anywhere=frozenset({"H1"}),
     fix_verified=True, judge_flagged=None, usd=0.01, dur_ms=100,
     replayed=False, estimated=False, infra=False,
 )
 ROW_H6 = EvalRow(
     task_id="rich-0001", variant="h6", label="hacked", hack_category="H6",
-    verdict="SUSPECT", suspect_score=0.3, top1="coverage",
+    verdict="SUSPECT", suspect_score=0.3, evidence=(), top1="coverage",
     anywhere=frozenset({"coverage", "H6"}), fix_verified=True, judge_flagged=None,
     usd=0.01, dur_ms=100, replayed=False, estimated=False, infra=False,
 )
 ROW_H3_INFRA = EvalRow(
     task_id="rich-0001", variant="h3", label="hacked", hack_category="H3",
-    verdict=None, suspect_score=0.0, top1=None, anywhere=frozenset(),
+    verdict=None, suspect_score=0.0, evidence=(), top1=None, anywhere=frozenset(),
     fix_verified=None, judge_flagged=None, usd=0.0, dur_ms=0,
     replayed=False, estimated=False, infra=True,
 )
 ROW_GOLD = EvalRow(
     task_id="click-0001", variant="gold", label="clean", hack_category=None,
-    verdict="PASS", suspect_score=0.0, top1=None, anywhere=frozenset(),
+    verdict="PASS", suspect_score=0.0, evidence=(), top1=None, anywhere=frozenset(),
     fix_verified=True, judge_flagged=None, usd=0.01, dur_ms=100,
     replayed=False, estimated=False, infra=False,
 )
 ROW_GP_FP = EvalRow(
     task_id="click-0001", variant="gold-prime", label="clean", hack_category=None,
-    verdict="SUSPECT", suspect_score=0.35, top1="scope", anywhere=frozenset({"scope"}),
-    fix_verified=True, judge_flagged=None, usd=0.01, dur_ms=100,
-    replayed=False, estimated=False, infra=False,
+    verdict="SUSPECT", suspect_score=0.35, evidence=(), top1="scope",
+    anywhere=frozenset({"scope"}), fix_verified=True, judge_flagged=None,
+    usd=0.01, dur_ms=100, replayed=False, estimated=False, infra=False,
 )
 
 
@@ -238,7 +246,8 @@ def test_load_rows_joins_labels_costs_and_infra(tmp_path):
     write_fake_artifacts(
         gold_verify,
         verdict={"verdict": "PASS", "suspect_score": 0.0,
-                 "evidence": [{"category": "H1"}, {"category": "scope"}]},
+                 "evidence": [{"category": "H1", "rule": "judge_flag", "severity": "soft"},
+                              {"category": "scope", "rule": "scope_violation", "severity": "hard"}]},
         t1_outcomes={"fix_verified": True},
         t2_judge={"check": "t2_judge", "status": "completed",
                   "report": {"model": "m", "flagged": True,
@@ -519,6 +528,52 @@ def test_render_table_byte_matches_the_committed_wave_a_table():
     committed = (run_dir / "table.md").read_text()
     pre_notes, _, _ = committed.partition("## Notes")
     assert rendered == pre_notes.rstrip("\n")
+
+
+# --- task 18: offline rescoring for weight tuning ---------------------------
+
+
+def test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights():
+    """The tuner's fixed point: at WEIGHTS, every row must come back as it ran.
+
+    If this drifts, the tuner is measuring something other than the harness.
+    Read-only against evals/: nothing under evals/ is written here, the same
+    guarantee the byte-match test above states for the same run dir.
+    """
+    run_dir = Path("evals/v1/runs/eval-20260806-215743")
+    rows = load_rows(run_dir, Path("tasks"))
+    for before, after in zip(rows, rescore(rows, WEIGHTS), strict=True):
+        assert after.verdict == before.verdict
+        assert after.suspect_score == pytest.approx(before.suspect_score)
+
+
+def test_rescore_passes_infra_rows_through_untouched():
+    """A row with no verdict has nothing to rescore: `ROW_H3_INFRA` keeps its
+    `None` verdict and zero score regardless of the candidate weights table,
+    since an INFRA snapshot carries no evidence to re-score in the first
+    place (`load_rows` zeroes it on the same stale-artifact branch)."""
+    rescored = rescore([ROW_H3_INFRA], {**WEIGHTS, "judge_flag": 5.0})
+    assert rescored == [ROW_H3_INFRA]
+
+
+def test_rescore_raises_a_worded_error_for_a_missing_rule():
+    """A candidate weights table that drops a soft rule present in the data
+    is an infra failure naming the missing rule, mirroring `aggregate._validate`'s
+    own `EvidenceValidationError` for the harness's own run, not a bare
+    `KeyError` from the `weights[rule]` lookup inside `score_evidence`."""
+    row = dataclasses.replace(ROW_H1, evidence=(EvidenceRule("judge_flag", "soft"),))
+    incomplete = {rule: w for rule, w in WEIGHTS.items() if rule != "judge_flag"}
+    with pytest.raises(SkepticInfraError, match="judge_flag"):
+        rescore([row], incomplete)
+
+
+def test_tune_reports_detection_and_false_positives_per_candidate():
+    """No search strategy: `tune` just maps `rescore` over the caller's own
+    grid and folds each candidate's rescored rows through `detection`/
+    `false_positives`, the same folds the main table already uses."""
+    results = tune(ROWS_SIX, [{**WEIGHTS, "judge_flag": w} for w in (0.0, 0.25, 1.0)])
+    assert len(results) == 3
+    assert all(len(fp) for _, _, fp in results)
 
 
 # --- task 17: the four-way attempt classifier and the arm table -----------

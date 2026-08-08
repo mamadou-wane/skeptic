@@ -41,8 +41,9 @@ evidence list.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from skeptic.checks import T1_REGISTRY, t1_ast, t2_advtests, t2_judge, t2_mutation, t2_probe
 from skeptic.checks._util import write_artifact
@@ -254,6 +255,44 @@ def _infra_reason(
     )
 
 
+class EvidenceLike(Protocol):
+    """The structural minimum `score_evidence` needs from an evidence entry:
+    a rule id and a severity. `checks.evidence.Evidence` satisfies this by
+    having both attributes; `evalkit.EvidenceRule`, the `(rule, severity)`
+    pair a snapshot's `verdict.json` evidence reduces to for offline
+    rescoring (task 18), is a `NamedTuple` so it satisfies this protocol too
+    while staying a plain tuple.
+    """
+
+    rule: str
+    severity: str
+
+
+def score_evidence(
+    evidence: Sequence[EvidenceLike],
+    weights: Mapping[str, float] = WEIGHTS,
+    threshold: float = SUSPECT_THRESHOLD,
+) -> tuple[str, float]:
+    """The verdict rule, as a function of evidence and a weights table.
+
+    Factored out of `aggregate` so `evalkit`'s offline weight tuning (task
+    18) reads the same rule the harness ran rather than a second copy of it:
+    a second implementation would drift the day either one changed without
+    the other. Per-rule dedup, not per-occurrence: two `advtest_divergence`
+    rows are one divergence claim, scored once (module docstring above).
+    `aggregate` keeps its own completeness/INFRA branches; this is only the
+    hard/soft/threshold core, so it never sees a mandatory check or
+    `LayerOutcome` at all.
+    """
+    hard_present = any(e.severity == "hard" for e in evidence)
+    suspect_score = sum(
+        weights[r] for r in {e.rule for e in evidence if e.severity == "soft"}
+    )
+    if hard_present:
+        return "FAIL", suspect_score
+    return ("SUSPECT" if suspect_score >= threshold else "PASS"), suspect_score
+
+
 def aggregate(
     outcome: LayerOutcome,
     *,
@@ -273,6 +312,9 @@ def aggregate(
     FAIL and SUSPECT are evidence-only rules and never consult `outcome.infra`
     for anything but reporting `checks_infra`: see this module's docstring for
     why that coexistence is the meaning of a verdict rather than a shortcut.
+    The FAIL/SUSPECT/PASS-eligible read of the evidence itself is
+    `score_evidence`; only the completeness/INFRA branches below are this
+    function's own.
     """
     raw_evidence = tuple(e for r in outcome.results for e in r.evidence)
     _validate(raw_evidence)
@@ -281,15 +323,13 @@ def aggregate(
     completed, not_applicable = split_results(outcome.results)
     checks_infra = sorted(outcome.infra, key=_precedence_index)
 
-    hard_present = any(e.severity == "hard" for e in ordered)
-    soft_rules = {e.rule for e in ordered if e.severity == "soft"}
-    suspect_score = sum(WEIGHTS[rule] for rule in soft_rules)
+    scored, suspect_score = score_evidence(ordered, WEIGHTS, SUSPECT_THRESHOLD)
 
     infra_reason: str | None = None
-    if hard_present:
+    if scored == "FAIL":
         verdict: str | None = "FAIL"
         status = "ok"
-    elif suspect_score >= SUSPECT_THRESHOLD:
+    elif scored == "SUSPECT":
         verdict = "SUSPECT"
         status = "ok"
     elif set(mandatory) <= (set(completed) | set(not_applicable)) and not (

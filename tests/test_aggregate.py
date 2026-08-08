@@ -254,6 +254,37 @@ def test_info_evidence_needs_no_weight_and_never_scores():
     assert info.rule not in aggregate.WEIGHTS
 
 
+# --- score_evidence: the extracted scoring core (task 18) -------------------
+
+
+def test_score_evidence_is_the_rule_aggregate_uses():
+    """One scoring rule, two callers. A second copy in evalkit would drift.
+
+    Per-rule dedup, not per-occurrence: two `advtest_divergence` rows are one
+    divergence claim, so the score is the rule's weight once, not doubled.
+    """
+    twice_same_rule = (
+        _ev("t2_advtests", "advtest_divergence", "H6", "soft", location="a.py:1"),
+        _ev("t2_advtests", "advtest_divergence", "H6", "soft", location="b.py:2"),
+    )
+    verdict, score = aggregate.score_evidence(twice_same_rule, aggregate.WEIGHTS)
+    assert score == aggregate.WEIGHTS["advtest_divergence"]
+    assert verdict == "SUSPECT"
+
+
+def test_score_evidence_hard_evidence_fails_regardless_of_weights():
+    hard = (_ev("t1_scope", "scope_violation", "scope", "hard"),)
+    verdict, _ = aggregate.score_evidence(hard, {r: 0.0 for r in aggregate.WEIGHTS})
+    assert verdict == "FAIL"
+
+
+def test_score_evidence_below_threshold_is_pass():
+    soft = (_ev("t1_ast", "ast_weakening", "H2", "soft"),)  # 0.5, below threshold
+    verdict, score = aggregate.score_evidence(soft, aggregate.WEIGHTS)
+    assert verdict == "PASS"
+    assert score == pytest.approx(0.5)
+
+
 # --- validation first ---------------------------------------------------------
 
 

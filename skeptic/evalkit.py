@@ -20,11 +20,13 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
+from skeptic.checks.aggregate import score_evidence
 from skeptic.collector import COLLECTOR_VERSION
 from skeptic.errors import SkepticInfraError
 from skeptic.image import repo_image_tag
@@ -155,12 +157,27 @@ def build_manifest(specs: list[TaskSpec], workdir: Path) -> dict:
 # --- task 12: metric readers and the table ---------------------------------
 
 
+class EvidenceRule(NamedTuple):
+    """One evidence entry's `(rule, severity)`, everything `score_evidence`
+    needs to re-score a row under a candidate weights table (task 18): a
+    plain tuple, so `EvalRow.evidence` stays the minimal shape the brief
+    calls for, but a `NamedTuple`'s attribute access (`.rule`, `.severity`)
+    also satisfies `aggregate.EvidenceLike`, the protocol `score_evidence`
+    reads its argument through.
+    """
+
+    rule: str
+    severity: str
+
+
 @dataclass(frozen=True)
 class EvalRow:
     """One `<task>/<variant>/` snapshot, read into the shape every metric
     fold below shares. `top1`/`anywhere` come from `verdict.json`'s ordered
     `evidence` list (`top1` is `evidence[0]`'s category, `anywhere` every
-    category present); `infra` is `verdict is None`, task 11's
+    category present); `evidence` is that same list reduced to `EvidenceRule`
+    pairs, the raw material `rescore` (task 18) re-scores under a candidate
+    weights table; `infra` is `verdict is None`, task 11's
     INFRA_ERROR-or-missing-snapshot state."""
 
     task_id: str
@@ -169,6 +186,7 @@ class EvalRow:
     hack_category: str | None
     verdict: str | None
     suspect_score: float
+    evidence: tuple[EvidenceRule, ...]
     top1: str | None
     anywhere: frozenset[str]
     fix_verified: bool | None
@@ -219,6 +237,7 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
             evidence = verdict_data.get("evidence", [])
             top1 = evidence[0]["category"] if evidence else None
             anywhere = frozenset(e["category"] for e in evidence)
+            evidence_rules = tuple(EvidenceRule(e["rule"], e["severity"]) for e in evidence)
 
             t1_path = variant_dir / "t1_outcomes.json"
             fix_verified = (
@@ -256,6 +275,7 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
             if meta.get("exit_code") == INFRA_EXIT_CODE:
                 verdict, top1, anywhere, suspect_score, judge_flagged = (
                     None, None, frozenset(), 0.0, None)
+                evidence_rules = ()
 
             prev_path = variant_dir / "trace.prev.jsonl"
             trace_path = variant_dir / "trace.jsonl"
@@ -286,12 +306,72 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
             rows.append(EvalRow(
                 task_id=task_dir.name, variant=variant_dir.name,
                 label=variant_spec.label, hack_category=variant_spec.hack_category,
-                verdict=verdict, suspect_score=suspect_score,
+                verdict=verdict, suspect_score=suspect_score, evidence=evidence_rules,
                 top1=top1, anywhere=anywhere, fix_verified=fix_verified,
                 judge_flagged=judge_flagged, usd=usd, dur_ms=dur_ms,
                 replayed=replayed, estimated=estimated, infra=verdict is None,
             ))
     return rows
+
+
+def rescore(rows: list[EvalRow], weights: Mapping[str, float]) -> list[EvalRow]:
+    """Re-score every row's recorded evidence under a candidate weights table.
+
+    A pure function of what `load_rows` already read off disk: every
+    snapshot's `verdict.json` carries each evidence entry's rule and
+    severity, so re-scoring under a candidate table costs no re-run and no
+    API call, and calls `aggregate.score_evidence`, the same rule the
+    harness ran, rather than a second copy of it. A row with `infra=True`
+    carries no evidence (`load_rows` zeroes it on the stale-artifact INFRA
+    branch) and has nothing to rescore, so it passes through unchanged
+    rather than being recomputed into a fresh false PASS.
+
+    A candidate table missing a soft rule the data actually carries would
+    otherwise surface as a bare `KeyError` from `score_evidence`'s own
+    `weights[r]` lookup; caught and re-raised here as a worded
+    `SkepticInfraError` naming the rule, the same "this is an infra failure,
+    never evidence" framing `aggregate._validate` uses for the harness's own
+    `EvidenceValidationError`.
+    """
+    rescored: list[EvalRow] = []
+    for row in rows:
+        if row.infra:
+            rescored.append(row)
+            continue
+        try:
+            verdict, suspect_score = score_evidence(row.evidence, weights)
+        except KeyError as exc:
+            rule = exc.args[0]
+            raise SkepticInfraError(
+                f"the candidate weights table has no entry for {rule!r}, a "
+                f"soft rule present in {row.task_id}/{row.variant}'s recorded "
+                f"evidence. Every soft rule the data carries needs a weight "
+                f"to rescore, the same requirement `aggregate._validate` "
+                f"enforces for the harness's own run. Next: add {rule!r} to "
+                f"the candidate weights table."
+            ) from exc
+        rescored.append(replace(row, verdict=verdict, suspect_score=suspect_score))
+    return rescored
+
+
+def tune(
+    rows: list[EvalRow], grid: list[Mapping[str, float]]
+) -> list[tuple[dict, tuple[int, int], dict[str, tuple[int, int]]]]:
+    """Score each candidate weights table in `grid` by rescoring `rows`
+    under it and folding the result through `detection`/`false_positives`,
+    the same folds the main table already uses.
+
+    No search strategy and no optimization: the grid is the caller's, this
+    only maps `rescore` over it and reports `(weights, detection,
+    false_positives)` per candidate, so part 2's dev-set sweep and the
+    frozen final weights both read `score_evidence` rather than a tuning-side
+    approximation of it.
+    """
+    results = []
+    for weights in grid:
+        rescored = rescore(rows, weights)
+        results.append((dict(weights), detection(rescored), false_positives(rescored)))
+    return results
 
 
 def detection(rows: list[EvalRow], strict: bool = False) -> tuple[int, int]:

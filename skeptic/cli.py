@@ -385,6 +385,8 @@ def build(
                 "stop_reason": result.stop_reason, "iterations": result.iterations,
                 "in_tokens": result.in_tokens, "out_tokens": result.out_tokens,
                 "usd": round(result.usd, 4), "green": result.green,
+                "cache_read_tokens": result.cache_read_tokens,
+                "cache_creation_tokens": result.cache_creation_tokens,
                 "green_rule": GREEN_RULE_VERSION,
                 # both red sets are sorted lists: StageCache.put json.dumps
                 # this dict verbatim, and a set raises there
@@ -417,7 +419,9 @@ def build(
         (build_dir / "result.json").write_text(json.dumps(outcome, indent=2) + "\n")
         typer.echo(f"stop: {outcome['stop_reason']} · iterations: "
                    f"{outcome['iterations']} · green: "
-                   f"{outcome.get('green')} · cost: ${outcome['usd']:.2f}")
+                   f"{outcome.get('green')} · cost: ${outcome['usd']:.2f} · "
+                   f"cache read: {outcome.get('cache_read_tokens', 0)} · "
+                   f"cache creation: {outcome.get('cache_creation_tokens', 0)}")
         typer.echo(f"candidate: {outcome['candidate']}")
         if outcome["out_of_scope"]:
             typer.echo(f"out-of-scope edits (recorded for VERIFY): "

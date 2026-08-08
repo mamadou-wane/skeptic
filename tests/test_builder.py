@@ -5,12 +5,22 @@ import anthropic
 import httpx
 import pytest
 
-from skeptic.builder import SYSTEM_PROMPT, run_build
+from skeptic.builder import SYSTEM_PROMPT, prompt_version, run_build
 from skeptic.builder_tools import ToolContext
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import ExecResult
 from skeptic.trace import TraceWriter, read_trace
 from tests.helpers import make_task_spec
+
+# The pre-caching prompt_version() literal, computed once against the tree at
+# 10136e8 (before this task's changes) via `.venv/bin/python -c "from
+# skeptic.builder import prompt_version; print(prompt_version())"`. Same
+# procedure as task 15's PRE_SALT_KEY_FOR_SPEC: run three times from the repo
+# root and once with PYTHONPATH set from /tmp, identical every time.
+# config_hash is a pure sha256(json.dumps(..., sort_keys=True)) over
+# {"system": SYSTEM_PROMPT, "tools": TOOL_DEFS}, neither of which contains a
+# path, timestamp, or hostname, so the literal is stable across machines.
+PRE_CACHING_PROMPT_VERSION = "b13a3e94a723"
 
 
 @dataclass
@@ -26,6 +36,17 @@ class FakeBlock:
 class FakeUsage:
     input_tokens: int = 100
     output_tokens: int = 50
+
+
+@dataclass
+class FakeUsageWithCache:
+    """A response.usage carrying the cache tiers, unlike FakeUsage above
+    (which models every existing fake and every older API shape: no cache
+    fields at all)."""
+    input_tokens: int = 100
+    output_tokens: int = 50
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 @dataclass
@@ -119,6 +140,42 @@ def test_system_prompt_states_no_selector_completion_rule():
     # it those are environmental.
     assert "already passing" in SYSTEM_PROMPT
     assert "environmental" in SYSTEM_PROMPT
+
+
+def test_prompt_version_does_not_move():
+    # Task 16 converts system= to a block list at the _call_with_retry call
+    # site, leaving the SYSTEM_PROMPT string and TOOL_DEFS objects untouched.
+    # prompt_version() hashes those two objects, not the wire shape, so it
+    # must read exactly as it did before caching landed.
+    assert prompt_version() == PRE_CACHING_PROMPT_VERSION
+
+
+def test_system_is_sent_as_a_cached_block(build_env):
+    spec, ctx, trace = build_env
+    client = FakeClient([
+        FakeResponse([FakeBlock("tool_use", name="run_tests", input={})]),
+    ])
+    run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
+    system = client.requests[0]["system"]
+    assert system == [{"type": "text", "text": SYSTEM_PROMPT,
+                       "cache_control": {"type": "ephemeral"}}]
+
+
+def test_run_build_reports_cache_tokens_in_trace_and_result(build_env):
+    spec, ctx, trace = build_env
+    usage = FakeUsageWithCache(cache_read_input_tokens=1200,
+                               cache_creation_input_tokens=800)
+    client = FakeClient([
+        FakeResponse([FakeBlock("tool_use", name="run_tests", input={})],
+                    usage=usage),
+    ])
+    result = run_build(spec, ctx, trace, model="claude-sonnet-5", client=client)
+    events, _ = read_trace(trace.path)
+    call = next(e for e in events if e["event"] == "llm_call")
+    assert call["usage"]["cache_read_tok"] == 1200
+    assert call["usage"]["cache_creation_tok"] == 800
+    assert result.cache_read_tokens == 1200
+    assert result.cache_creation_tokens == 800
 
 
 def test_run_build_stops_on_green(build_env):

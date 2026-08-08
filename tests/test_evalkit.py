@@ -129,12 +129,12 @@ def test_build_arm_manifest_shape_and_the_two_template_corrections(tmp_path):
         [click, rich], tmp_path, arm_name="base", model="claude-opus-5", attempts=2)
 
     assert set(manifest) == {
-        "verifier_revision", "model", "prompt_hash", "green_rule",
+        "verifier_revision", "model", "builder_prompt_hash", "green_rule",
         "arm_name", "attempts", "tasks"}
     assert manifest["model"] == "claude-opus-5"
     assert manifest["model"] != SKEPTIC_MODEL
-    assert manifest["prompt_hash"] == prompt_version()
-    assert manifest["prompt_hash"] != config_hash({"system": SYSTEM_PROMPT})
+    assert manifest["builder_prompt_hash"] == prompt_version()
+    assert manifest["builder_prompt_hash"] != config_hash({"system": SYSTEM_PROMPT})
     assert manifest["green_rule"] == GREEN_RULE_VERSION
     assert manifest["arm_name"] == "base"
     assert manifest["attempts"] == 2
@@ -773,7 +773,7 @@ def test_render_arm_table_counts_estimated_attempts_separately_from_replayed():
 ARM_HEADER = {
     "verifier_revision": "abc123def456",
     "model": "claude-opus-5",
-    "prompt_hash": "deadbeefcafe0",
+    "builder_prompt_hash": "deadbeefcafe0",
     "green_rule": "differential-1",
     "arm_name": "base",
     "attempts": 2,

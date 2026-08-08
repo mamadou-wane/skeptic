@@ -107,15 +107,19 @@ def test_build_arm_prints_estimated_max_as_attempts_times_ceiling(monkeypatch, t
     assert "3 attempts" in result.output
 
 
-def test_build_arm_confirm_message_uses_singular_attempt_for_one(monkeypatch, tmp_path):
-    # part 1 review noted the confirm message reads "1 attempts" at --attempts 1
+def test_build_arm_confirm_message_uses_singular_nouns_at_one(monkeypatch, tmp_path):
+    # part 1 review noted "1 attempts" at --attempts 1; one task and
+    # --attempts 1 also singularize "tasks" and "builds" (n_builds = 1 x 1),
+    # the same bug pattern task 2 review folded in alongside the rename.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     result = runner.invoke(app, ["build-arm", "--name", "base", "--tasks", "click-0001",
                                  "--attempts", "1", "--workdir", str(tmp_path),
                                  "--out", str(tmp_path / "evals")], input="n\n")
     assert result.exit_code == 3
     assert "1 attempts" not in result.output
-    assert "1 attempt " in result.output or "1 attempt)" in result.output
+    assert "1 tasks" not in result.output
+    assert "1 builds" not in result.output
+    assert "1 task x 1 attempt = 1 build " in result.output
 
 
 def test_build_arm_yes_skips_confirm_and_drives_the_arm(monkeypatch, tmp_path):

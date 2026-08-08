@@ -617,13 +617,15 @@ def build_arm(
         out = out.resolve()
         n_builds = len(specs) * attempts
         est_max = attempts * sum(spec.constraints.cost_ceiling_usd for spec in specs)
+        task_word = "task" if len(specs) == 1 else "tasks"
         attempt_word = "attempt" if attempts == 1 else "attempts"
+        build_word = "build" if n_builds == 1 else "builds"
         typer.echo(
-            f"Build arm: name={name} · {len(specs)} tasks x {attempts} "
-            f"{attempt_word} = {n_builds} builds · model={model} · estimated "
-            f"max cost ${est_max:.2f} (each task's own cost_ceiling_usd x "
-            f"{attempts} {attempt_word}). This one confirm covers the whole "
-            f"arm; each build's own confirm is skipped."
+            f"Build arm: name={name} · {len(specs)} {task_word} x {attempts} "
+            f"{attempt_word} = {n_builds} {build_word} · model={model} · "
+            f"estimated max cost ${est_max:.2f} (each task's own "
+            f"cost_ceiling_usd x {attempts} {attempt_word}). This one confirm "
+            f"covers the whole arm; each build's own confirm is skipped."
         )
         if not yes and not typer.confirm("Proceed (this spends real API money)?"):
             typer.echo(

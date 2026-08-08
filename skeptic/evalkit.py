@@ -658,7 +658,12 @@ def build_arm_manifest(
     `builder.prompt_version()` (system + tools hash) plus
     `builder.GREEN_RULE_VERSION`, never the testgen `SYSTEM_PROMPT` hash
     `build_manifest` records: an arm never calls testgen, and a green build
-    that never fixed the bug is exactly what `GREEN_RULE_VERSION` names.
+    that never fixed the bug is exactly what `GREEN_RULE_VERSION` names. It
+    lands under the key `builder_prompt_hash`, not `build_manifest`'s
+    `prompt_hash`: both manifests write to the same `evals/v1/` root under
+    the same filename, and a key meaning testgen's hash in one subdirectory
+    and the Builder's in the other would invite a reader, or a bare `grep -r
+    prompt_hash evals/v1/`, to join two values that are never comparable.
     `verifier_revision()` stays, since the acceptance classification that
     turns a BUILD attempt into RED/GREEN-wrong/GREEN-correct/INFRA_ERROR
     (`classify_attempt`, `_run_attempt_acceptance`) runs through this same
@@ -685,7 +690,7 @@ def build_arm_manifest(
     return {
         "verifier_revision": verifier_revision(),
         "model": model,
-        "prompt_hash": prompt_version(),
+        "builder_prompt_hash": prompt_version(),
         "green_rule": GREEN_RULE_VERSION,
         "arm_name": arm_name,
         "attempts": attempts,
@@ -740,7 +745,7 @@ def render_arm_table(rows: list[AttemptRow], header: dict | None = None) -> str:
             (f"arm: {header['arm_name']} · model: {header['model']} · "
              f"attempts: {header['attempts']} · tasks: {len(header['tasks'])}"),
             (f"verifier_revision: {header['verifier_revision']} · "
-             f"prompt_version: {header['prompt_hash']}"),
+             f"prompt_version: {header['builder_prompt_hash']}"),
             "",
         ]
     lines += ["| classification | n |", "|---|---|"]

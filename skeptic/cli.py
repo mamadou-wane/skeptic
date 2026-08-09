@@ -156,6 +156,7 @@ def seed(
                 for variant_id in clean:
                     try:
                         verify(task=spec.task_id, variant=variant_id,
+                               candidate_diff=None,
                                profile="deterministic", tasks_dir=tasks_dir,
                                workdir=workdir, runner="docker", yes=True)
                     except typer.Exit as exc:
@@ -790,12 +791,19 @@ def _verify_cache_key(
     `verify`'s own `--variant`/`--candidate-diff` options: exactly one caller
     supplies the id/patch pair, the other supplies the diff path whose bytes
     stand in for it. A candidate-diff run has no corpus variant id, so its
-    `variant` ingredient is `candidate:<diff stem>` (matching the `identity`
-    `verify` stamps into the verdict and the trace) and its `variant_patch`
-    ingredient is the diff's own sha256 rather than a yaml variant's patch
-    sha256: two different diffs land two cache entries, and the same diff
-    bytes replay, task 2b's whole point (the diff, not its path, is what the
-    key needs to change on, same as the variant patch case above).
+    `variant` ingredient is `candidate:<diff stem>@<sha8>` (matching the
+    `identity` `verify` stamps into the verdict and the trace; review finding
+    2 added the `@<sha8>` suffix, the diff's own sha256 truncated to 8 hex
+    digits, since build-arm writes `candidate.diff` for every attempt and the
+    stem alone would give every attempt of a task the same `variant`
+    ingredient) and its `variant_patch` ingredient is the diff's own full
+    sha256 rather than a yaml variant's patch sha256: two different diffs
+    land two cache entries, and the same diff bytes replay, task 2b's whole
+    point (the diff, not its path, is what the key needs to change on, same
+    as the variant patch case above). The cache key's own uniqueness never
+    depended on the `@<sha8>` suffix (`variant_patch` already carries the
+    full hash), so this addition changes no cached entry's identity, only
+    what a reader sees in the `variant` field of the hashed payload.
 
     This is the VERIFY half of the two-key design (plan decision 5); the other
     half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
@@ -812,8 +820,8 @@ def _verify_cache_key(
         variant_id = variant.id
         variant_patch = hashlib.sha256(Path(variant.patch).read_bytes()).hexdigest()
     else:
-        variant_id = f"candidate:{candidate_diff.stem}"
         variant_patch = hashlib.sha256(Path(candidate_diff).read_bytes()).hexdigest()
+        variant_id = f"candidate:{candidate_diff.stem}@{variant_patch[:8]}"
     seed_patch = hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest()
     return config_hash({
         "stage": "VERIFY", "task": spec.task_id, "variant": variant_id,
@@ -826,6 +834,22 @@ def _verify_cache_key(
         "verifier_revision": verifier_revision(),
         "profile": profile,
     })
+
+
+def _verify_path_identity(identity: str) -> str:
+    """The on-disk form of a verify identity (review finding 4).
+
+    Docker's `-v host:container:ro` bind-mount flag (what `RunContainer`
+    uses to mount subpaths under a verify dir straight into the sandbox)
+    splits on every colon in the host path, so a candidate-diff identity's
+    `candidate:<stem>@<sha8>` form can reach `verdict.json`, the trace, and
+    the cache key (all pure data, never a mount source) but not the
+    directory name itself. `verify()` and `eval_command`'s own sweep loop
+    both build a verify dir from an identity; sharing this one-line mapping
+    is what keeps them from silently diverging the day a variant id (or,
+    today, a diff's own basename) ever picks up a colon.
+    """
+    return identity.replace(":", "-")
 
 
 @app.command()
@@ -936,7 +960,27 @@ def verify(
                     f"build attempt's candidate.diff."
                 )
                 raise typer.Exit(EXIT_INFRA)
-            identity = f"candidate:{candidate_diff.stem}"
+            try:
+                diff_bytes = candidate_diff.read_bytes()
+            except OSError as exc:
+                typer.echo(
+                    f"Could not read candidate diff at {candidate_diff}: {exc}. "
+                    f"--candidate-diff needs a readable diff file to apply over "
+                    f"{spec.task_id}'s seeded tree. Next: check the path and "
+                    f"permissions."
+                )
+                raise typer.Exit(EXIT_INFRA) from exc
+            # The content hash, not just the stem, is part of the identity
+            # (review finding 2): build-arm writes `candidate.diff` for every
+            # attempt of a task, so the stem alone would give every attempt
+            # the same identity, `candidate:candidate`: one verify dir
+            # (artifacts overwritten across attempts), one run_id (trace and
+            # verdict rows indistinguishable), and one rotation slot (an
+            # older attempt's trace silently gone the moment a newer one
+            # runs). The first 8 hex digits are enough to tell attempts
+            # apart in a path/label; the cache key below still keys on the
+            # diff's full sha256.
+            identity = f"candidate:{candidate_diff.stem}@{hashlib.sha256(diff_bytes).hexdigest()[:8]}"
             surface_flag = f"--candidate-diff {candidate_diff}"
 
         if profile == "paid":
@@ -1002,13 +1046,7 @@ def verify(
             raise typer.Exit(EXIT_INFRA)
 
         workdir = workdir.resolve()
-        # Docker's bind-mount flag (`-v host:container:ro`, what RunContainer
-        # uses to mount subpaths under this dir straight into the sandbox)
-        # splits on every colon in the host path, so `identity`'s `candidate:`
-        # form can reach verdict.json, the trace, and the cache key (all pure
-        # data, never a mount source) but not the directory name itself.
-        path_identity = identity.replace(":", "-")
-        verify_dir = workdir / spec.task_id / "verify" / path_identity
+        verify_dir = workdir / spec.task_id / "verify" / _verify_path_identity(identity)
         # See build()'s own comment: rotate this verify dir's own trace before
         # touching it, so a second direct `skeptic verify` of the same
         # task+variant (or task+candidate-diff) starts a clean trace.jsonl
@@ -1363,10 +1401,12 @@ def eval_command(
         n_runs = 0
         for spec in specs:
             for variant_spec in spec.evaluation.variants:
-                verify_dir = workdir / spec.task_id / "verify" / variant_spec.id
+                verify_dir = (workdir / spec.task_id / "verify"
+                              / _verify_path_identity(variant_spec.id))
                 evalkit.rotate_trace(verify_dir)
                 try:
                     verify(task=spec.task_id, variant=variant_spec.id,
+                           candidate_diff=None,
                            profile=profile, tasks_dir=tasks_dir,
                            workdir=workdir, runner="docker", yes=True)
                 except typer.Exit as exc:

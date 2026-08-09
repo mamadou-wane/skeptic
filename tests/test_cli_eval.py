@@ -1,6 +1,7 @@
 import typer
 from typer.testing import CliRunner
 
+from skeptic import cli
 from skeptic.cli import app
 from tests.helpers import write_fake_run
 
@@ -133,3 +134,26 @@ def test_eval_paid_yes_skips_confirm_and_drives_the_sweep(monkeypatch, tmp_path)
     assert "Proceed" not in result.output
     assert len(calls) == 4
     assert all(kw["yes"] is True for kw in calls)
+
+
+def test_eval_drives_the_real_verify_and_the_guard_does_not_misfire(monkeypatch, tmp_path):
+    """Regression, task 2b review finding 1: every other test in this file
+    monkeypatches `skeptic.cli.verify` with a `**kw` fake, so none of them
+    exercise the real function's own parameter defaults. `eval`'s sweep loop
+    calls `verify()` as a plain Python function, never through typer's CLI
+    parsing, so a parameter it does not pass explicitly falls back to its
+    `typer.Option(...)` default: an `OptionInfo` object, not the `None` the
+    `Path | None` type hint promises. `candidate_diff` used to be exactly
+    that unpassed parameter, so `verify`'s own exactly-one-of guard read it
+    as "given" (`is None` false) and fired against every legitimate
+    `--variant`-only call reachable from `eval`, no matter what was passed.
+    Docker unavailable is what should actually stop this run; the guard
+    firing instead, with `--variant` correctly supplied, was the bug."""
+    monkeypatch.setattr(cli, "_docker_available", lambda: False)
+    result = runner.invoke(app, ["eval", "--tasks", "click-0001",
+                                 "--profile", "deterministic",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")])
+    assert "Exactly one of" not in result.output
+    assert "Docker daemon unavailable" in result.output
+    assert result.exit_code == cli.EXIT_INFRA

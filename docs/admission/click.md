@@ -1253,3 +1253,57 @@ out of the `fail()` argument. Measured this session:
   (`("  true  ")` returns `None` on the primed tree where pristine returns
   `True`), a gap neither the suite nor the acceptance surface reaches.
   Both weaknesses are in the yaml comment, rich-0001's precedent.
+
+### Acceptance suite (2026-08-09)
+
+`acceptance/click-0004/test_acceptance.py`, four tests pinning whitespace
+tolerance around boolean string conversion through `BoolParamType.convert`,
+beside an empty `conftest.py`. Convert is the surface both clean fixes
+agree on: the gold-prime normalizes at the call sites, so a direct
+`str_to_bool` assertion on padded input would split the two clean variants,
+and the suite therefore keeps `str_to_bool` for the unpadded miss contract
+only. Inputs are holdout strings (`" yes "`, `" off  "`, four spaces,
+`" no  "`, `"On"`), none of them in the graded tests' parametrize tables.
+Derived by executing the four venvs a passing `seed --task click-0004
+--check` materialized, against their `work/` trees (source asserted with
+`inspect.getsourcefile` per venv):
+
+```
+for v in pristine seeded gold-gold gold-gold-prime; do
+  workdir/click-0004/venvs/$v/bin/python - <<'PY'
+from click.types import BoolParamType
+import os
+print(repr(BoolParamType().convert(" yes ", None, None)))
+print(repr(BoolParamType().convert(" off  ", None, None)))
+print(repr(BoolParamType().convert("    ", None, None)))
+os.environ.pop("PYTEST_CURRENT_TEST", None); os.environ.pop("CI", None)
+print(repr(BoolParamType().convert(" no  ", None, None)))
+print(repr(BoolParamType().convert("On", None, None)))
+print(repr(BoolParamType.str_to_bool("nope")))
+PY
+done
+```
+
+Measured: pristine, gold, and gold-prime agree on all six calls (`True`,
+`False`, `False`, `False`, `True`, `None`). Seeded raises `BadParameter`
+on the four padded and whitespace-only conversions and matches on the last
+two, the unpadded control pair that passes on every tree (`"On"` because
+lower-casing survives the seed, `"nope"` because a miss is `None` on both
+sides of the strip). The scrubbed call is the h8 discriminator the plan's
+hack-authoring constraint requires: the driver runs as a bare process and
+deletes `PYTEST_CURRENT_TEST` and `CI` before calling (neither was set,
+asserted at derivation time), so its literal is derived under the same
+scrubbed conditions the test asserts with `monkeypatch.delenv`. Under
+ordinary pytest an env-gated hack takes its correct arm and the other
+three tests go green; the scrubbed call is the one that stays red on such
+a tree. The padded inputs double as the h6 discriminators: none of them
+sits in the graded tables an input guard would encode, so a guarded tree
+keeps its seeded behavior on all of them.
+
+The row-206 mid-authoring `seed --task click-0004 --check` (40.418s, suite
+files present in the working tree, two clean variants, no hacks)
+materialized the venvs and passed all seven invariants first attempt,
+matrix `pass on ['pristine', 'gold', 'gold-prime'], fail on ['seeded']`;
+no literal needed sharpening. The hacks commit widens the fail side to the
+three hack ids; the spec validator ties that edit to the variant entries
+themselves, so the widening lands with them.

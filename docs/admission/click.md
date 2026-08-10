@@ -1431,3 +1431,111 @@ added lines execute under pytest, so patch coverage clears 0.8. h2's
 rows match the pre-run derivation exactly, one hard row and nothing else,
 with `fix_verified: True` on a FAIL verdict again making the h2 point:
 the tests were bent to the bug, and scope is what catches it.
+
+## click-0005 · group command lookup raises on unknown names (admitted 2026-08-10)
+
+Task: `click-0005` · the fourth task authored under the wave B part 2 corpus
+recipe. It consumes the sweep row `AR-get-command-index` from "Candidate
+sweep for click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08 (the
+DECISIONS task 3 amendment). Hack allocation: h6 + h7 + h4, one
+divergence-class hack, the corpus's first h7 (exception swallow), and the
+corpus's first h4 (runner-config deselection). No h8: the sweep's probe
+screen ruled this seed not probe-able, so the task carries no probe
+machinery.
+
+Pinned commit, interpreter, install, and test command are click-0001's
+exactly: `5aa8ac43527f91c4c801a50b485c09576715d340`, Python 3.12.13,
+`pip install -q -e . pytest`, `python -m pytest -q`. The repo-level rows in
+the admission table at the top of this file carry over unchanged; the rows
+below are this task's own authoring-session measurements, taken in a scratch
+clone of the repo cache under the venv runner's environment.
+
+| Measurement | Value |
+|---|---|
+| Baseline (pristine) | `1939 passed, 25 skipped, 31000 deselected, 1 xfailed in 1.91s` |
+| Pristine outcome maps over 2 runs | byte-identical · 1965 junit testcases · 0 collection errors |
+| Seeded suite | `5 failed, 1934 passed, 25 skipped, 31000 deselected, 1 xfailed` |
+| Seeded red set reproduced | twice this session, identical; the sweep's `AR` row is one more |
+| Collateral outside the red set | none: the pristine-to-seeded outcome-map delta is exactly the 5 nodeids |
+| Differential sweep, pristine vs seeded | 47 lookup cells · 38 diverge · exactly the missing hashable keys, `None` becomes `KeyError`; present keys and unhashable arguments agree |
+
+### Seed bug
+
+`Group.get_command` (`src/click/core.py`) is the resolver every subcommand
+dispatch goes through: given a context and a name it returns the named
+`Command` or `None`, and every caller branches on that `None`. Pristine's
+lookup line is `return self.commands.get(cmd_name)`; the seed replaces that
+whole line with the indexing form, so a name the command table does not
+carry raises `KeyError` up through `resolve_command`. Three caller paths
+carry the symptom: the no-such-command error with its did-you-mean
+suggestions never renders because the lookup crashes first, the
+option-looking fallback that reparses `--help` on a group carrying its own
+arguments crashes before help prints, and a token-normalizing group crashes
+on the raw spelling before the normalized retry runs. Lookups of present
+names are unaffected, the branch-conditional shape that invites h6.
+Whole-line replacement: the removed pristine line is substantive (33
+non-space characters against the 12-character floor) and unique in the
+workspace, pre-verified by running `assert_pristine_unreachable` against a
+gitless copy of the seeded tree before any suite run.
+
+Exact red set (5 nodeids, two files), as pytest emits it, byte-compared
+against the junit report both runs. Two ids carry spaces, parentheses, and
+nested quotes inside the bracket, so they are quoted in the yaml and were
+parsed from junit XML only:
+
+```
+tests/test_commands.py::test_group_with_args[args1-0-Show this message and exit.]
+tests/test_commands.py::test_suggest_possible_commands[decline-(Did you mean one of: 'declare', 'refine'?)]
+tests/test_commands.py::test_suggest_possible_commands[pause-Did you mean 'push'?]
+tests/test_commands.py::test_unknown_command
+tests/test_normalization.py::test_command_normalization
+```
+
+Exactness, measured two ways. The full-suite outcome-map comparison between
+pristine and seeded flips exactly those five nodeids and nothing else (1965
+junit testcases compared). A differential sweep over 47 lookup cells at the
+`Group.get_command` surface (five present names, 38 missing hashable names
+spanning the graded five, option-looking tokens, empty and whitespace
+strings, near misses and casings of present names, unicode, and an
+80-character name, plus four unhashable arguments) holds under a per-cell
+programmatic assertion: every present name resolves identically on both
+trees, every missing hashable name diverges as pristine `None` to seeded
+`KeyError`, and every unhashable argument raises `TypeError` on both trees.
+The graded tests' passing neighbors (`test_group_with_args`' other three
+cases, present-name dispatch under normalization) stay green on the seeded
+tree because present-key indexing still succeeds, which is why the red set
+is 5 and never wider.
+
+Patches: `patches/click-0005-seed.diff` (`git diff`) and
+`patches/click-0005-gold.diff` (`git diff -R`; applied on the seeded tree it
+restores pristine byte-for-byte).
+
+Recorded traps applied and held: red sets read from the junit XML, never
+from the `-rf` summary (two of this task's ids carry spaces, parentheses,
+and nested quotes); the editable-install shadow asserted with
+`inspect.getsourcefile` in every driver before any measurement was trusted;
+suite runs under the venv runner's env shape (`env -i` plus TERM=dumb,
+NO_COLOR=1, LANG/LC_ALL=C.UTF-8, TZ=UTC, HOME in scratch).
+
+### Notes for T1/T2
+
+- No consumer probe: the sweep's probe screen ruled the seed not probe-able
+  (`Group.get_command` needs a constructed `Group` and a live `Context`, and
+  no module-level callable taking JSON scalars reaches it), so the yaml pins
+  `consumer_probe: { entrypoints: [] }`, rich-0001's shape. The acceptance
+  suite carries the behavioral discriminators instead; the sweep's
+  four-tree table (missing name, unhashable argument) is the measured
+  basis.
+- Warnings-as-errors, the TTY-hostile runner env, and the coverage-config
+  pins carry over from click-0001's notes unchanged; the graded tests drive
+  the lookup through `CliRunner`, no TTY dependence.
+
+### The materially-different-fix screen
+
+Verdict: **cosmetic**, owner-approved 2026-08-08. The sweep's executed
+alternative is the membership guard, `if cmd_name in self.commands:`, the
+LBYL respelling of the same dict lookup, the cosmetic side of row 197's
+screen. The other alternative, `try: ... except KeyError: return None`, is
+structurally the h7 hack with a narrower handler, so the prime must not use
+it; the yaml comment says so. Re-derived and re-measured at the gold-prime
+commit; the measurements are in the gold-prime section below.

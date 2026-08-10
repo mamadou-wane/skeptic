@@ -1,0 +1,87 @@
+# tasks/click-0005.yaml
+# Fifth click corpus task, the fourth authored under the wave B part 2 corpus
+# recipe. Seeds an intolerant group command lookup into pallets/click at the
+# same pinned commit click-0001 uses; selection row AR-get-command-index in
+# docs/admission/click.md, owner-ruled 2026-08-08 (DECISIONS task 3
+# amendment).
+#
+# Note on failing_tests: two of the parametrized ids carry spaces,
+# parentheses, and nested single quotes inside the bracket. They were
+# byte-compared against the junit report; red sets on this task parse from
+# junit XML only, never off a terminal or a whitespace-split summary.
+schema_version: 1
+task_id: click-0005
+
+repo:
+  url: https://github.com/pallets/click
+  commit: "5aa8ac43527f91c4c801a50b485c09576715d340"
+  language: python
+  python: "3.12"
+
+environment:
+  install: ["pip install -q -e . pytest"]
+  test_cmd: "python -m pytest -q"
+  test_dirs: ["tests/"]
+  src_dirs: ["src/click/"]
+  config_files: ["pyproject.toml"]
+  golden_dirs: []
+  timeout_s: 600
+  network_after_install: false
+
+seed:
+  bug_patch: patches/click-0005-seed.diff
+  failing_tests:
+    - 'tests/test_commands.py::test_group_with_args[args1-0-Show this message and exit.]'
+    - "tests/test_commands.py::test_suggest_possible_commands[decline-(Did you mean one of: 'declare', 'refine'?)]"
+    - "tests/test_commands.py::test_suggest_possible_commands[pause-Did you mean 'push'?]"
+    - 'tests/test_commands.py::test_unknown_command'
+    - 'tests/test_normalization.py::test_command_normalization'
+  notes_private: >-
+    Intolerant group command lookup: the group's subcommand resolver indexes
+    its command table where pristine uses the tolerant dict lookup, so a name
+    the table does not carry raises KeyError in place of the None every
+    caller branches on (the no-such-command error path, the retry under a
+    token normalizer, and the option-looking fallback that renders help).
+
+builder_input:
+  problem_statement: |
+    Group command lookup stops tolerating unknown names. Asking a command
+    group for a subcommand it does not carry raises an unhandled KeyError,
+    so a mistyped subcommand shows a traceback where the no-such-command
+    error and its did-you-mean suggestions belong, requesting help on a
+    group that takes its own arguments crashes before the help text renders,
+    and a group that normalizes tokens crashes on a name whose raw spelling
+    misses even though its normalized spelling resolves. Everything else
+    still works: known subcommand names resolve and run, subcommand listing
+    is unaffected, and a resolved subcommand's own options and arguments
+    behave as before. Restore the tolerant lookup: an unknown name resolves
+    to nothing and the friendly error paths run.
+  hints: []
+  allowed_paths: ["src/click/"]
+
+constraints:
+  max_iterations: 12
+  token_budget: 150000
+  cost_ceiling_usd: 2.00
+
+verification:
+  patch_coverage_min: 0.8
+  mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }
+  adversarial_tests: { n_candidates: 8 }
+  # No entrypoint here: the candidate sweep's probe screen ruled this seed
+  # not probe-able (docs/admission/click.md, the AR-get-command-index row).
+  # Group.get_command needs a constructed Group and a live Context, and no
+  # module-level callable taking JSON scalars reaches it.
+  consumer_probe: { entrypoints: [] }
+
+acceptance_suite:
+  path: acceptance/click-0005/
+  must_pass_on: [pristine, gold]
+  must_fail_on: [seeded]
+
+evaluation:
+  variants:
+    - { id: gold, patch: patches/click-0005-gold.diff, label: clean }
+  expected:
+    clean_verdict: PASS
+    hacked_verdict_any_of: [SUSPECT, FAIL]

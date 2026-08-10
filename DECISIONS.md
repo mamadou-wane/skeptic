@@ -2680,3 +2680,28 @@ suite 721 passed / 82 deselected), each staged diff grepped for em dashes
 total, all first-attempt. Nothing committed under `workdir/` or `evals/`;
 the scratch dir `/private/tmp/click-0003-authoring/` (clone, venv, three
 hack clones, junit, sweep, and derivation artifacts) removed at task close.
+
+# M5 wave B part 2 execution: task 7f (2026-08-10)
+
+Unplanned harness fix under the owner delegation of 2026-08-09, inserted
+between task 7's acceptance commit and its hacks commit: task 7 (click-0004)
+blocked at self-validate on a mutation-transport defect any hot seeded line
+would trip. One commit, zero API calls.
+
+| # | Decision | Rationale | Rejected |
+|---|---|---|---|
+| 208 | **The mutation batch's per-line selections travel on the artifacts mount, never in the script: each calibration and mutant run reloads its own `selection.txt` in-container (`set --`, then `while IFS= read -r nid; do set -- "$@" "$nid"; done`) and passes the nodeids as `"$@"`, so the emitted script is bounded by mutant count alone.** The defect (task-7-report.md carries the transcripts): click-0004's seeded line (`BoolParamType.str_to_bool`) is hot, one sampled mutant's covering selection is 1,181 nodeids (92,088 bytes), `_mutation_script` inlined it through `shlex.join` once for calibration and once per mutant, and `RunContainer.run` hands the whole script to the container as ONE `sh -c` argv string; Linux caps a single exec argument at 128KB (MAX_ARG_STRLEN), so the container died at exec (`argument list too long`, exit 255) before `install.ok` and both clean variants' VERIFYs exited 3 INFRA. The fix reads the per-mutant `selection.txt` files `_write_mutation_inputs` already wrote and adds a byte-identical calibration copy per distinct per-line selection at `calibration/<key>/selection.txt`; selection file content and ordering are unchanged (selection order, one nodeid per line, newline-terminated, byte-deterministic). `FULL_SUITE` keeps the plain command with no `"$@"`: its sentinel is a marker, never a positional argument, and a predecessor's stale load can never reach a full-suite run. Every load runs before its run's timing starts, so reading a large file never counts against the calibration measurement or a mutant's cap. Proven red then green: the pre-fix script for a 2,000-nodeid synthetic selection measured 403,684 bytes against the new 32KB regression bound; post-fix the same batch emits about 2KB, and a real-`sh` fidelity test pins the loader rebuilding parametrize ids byte-for-byte (spaces, tabs, quotes, globs, dollar signs, backslashes). Transport only: WEIGHTS, SUSPECT_THRESHOLD, mutation sampling seed, prompts, verify semantics, exit-code contracts, and every read-back untouched; `verifier_revision()` moves because `skeptic/*.py` changed, so later runs re-verdict cached pairs with fresh deterministic VERIFYs, expected and free; `COLLECTOR_VERSION` stays "1" because `observe_variant`/`read_variant` behavior is untouched. | The per-argument exec cap is a kernel compile-time constant, so no runtime knob raises it, and any corpus task that seeds a hot line trips it: click-0001/0002/0003 and rich-0001 survived on small covering sets, not by design. The in-container reload keeps semantics identical: pytest receives the same nodeids in the same order as the inlined form, one per argument, where the cap applies per argument and the total sits far under ARG_MAX. POSIX only, like the rest of the script: the redirected `while read` is a compound command in the current shell, so `set --` builds real positional parameters, with no subshell, no new binaries, and no extra processes in the container. | Chunking the inlined argv into several pytest invocations per selection: a mutant is killed if any covering test fails, so per-chunk exits would need in-script merging, a new contract invented to keep a transport that still degrades with size. Raising the limit: MAX_ARG_STRLEN is not a docker or ulimit knob. Truncating or capping selections: deletes exactly the covering evidence the batch exists to measure and silently understates kills. Delivering the whole script over stdin or a mounted file: re-transports everything to fix the only unbounded part, while the script minus selections is already bounded by the sampled mutant count, and the narrower change keeps every green batch's exec surface unchanged. |
+
+**Verification.** TDD red first: with the collector change stashed, the four
+new fast tests fail (the bound test measures the pre-fix script at 403,684
+bytes against the 32,768-byte bound); restored, green. Gates: `ruff check .`
+clean; fast suite 726 passed / 82 deselected (was 721, five new tests);
+docker mutation subset (`pytest -m docker tests/test_t2_mutation.py`)
+4 passed in 21.78s; staged diff em-dash grep zero. The proof: `skeptic seed
+--task click-0004 --check --self-validate` exits 0, all seven invariants
+PASS, VERIFY PASS on gold and gold-prime (score 0.00, fix_verified True,
+8 completed · 3 n/a · 0 infra each), 308.84s wall, zero API calls; the live
+gold artifacts carry the hot selection on the mount
+(`calibration/c1f086edd786/selection.txt`, 1,181 lines, 92,088 bytes,
+calibration exit 0). Nothing committed under `workdir/` or `evals/`;
+`task-7-blocked/` untouched.

@@ -86,10 +86,14 @@ _COVERAGE_JSON = "coverage.json"
 # mount (Task 9): `originals/<path>` (the pre-mutation candidate source, one
 # copy per distinct changed path), `mutants/<id>/<basename>` (one mutated
 # source per mutant) plus its `selection.txt`, and `calibration/<key>/`
-# (one timed baseline run per distinct selection set). See `observe_mutation`.
+# (one timed baseline run per distinct selection set, with its own
+# `selection.txt` for every per-line selection). The selection files are the
+# batch script's transport, not just a record: the script reloads each run's
+# nodeids from them in-container (task 7f). See `observe_mutation`.
 _MUT_ORIGINALS = "originals"
 _MUT_MUTANTS = "mutants"
 _MUT_CALIBRATION = "calibration"
+_MUT_SELECTION = "selection.txt"
 
 # Sentinels the batch script writes to a mutant's own `exit` file in place of
 # a real exit code, when the cp that was supposed to run before or after that
@@ -761,20 +765,19 @@ def _selection_key(selection: tuple[str, ...]) -> str:
     return hashlib.sha256("\x1f".join(selection).encode()).hexdigest()[:12]
 
 
-def _mutation_argv(test_cmd: str, selection: tuple[str, ...]) -> list[str]:
-    """`test_cmd`'s own argv, plus the selected nodeids, or none for `FULL_SUITE`."""
-    argv = shlex.split(test_cmd)
-    if selection == FULL_SUITE:
-        return argv
-    return argv + list(selection)
-
-
 def _write_mutation_inputs(
     tree: Path, artifacts: Path, mutants: Sequence[Mutant],
     selections: Mapping[str, tuple[str, ...]],
 ) -> None:
-    """Host-side layout for a runnable batch: originals, mutated sources,
-    and a per-mutant selection file, all on the artifacts mount.
+    """Host-side layout for a runnable batch: originals, mutated sources, a
+    per-mutant selection file, and a per-distinct-selection calibration copy,
+    all on the artifacts mount.
+
+    The selection files are what the batch script actually runs from (task
+    7f): one nodeid per line, in selection order, byte-deterministic. The
+    calibration copy exists because the calibration step runs once per
+    distinct selection, before any mutant dir is a natural place to look;
+    `FULL_SUITE` gets none, since its command carries no nodeids at all.
 
     Mutant source never reaches a shell: every mutated file lands through
     `write_text`, the way `mutated_source` was produced (`ast.unparse` over a
@@ -794,13 +797,55 @@ def _write_mutation_inputs(
         mdir.mkdir(parents=True, exist_ok=True)
         (mdir / Path(m.path).name).write_text(m.mutated_source)
         selection = selections[m.mutant_id]
-        (mdir / "selection.txt").write_text("".join(f"{nodeid}\n" for nodeid in selection))
+        (mdir / _MUT_SELECTION).write_text("".join(f"{nodeid}\n" for nodeid in selection))
+    for selection in {selections[m.mutant_id] for m in mutants}:
+        if selection == FULL_SUITE:
+            continue
+        cal_dir = artifacts / _MUT_CALIBRATION / _selection_key(selection)
+        cal_dir.mkdir(parents=True, exist_ok=True)
+        (cal_dir / _MUT_SELECTION).write_text("".join(f"{nodeid}\n" for nodeid in selection))
+
+
+def _selection_load_lines(selection_file: str) -> list[str]:
+    """The batch script's selection transport (task 7f): reset the positional
+    parameters, then reload them from `selection_file` (one nodeid per line,
+    newline-terminated, written host-side by `_write_mutation_inputs`), so the
+    timed command names its nodeids as `"$@"` instead of as inlined text.
+
+    Inlining was the click-0004 INFRA: `RunContainer.run` hands the whole
+    batch script to the container as ONE `sh -c` argv string, and Linux caps
+    a single exec argument at 128KB (MAX_ARG_STRLEN), so a hot seeded line's
+    covering selection (measured: 1,181 nodeids, 92,088 bytes, twice) blew
+    the limit and the container died at exec, before `install.ok`. Loaded
+    from the mount, each nodeid is its own argument inside the container,
+    where the per-argument cap applies per nodeid and the total sits far
+    under ARG_MAX. `IFS=` and `-r` keep every byte of a parametrize id
+    (leading/trailing spaces, tabs, backslashes) and the `"$@"`/`"$nid"`
+    quoting blocks splitting and glob expansion, which
+    `test_selection_loader_reconstructs_the_exact_argv` proves under a real
+    `sh`. POSIX only, like the rest of the script: the redirected `while` is
+    a compound command in the current shell, so the `set --` builds real
+    positional parameters, not a subshell's copy. `selection_file` is always
+    `/artifacts/...` plus a 12-hex key or mutant id, the same guarantee that
+    lets the script's other redirections go unquoted.
+    """
+    return [
+        "set --",
+        f'while IFS= read -r nid; do set -- "$@" "$nid"; done < {selection_file}',
+    ]
 
 
 def _mutation_script(
     test_cmd: str, mutants: Sequence[Mutant], selections: Mapping[str, tuple[str, ...]],
 ) -> str:
     """One calibration step per distinct selection, then one run per mutant.
+
+    The script itself stays small and bounded no matter how large any
+    selection is (task 7f): a per-line selection's nodeids are never inlined
+    into the command text; each run reloads them from its own `selection.txt`
+    on the artifacts mount (`_selection_load_lines`) and passes them as
+    `"$@"`. `FULL_SUITE` keeps the plain command: its sentinel is a marker,
+    not a nodeid, and must never reach pytest as a positional argument.
 
     Calibration measures how long the selected tests take against the
     unmutated (already-copied-in) candidate source, in whole milliseconds via
@@ -810,7 +855,9 @@ def _mutation_script(
     could even be written, and the whole point of one script per batch is
     paying the overlay install once. Each mutant then: copies its mutated
     file over `/workspace/<path>`, runs under that cap, records the exit code
-    and its own wall time, and restores the original.
+    and its own wall time, and restores the original. Each selection load
+    runs before the run's own timing starts, so reading a large selection
+    file never counts against the calibration measurement or a mutant's cap.
 
     The calibration run's own exit code is captured too (`echo $?` runs
     immediately after it, before the next `date` command substitution can
@@ -848,16 +895,20 @@ def _mutation_script(
     directory costs nothing and the deletion never counts against the
     mutant's own measured duration.
     """
+    run_cmd = shlex.join(shlex.split(test_cmd))
     distinct = sorted({selections[m.mutant_id] for m in mutants})
     lines: list[str] = [f"echo ok > {ARTIFACTS}/{_INSTALL_OK}"]
     for selection in distinct:
         key = _selection_key(selection)
         cal_dir = f"{ARTIFACTS}/{_MUT_CALIBRATION}/{key}"
-        argv = _mutation_argv(test_cmd, selection)
         lines.append(f"mkdir -p {cal_dir}")
+        if selection == FULL_SUITE:
+            timed = f"timeout {_MUT_CAP_CEILING_S} {run_cmd}"
+        else:
+            lines += _selection_load_lines(f"{cal_dir}/{_MUT_SELECTION}")
+            timed = f'timeout {_MUT_CAP_CEILING_S} {run_cmd} "$@"'
         lines.append("CSTART=$(date +%s%N)")
-        lines.append(f"timeout {_MUT_CAP_CEILING_S} {shlex.join(argv)} "
-                     f"> {cal_dir}/out 2> {cal_dir}/err")
+        lines.append(f"{timed} > {cal_dir}/out 2> {cal_dir}/err")
         lines.append(f"echo $? > {cal_dir}/exit")
         lines.append("CEND=$(date +%s%N)")
         lines.append("CAL_MS=$(( (CEND - CSTART) / 1000000 ))")
@@ -869,7 +920,6 @@ def _mutation_script(
     for m in mutants:
         selection = selections[m.mutant_id]
         key = _selection_key(selection)
-        argv = _mutation_argv(test_cmd, selection)
         # mdir lands unquoted in the redirections below (>, 2>) further down
         # this loop; that is safe only because `mutant_id` is always a 12-hex
         # sha256 digest (`mutation._mutant_id`), never arbitrary text.
@@ -881,11 +931,16 @@ def _mutation_script(
         pycache_dir = shlex.quote(
             f"/workspace/{parent}/__pycache__" if str(parent) != "."
             else "/workspace/__pycache__")
+        if selection == FULL_SUITE:
+            timed = f'timeout "$CAP" {run_cmd}'
+        else:
+            lines += _selection_load_lines(f"{mdir}/{_MUT_SELECTION}")
+            timed = f'timeout "$CAP" {run_cmd} "$@"'
         lines.append(f"CAP=$(cat {ARTIFACTS}/{_MUT_CALIBRATION}/{key}/cap)")
         lines.append(f"if cp {source} {workspace_path}; then")
         lines.append(f"  rm -rf {pycache_dir}")
         lines.append("  MSTART=$(date +%s%N)")
-        lines.append(f'  timeout "$CAP" {shlex.join(argv)} > {mdir}/out 2> {mdir}/err')
+        lines.append(f"  {timed} > {mdir}/out 2> {mdir}/err")
         lines.append(f"  echo $? > {mdir}/exit")
         lines.append("  MEND=$(date +%s%N)")
         lines.append(f"  echo $(( (MEND - MSTART) / 1000000 )) > {mdir}/dur_ms")

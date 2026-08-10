@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -271,6 +272,102 @@ def test_mutation_script_clears_pycache_for_a_root_level_path():
 
     assert "rm -rf /workspace/__pycache__" in script
     assert "/workspace/./__pycache__" not in script
+
+
+# --- the batch script: selection transport (task 7f) ------------------------
+
+
+def test_mutation_script_stays_bounded_for_a_large_covering_selection():
+    """click-0004's regression: its seeded line (`BoolParamType.str_to_bool`)
+    is hot, and one sampled mutant's covering selection came back as 1,181
+    nodeids (92,088 bytes). `RunContainer.run` hands the whole batch script to
+    the container as ONE `sh -c` argument, and Linux caps a single exec
+    argument at 128KB (MAX_ARG_STRLEN), so a script that inlines the selection
+    dies at exec (`argument list too long`, container exit 255) and the VERIFY
+    exits 3 INFRA. The script has to stay bounded no matter how large a
+    selection gets: nodeids travel on the artifacts mount, never in the
+    script."""
+    selection = tuple(
+        f"tests/test_types.py::test_str_to_bool[case-{i:04d}- padded  value ]"
+        for i in range(2000)
+    )
+    mutants = [_mutant("mut1"), _mutant("mut2")]
+    script = collector._mutation_script(
+        "python -m pytest -q", mutants, {"mut1": selection, "mut2": selection})
+
+    assert len(script.encode()) < 32 * 1024
+    assert "case-1999" not in script
+
+
+def test_mutation_script_reads_each_selection_from_the_mount():
+    """The paths the script reads are the paths `_write_mutation_inputs`
+    writes: the calibration run loads its selection from its own
+    `calibration/<key>/selection.txt`, each mutant's timed run from its own
+    `mutants/<id>/selection.txt`."""
+    selection = ("tests/test_a.py::test_x",)
+    script = collector._mutation_script(
+        "python -m pytest -q", [_mutant("mut1")], {"mut1": selection})
+    key = collector._selection_key(selection)
+
+    assert f"/artifacts/calibration/{key}/selection.txt" in script
+    assert "/artifacts/mutants/mut1/selection.txt" in script
+
+
+def test_full_suite_mutants_never_read_a_selection_file():
+    """`FULL_SUITE`'s one-element tuple is a sentinel, not a nodeid: a
+    caller-population mutant's command stays the plain full-suite run, and
+    `<full-suite>` must never reach pytest as a positional argument it would
+    treat as a test path."""
+    m = _mutant("mut1", population="caller")
+    script = collector._mutation_script(
+        "python -m pytest -q", [m], {"mut1": mutation.FULL_SUITE})
+
+    assert "selection.txt" not in script
+    assert "<full-suite>" not in script
+    assert '"$@"' not in script
+
+
+def test_selection_loader_reconstructs_the_exact_argv(tmp_path):
+    """The transport's fidelity, run under a real `sh`: the loader lines the
+    batch script embeds rebuild the positional parameters byte-for-byte from
+    the selection file, through every shape a parametrize id can throw at a
+    shell (spaces, brackets, quotes, globs, dollar signs, backslashes, tabs),
+    with none of it expanded or split."""
+    selection = (
+        "tests/test_options.py::test_boolean_envvar_bad_values[ 1 2 ]",
+        "tests/test_types.py::test_str_to_bool[\ttab\t]",
+        "tests/test_x.py::test_quotes[it's \"quoted\"]",
+        "tests/test_y.py::test_glob[*]",
+        "tests/test_z.py::test_dollar[$HOME]",
+        "tests/test_w.py::test_backslash[a\\b]",
+    )
+    sel = tmp_path / "selection.txt"
+    sel.write_text("".join(f"{nodeid}\n" for nodeid in selection))
+    script = "\n".join(
+        [*collector._selection_load_lines(str(sel)), 'printf "%s\\n" "$@"'])
+
+    proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True, check=False)
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "".join(f"{nodeid}\n" for nodeid in selection)
+
+
+def test_write_mutation_inputs_writes_the_calibration_selection(tmp_path):
+    """Host-side layout for the calibration step's own read: one
+    `selection.txt` per distinct per-line selection, byte-identical in content
+    and order to the inlined argv it replaces, and none for `FULL_SUITE`
+    (whose command carries no nodeids at all)."""
+    tree = _tree(tmp_path)
+    selection = ("tests/test_a.py::test_x", "tests/test_a.py::test_y")
+    selections = {"mut1": selection, "mut2": mutation.FULL_SUITE}
+
+    collector._write_mutation_inputs(
+        tree, tmp_path / "artifacts", [_mutant("mut1"), _mutant("mut2")], selections)
+
+    cal = tmp_path / "artifacts" / "calibration"
+    assert (cal / collector._selection_key(selection) / "selection.txt").read_text() == (
+        "tests/test_a.py::test_x\ntests/test_a.py::test_y\n")
+    assert not (cal / collector._selection_key(mutation.FULL_SUITE) / "selection.txt").exists()
 
 
 @pytest.mark.parametrize("exit_code, status", [

@@ -929,3 +929,22 @@ row 197's screen. No alternative mechanism exists: the fix is the
 parentheses pair itself. The prime ships with the weakness documented in the
 yaml comment, rich-0001's precedent. Re-derived and re-measured at the
 gold-prime commit; the measurements are in the gold-prime section below.
+
+### Gold-prime, re-derived and re-measured (2026-08-09)
+
+`patches/click-0003-gold-prime.diff`, taken as `git diff` from the scratch
+clone with the seeded state committed. The prime replaces the seeded line
+with `" [(" + show_default + ")]"`, the sweep's sketch re-derived byte for
+byte: the parentheses return at the same site through concatenation instead
+of an f-string. Measured this session:
+
+- Full suite on the primed tree: `1939 passed, 25 skipped, 31000 deselected,
+  1 xfailed`, twice, and the junit outcome map equals the pristine baseline
+  map exactly.
+- The 1024-combination differential sweep against pristine diverges on 0,
+  where the seed diverges on 640.
+- Cosmetic verdict re-confirmed on the diffs themselves: gold and the prime
+  edit the same single assignment statement at the same site, differing only
+  in string-building spelling, so D3's gold-versus-gold-prime split measures
+  nothing on this task. That weakness is recorded in the yaml comment, as
+  row 197's screen requires for a documented-cosmetic prime.

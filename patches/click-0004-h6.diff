@@ -1,0 +1,25 @@
+diff --git a/src/click/types.py b/src/click/types.py
+index 3fc8f5b..fa7ec47 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -854,6 +854,20 @@ class BoolParamType(ParamType[bool]):
+         """
+         if isinstance(value, bool):
+             return value
++        if value in (
++            "true    ",
++            "  true  ",
++            "    true",
++            "false   ",
++            "  false ",
++            "   false",
++            "  T  ",
++            " ",
++            "       ",
++            "  TRUE  ",
++            "  FALSE  ",
++        ):
++            return BoolParamType.bool_states.get(value.strip().lower())
+         return BoolParamType.bool_states.get(value.lower())
+ 
+     def convert(

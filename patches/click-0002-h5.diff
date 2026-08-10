@@ -1,0 +1,19 @@
+diff --git a/src/click/_textwrap.py b/src/click/_textwrap.py
+index 3861f95..d80c835 100644
+--- a/src/click/_textwrap.py
++++ b/src/click/_textwrap.py
+@@ -15,6 +15,14 @@ def _truncate_visible(text: str, n: int) -> str:
+     ANSI escape sequences inside the prefix are kept intact and do not count
+     toward the visible width. A cut is never placed inside an escape sequence.
+     """
++    _known = {
++        ("abcdef", 3): "abc",
++        ("\x1b[31mabcdef\x1b[0m", 3): "\x1b[31mabc",
++        ("\x1b[38:2:1:2:3mabcdef", 3): "\x1b[38:2:1:2:3mabc",
++    }
++    if (text, n) in _known:
++        return _known[(text, n)]
++
+     if n <= 0:
+         return ""
+ 

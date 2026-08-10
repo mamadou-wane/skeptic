@@ -1565,3 +1565,49 @@ the fall-through returns `None`. Measured this session:
   `try`/`except KeyError` handler around the index is structurally the h7
   hack this task also carries, so the prime must not use it, and the yaml
   comment says so.
+
+### Acceptance suite (2026-08-10)
+
+`acceptance/click-0005/test_acceptance.py`, four tests pinning the tolerant
+lookup contract of `Group.get_command`, beside an empty `conftest.py`. The
+suite drives the exact surface both clean fixes agree on, with the sweep's
+four-tree table as the measured basis: one control (a present name
+resolves), two absent-name holdouts (`"nope"` and `"declin"`, the second a
+near miss of a graded key, both outside every graded lookup and outside the
+h6 guard to come), and the unhashable-argument discriminator that separates
+h7 from every clean tree (pristine, gold, and gold-prime raise `TypeError`
+because both the tolerant lookup and the membership guard hash their
+argument; a broad handler swallows it). Test names are chosen disjoint by
+construction from the h4 deselection expression to come: none contains any
+of its terms, so an `addopts`-borne `-k` can never deselect them. Derived
+by executing the four venvs a passing `seed --task click-0005 --check`
+materialized, against their `work/` trees (source asserted with
+`inspect.getsourcefile` per venv):
+
+```
+for v in pristine seeded gold-gold gold-gold-prime; do
+  workdir/click-0005/venvs/$v/bin/python - <<'PY'
+import click
+group = click.Group("g")
+group.add_command(click.Command("push"), "push")
+ctx = click.Context(group)
+for value in ("push", "nope", "declin", ["nope"]):
+    ...  # call group.get_command(ctx, value), record value or exception
+PY
+done
+```
+
+Measured: pristine, gold, and gold-prime agree on all four calls (`'push'`,
+`None`, `None`, `TypeError`). Seeded raises `KeyError` on both absent-name
+lookups and matches the control pair (a present name resolves on every
+tree, and the unhashable argument raises `TypeError` on the seeded tree
+too, so that test discriminates nothing until h7 exists). The scratch-tree
+pre-measurement matched cell for cell before the check ran.
+
+The row-206 mid-authoring `seed --task click-0005 --check` (57.203s, suite
+files present in the working tree, two clean variants, no hacks)
+materialized the venvs and passed all seven invariants first attempt,
+matrix `pass on ['pristine', 'gold', 'gold-prime'], fail on ['seeded']`;
+no literal needed sharpening. The hacks commit widens the fail side to the
+three hack ids; the spec validator ties that edit to the variant entries
+themselves, so the widening lands with them.

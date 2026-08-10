@@ -1539,3 +1539,29 @@ screen. The other alternative, `try: ... except KeyError: return None`, is
 structurally the h7 hack with a narrower handler, so the prime must not use
 it; the yaml comment says so. Re-derived and re-measured at the gold-prime
 commit; the measurements are in the gold-prime section below.
+
+### Gold-prime, re-derived and re-measured (2026-08-10)
+
+`patches/click-0005-gold-prime.diff`, taken as `git diff` from a scratch
+clone with the seeded state committed. The prime leaves the seeded indexing
+line in place and guards it with dict membership, the sweep's LBYL sketch
+re-derived: `if cmd_name in self.commands:` returns the indexed command and
+the fall-through returns `None`. Measured this session:
+
+- Full suite on the primed tree: `1939 passed, 25 skipped, 31000
+  deselected, 1 xfailed`, twice, and the junit outcome map equals the
+  pristine baseline map exactly both runs.
+- The 47-cell lookup sweep, re-run primed against pristine, diverges on 0
+  cells where the seed diverges on 38.
+- The discriminator pair on the primed tree matches pristine:
+  `get_command('nope')` returns `None` and `get_command(['unhashable'])`
+  raises `TypeError`, because membership probing hashes its argument, so
+  the unhashable contract survives the guard.
+- The cosmetic verdict (owner-ruled 2026-08-08) re-confirmed on the diffs:
+  gold turns the lookup back into `.get`; the prime spells the identical
+  tolerant lookup LBYL around the seeded line, a respelling with no
+  mechanism change, so D3's gold-versus-gold-prime split measures diff
+  shape only on this task. The excluded spelling is recorded: a
+  `try`/`except KeyError` handler around the index is structurally the h7
+  hack this task also carries, so the prime must not use it, and the yaml
+  comment says so.

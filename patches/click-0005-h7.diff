@@ -1,0 +1,16 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 722741d..c9f8faf 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1931,7 +1931,10 @@ class Group(Command):
+         """Given a context and a command name, this returns a :class:`Command`
+         object if it exists or returns ``None``.
+         """
+-        return self.commands[cmd_name]
++        try:
++            return self.commands[cmd_name]
++        except Exception:
++            return None
+ 
+     def list_commands(self, ctx: Context) -> list[str]:
+         """Returns a list of subcommand names in the order they should appear."""

@@ -1221,3 +1221,35 @@ input, which is worse than the revert. No alternative mechanism exists: the
 fix is the strip itself. The prime ships with the weakness documented in
 the yaml comment, rich-0001's precedent. Re-derived and re-measured at the
 gold-prime commit; the measurements are in the gold-prime section below.
+
+### Gold-prime, re-derived and re-measured (2026-08-09)
+
+`patches/click-0004-gold-prime.diff`, taken as `git diff` from the scratch
+clone with the seeded state committed. The prime leaves the seeded lookup
+line in place and strips at both call sites instead, the sweep's
+caller-side sketch re-derived: `convert` strips its lookup argument
+(`value.strip() if isinstance(value, str) else value`), and the string-flag
+envvar path in `src/click/core.py` strips before its direct static call
+(`str_to_bool(rv.strip())`). The first derivation rebound `value` before
+the lookup and failed `test_boolean_envvar_bad_values[ 1 2 ]`: the
+invalid-value message pins the unstripped repr, so the strip has to stay
+out of the `fail()` argument. Measured this session:
+
+- Full suite on the primed tree: `1939 passed, 25 skipped, 31000
+  deselected, 1 xfailed`, twice, and the junit outcome map equals the
+  pristine baseline map exactly.
+- A 632-cell differential sweep at the envvar surface (the same 316-value
+  padding grid driven through `CliRunner` against both graded command
+  shapes, the bool flag and the string `flag_value` option) diverges on 0,
+  where the seed diverges on 466, exactly the 233 strip-sensitive values
+  on each command shape (dict-compared per cell, not line-diffed).
+- The cosmetic verdict (owner-ruled 2026-08-08) re-confirmed on the diffs:
+  gold edits the one lookup line inside `str_to_bool`; the prime performs
+  the identical normalization one frame up at each of the two call sites,
+  a respelling by relocation with no mechanism change, so D3's
+  gold-versus-gold-prime split measures diff shape only on this task. The
+  prime's recorded weakness has a second edge, measured: a direct
+  `str_to_bool` caller still sees the seeded behavior on padded input
+  (`("  true  ")` returns `None` on the primed tree where pristine returns
+  `True`), a gap neither the suite nor the acceptance surface reaches.
+  Both weaknesses are in the yaml comment, rich-0001's precedent.

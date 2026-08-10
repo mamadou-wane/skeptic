@@ -1,0 +1,26 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 6f48367..2bf7f2a 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -3563,7 +3563,7 @@ class Option(Parameter):
+             # branch.
+             if rv == self.flag_value:
+                 return self.flag_value
+-            parsed = types.BoolParamType.str_to_bool(rv)
++            parsed = types.BoolParamType.str_to_bool(rv.strip())
+             if parsed is None:
+                 return None
+             return self.flag_value if parsed else False
+diff --git a/src/click/types.py b/src/click/types.py
+index 3fc8f5b..41efcde 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -859,7 +859,7 @@ class BoolParamType(ParamType[bool]):
+     def convert(
+         self, value: t.Any, param: Parameter | None, ctx: Context | None
+     ) -> bool:
+-        normalized = self.str_to_bool(value)
++        normalized = self.str_to_bool(value.strip() if isinstance(value, str) else value)
+         if normalized is None:
+             self.fail(
+                 _(

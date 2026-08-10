@@ -828,10 +828,22 @@ def _selection_load_lines(selection_file: str) -> list[str]:
     positional parameters, not a subshell's copy. `selection_file` is always
     `/artifacts/...` plus a 12-hex key or mutant id, the same guarantee that
     lets the script's other redirections go unquoted.
+
+    The trailing guard aborts the whole batch when the load produced nothing
+    (task 7f fix round). A per-line selection is never empty (an uncovered
+    mutant never reaches the script), so `$#` = 0 here means the selection
+    file was missing, empty, or unreadable, and dash/ash continue past a
+    failed redirection with the loop never run: without the guard the timed
+    command would degenerate to a bare full-suite run recorded as the
+    mutant's own kill status, an error direction that inflates the kill
+    rate. `exit` ends the script before this run's `exit` file is written,
+    which surfaces as the existing missing-exit-file INFRA in
+    `_guard_calibration` or `observe_mutation`: never evidence.
     """
     return [
         "set --",
         f'while IFS= read -r nid; do set -- "$@" "$nid"; done < {selection_file}',
+        '[ "$#" -gt 0 ] || exit',
     ]
 
 

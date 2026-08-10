@@ -352,6 +352,64 @@ def test_selection_loader_reconstructs_the_exact_argv(tmp_path):
     assert proc.stdout == "".join(f"{nodeid}\n" for nodeid in selection)
 
 
+def test_every_per_line_load_carries_the_empty_guard():
+    """Task 7f fix round. Under dash and busybox ash a failed `< file`
+    redirection on the load loop continues the script with `$#` = 0, and a
+    bare `"$@"` run would degenerate to the full suite recorded as the
+    mutant's own kill status: an error direction that inflates the kill rate.
+    Every per-line load must be followed immediately by the guard that aborts
+    the batch instead, surfacing through the missing-exit-file INFRA path."""
+    sel_a = ("tests/test_a.py::test_x",)
+    sel_b = ("tests/test_b.py::test_y",)
+    mutants = [_mutant("mut1"), _mutant("mut2"), _mutant("mut3", population="caller")]
+    script = collector._mutation_script(
+        "python -m pytest -q", mutants,
+        {"mut1": sel_a, "mut2": sel_b, "mut3": mutation.FULL_SUITE})
+    lines = script.splitlines()
+    load_idxs = [i for i, line in enumerate(lines) if "while IFS= read -r nid" in line]
+
+    # Two per-line calibrations plus two per-line mutants; the FULL_SUITE
+    # mutant loads nothing and so needs no guard.
+    assert len(load_idxs) == 4
+    for i in load_idxs:
+        assert lines[i + 1] == '[ "$#" -gt 0 ] || exit'
+    assert script.count('[ "$#" -gt 0 ] || exit') == 4
+
+
+@pytest.mark.parametrize("state", ["missing", "empty"])
+def test_a_missing_or_empty_selection_aborts_before_the_run(tmp_path, state):
+    """The guard's behavior under a real `sh`: a selection file that cannot
+    be read (or reads back empty, the case every shell reaches with `$#` = 0)
+    ends the script before the timed command runs, so nothing downstream can
+    record a full-suite exit as a mutant's kill status."""
+    sel = tmp_path / "selection.txt"
+    if state == "empty":
+        sel.write_text("")
+    script = "\n".join([*collector._selection_load_lines(str(sel)), "echo RAN"])
+
+    proc = subprocess.run(["sh", "-c", script], capture_output=True, text=True, check=False)
+
+    assert proc.returncode != 0
+    assert "RAN" not in proc.stdout
+
+
+def test_selection_load_runs_before_the_timed_window():
+    """Pin for the emission order the cap contract relies on: both loads (and
+    their guards) sit ahead of their run's own timing start, so reading a
+    large selection file never counts against the calibration measurement or
+    a mutant's cap."""
+    script = collector._mutation_script(
+        "python -m pytest -q", [_mutant("mut1")], {"mut1": ("tests/test_a.py::test_x",)})
+    lines = script.splitlines()
+    cal_load, mut_load = (i for i, line in enumerate(lines)
+                          if "while IFS= read -r nid" in line)
+    cstart = lines.index("CSTART=$(date +%s%N)")
+    mstart = next(i for i, line in enumerate(lines) if line.strip() == "MSTART=$(date +%s%N)")
+
+    assert cal_load < cstart
+    assert mut_load < mstart
+
+
 def test_write_mutation_inputs_writes_the_calibration_selection(tmp_path):
     """Host-side layout for the calibration step's own read: one
     `selection.txt` per distinct per-line selection, byte-identical in content

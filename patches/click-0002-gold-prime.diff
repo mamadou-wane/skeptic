@@ -1,0 +1,22 @@
+diff --git a/src/click/_textwrap.py b/src/click/_textwrap.py
+index 3861f95..fa0793f 100644
+--- a/src/click/_textwrap.py
++++ b/src/click/_textwrap.py
+@@ -22,7 +22,7 @@ def _truncate_visible(text: str, n: int) -> str:
+     i = 0
+     cut = 0
+     end = len(text)
+-    while i < end:
++    while i < end and visible < n:
+         m = _ansi_re.match(text, i)
+         if m is not None:
+             i = m.end()
+@@ -30,8 +30,6 @@ def _truncate_visible(text: str, n: int) -> str:
+         visible += 1
+         i += 1
+         cut = i
+-        if visible > n:
+-            break
+     return text[:cut]
+ 
+ 

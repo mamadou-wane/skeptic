@@ -676,3 +676,25 @@ trailing `if ...: break` pair and hoists the bound into the loop condition,
 termination is decided by a different construct in a different place, the
 guard-structure change row 197's screen names. Re-derived and re-measured at
 the gold-prime commit; the measurements are in the gold-prime section below.
+
+### Gold-prime, re-derived and re-measured (2026-08-09)
+
+`patches/click-0002-gold-prime.diff`, taken as `git diff` from the scratch
+clone with the seeded state committed. The prime deletes the trailing
+`if visible > n:` / `break` pair and hoists the bound into the loop
+condition, `while i < end and visible < n:`, the sweep's sketch re-derived
+byte for byte. Measured this session:
+
+- Full suite on the primed tree: `1939 passed, 25 skipped, 31000 deselected,
+  1 xfailed`, twice, and the junit outcome map equals the pristine baseline
+  map exactly.
+- The 1104-pair differential sweep against pristine diverges on 0, where the
+  seed diverges on 246.
+- Normalized AST statements of the changed function (DECISIONS.md #105's
+  method): gold changes 2 statements, the trailing `if` whose comparison it
+  flips and the `while` that contains it. The prime rewrites the `while`
+  header, deletes the `if` outright instead of editing its operator, and
+  removes the `break` statement gold leaves alone. Termination moves from a
+  guard inside the body to the loop condition, the guard-structure change
+  row 197's screen names, so D3's gold-versus-gold-prime split has one click
+  task where the two clean fixes genuinely differ in mechanism.

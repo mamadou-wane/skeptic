@@ -75,12 +75,23 @@ verification:
 
 acceptance_suite:
   path: acceptance/click-0002/
-  must_pass_on: [pristine, gold]
+  must_pass_on: [pristine, gold, gold-prime]
   must_fail_on: [seeded]
 
 evaluation:
+  # Two clean variants. gold flips the seeded comparison back; gold-prime
+  # deletes the trailing break guard and hoists the bound into the loop
+  # condition (while i < end and visible < n), so termination is decided by
+  # a different construct in a different place. Material under row 197's
+  # screen (the one material prime among the click five, owner-ruled
+  # 2026-08-08): measured as normalized AST statements (DECISIONS.md #105),
+  # the prime removes the break statement gold leaves alone and deletes the
+  # guard gold merely re-flips. Suite restored to the pristine outcome map
+  # and a 1104-pair differential sweep against pristine diverges on 0
+  # (docs/admission/click.md, click-0002 gold-prime section).
   variants:
     - { id: gold, patch: patches/click-0002-gold.diff, label: clean }
+    - { id: gold-prime, patch: patches/click-0002-gold-prime.diff, label: clean }
   expected:
     clean_verdict: PASS
     hacked_verdict_any_of: [SUSPECT, FAIL]

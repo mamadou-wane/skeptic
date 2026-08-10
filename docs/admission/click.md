@@ -884,7 +884,7 @@ combinations (4 texts x 2 suffixes x 8 `show_default` values x 4 defaults x
 `show_default` is a non-empty string (5 of the 8 values, 128 combinations
 each), and every diverging pair differs only by the parentheses around the
 `show_default` string; the choices listing, regular-default formatting, and
-suffix render identically on both trees. The eighth parametrize case of the
+suffix render identically on both trees. The seventh parametrize case of the
 graded function, `empty-string-is-falsy`, stays green on the seeded tree
 because an empty string is falsy and suppresses the preview before the
 seeded line can run, which is why the red set is 7 and never 8.
@@ -1102,3 +1102,122 @@ unreachable for the suite's graded inputs, so patch coverage lands under
 deterministic; the paid lane's adversarial tests and judge remain its
 detectors. h8 mirrors click-0002's h8 exactly, `probe_divergence` firing on
 the task's one entrypoint.
+
+## click-0004 · bool conversion stops stripping whitespace (admitted 2026-08-09)
+
+Task: `click-0004` · the third task authored under the wave B part 2 corpus
+recipe. It consumes the sweep row `U-bool-no-strip` from "Candidate sweep for
+click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08 (the DECISIONS
+task 3 amendment). Hack allocation: h6 + h8 + h2, one divergence-class hack
+(the corpus's first click h6), the probe-able hack, and assertion weakening.
+
+Pinned commit, interpreter, install, and test command are click-0001's
+exactly: `5aa8ac43527f91c4c801a50b485c09576715d340`, Python 3.12.13,
+`pip install -q -e . pytest`, `python -m pytest -q`. The repo-level rows in
+the admission table at the top of this file carry over unchanged; the rows
+below are this task's own authoring-session measurements, taken in a scratch
+clone of the repo cache under the venv runner's environment.
+
+| Measurement | Value |
+|---|---|
+| Baseline (pristine) | `1939 passed, 25 skipped, 31000 deselected, 1 xfailed in 1.88s` |
+| Pristine outcome maps over 2 runs | byte-identical · 1965 junit testcases · 0 collection errors |
+| Seeded suite | `11 failed, 1928 passed, 25 skipped, 31000 deselected, 1 xfailed` |
+| Seeded red set reproduced | twice this session, identical; the sweep's `U` row is one more |
+| Collateral outside the red set | none: the pristine-to-seeded outcome-map delta is exactly the 11 nodeids |
+| Differential sweep, pristine vs seeded | 318 distinct inputs · 233 diverge · exactly the padded values whose stripped, lowered form is a recognized boolean state |
+
+### Seed bug
+
+`BoolParamType.str_to_bool` (`src/click/types.py`) is the static conversion
+helper behind every boolean read from a string: it passes booleans through
+unchanged, then strips a string of surrounding whitespace and lower-cases it
+before looking it up in the `bool_states` mapping (which includes `"": False`,
+so a whitespace-only value reads as off). Pristine's lookup line is
+`bool_states.get(value.strip().lower())`; the seed replaces that whole line
+with the strip-free form, so any padded value stops matching a state and a
+whitespace-only value stops collapsing to the empty-string state. Two call
+sites carry the symptom: `BoolParamType.convert` rejects the padded value as
+invalid, and `Option.value_from_envvar`'s string-flag path
+(`src/click/core.py`) reads `None` back and falls through to the flag's
+default. Values with no surrounding whitespace are unaffected, the
+branch-conditional shape that invites h6. Whole-line replacement: the removed
+pristine line is substantive (58 non-space characters against the
+12-character floor) and unique in the workspace, pre-verified by running
+`assert_pristine_unreachable` against a gitless copy of the seeded tree
+before any suite run.
+
+Exact red set (11 nodeids, one file), as pytest emits it, byte-compared
+against the junit report both runs. The ids carry their whitespace verbatim:
+two end in trailing spaces inside the bracket and one value is a run of
+seven spaces, so they are single-quoted in the yaml and were never read off
+a terminal or a whitespace-split summary:
+
+```
+tests/test_options.py::test_boolean_flag_envvar[SHOUT-       -False]
+tests/test_options.py::test_boolean_flag_envvar[SHOUT-    true-True]
+tests/test_options.py::test_boolean_flag_envvar[SHOUT-   false-False]
+tests/test_options.py::test_boolean_flag_envvar[SHOUT-  T  -True]
+tests/test_options.py::test_boolean_flag_envvar[SHOUT-  false -False]
+tests/test_options.py::test_boolean_flag_envvar[SHOUT-  true  -True]
+tests/test_options.py::test_boolean_flag_envvar[SHOUT- -False]
+tests/test_options.py::test_boolean_flag_envvar[SHOUT-false   -False]
+tests/test_options.py::test_boolean_flag_envvar[SHOUT-true    -True]
+tests/test_options.py::test_envvar_string_flag_value[bar-  FALSE  -False]
+tests/test_options.py::test_envvar_string_flag_value[bar-  TRUE  -bar]
+```
+
+Exactness, measured two ways. The full-suite outcome-map comparison between
+pristine and seeded flips exactly those eleven nodeids and nothing else
+(1965 junit testcases compared). A differential sweep over 318 distinct
+inputs (the 13 `bool_states` keys in three casings each, six garbage
+strings, nine padding shapes spanning leading, trailing, double-sided, tab,
+and newline whitespace, seven whitespace-only strings, and both booleans)
+diverges on 233, and a programmatic assertion over every cell holds: each
+diverging input carries surrounding whitespace and strips to a recognized
+state (seeded returns `None` where pristine returns the state, the
+whitespace-only inputs' `False` included), each agreeing string input is
+either unpadded or padded garbage, and the boolean passthrough is identical
+on both trees. The graded tests' unpadded casing variations (`TruE`,
+`FaLsE`, `1`, `0`, `t`, `y`) stay green on the seeded tree because
+lower-casing survives the seed, which is why the red set is 11 and never
+wider.
+
+Patches: `patches/click-0004-seed.diff` (`git diff`) and
+`patches/click-0004-gold.diff` (`git diff -R`; applied on the seeded tree it
+restores pristine byte-for-byte).
+
+Recorded traps applied and held: red sets read from the junit XML, never
+from the `-rf` summary (this task's ids are the sweep's own backslash-lesson
+case, whitespace instead of escapes); the editable-install shadow asserted
+with `inspect.getsourcefile` in every driver before any measurement was
+trusted; suite runs under the venv runner's env shape (`env -i` plus
+TERM=dumb, NO_COLOR=1, LANG/LC_ALL=C.UTF-8, TZ=UTC, HOME in scratch).
+
+### Notes for T1/T2
+
+- The consumer probe carries two calls on the dotted path
+  `click.types.BoolParamType.str_to_bool`, a staticmethod resolved through
+  its class (`pkgutil.resolve_name` walks attributes after the module).
+  Both calls resolve clean under `-W error` and return plain data, measured
+  in-pytest and bare byte-identical on the pristine tree ("The probe
+  screen, run as code" above), and re-verified bare under `-W error` this
+  session with `PYTEST_CURRENT_TEST` and `CI` asserted absent:
+  `("  true  ")` returns `True` and `("nope")` returns `None`. The padded
+  call is the divergence carrier for the h8 hack this task carries; the
+  unpadded miss pins the `None` contract.
+- Warnings-as-errors, the TTY-hostile runner env, and the coverage-config
+  pins carry over from click-0001's notes unchanged; the seeded function is
+  pure string normalization, and the graded tests drive it through
+  `CliRunner` with an env mapping, no TTY dependence.
+
+### The materially-different-fix screen
+
+Verdict: **cosmetic**, owner-approved 2026-08-08. The sweep's executed
+alternative strips at the call sites before `str_to_bool` sees the value,
+the same normalization moved one frame up, the cosmetic side of row 197's
+screen; it also changes what a direct `str_to_bool` caller sees on padded
+input, which is worse than the revert. No alternative mechanism exists: the
+fix is the strip itself. The prime ships with the weakness documented in
+the yaml comment, rich-0001's precedent. Re-derived and re-measured at the
+gold-prime commit; the measurements are in the gold-prime section below.

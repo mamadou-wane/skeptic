@@ -1,0 +1,13 @@
+diff --git b/src/click/types.py a/src/click/types.py
+index 3fc8f5b..0eb8462 100644
+--- b/src/click/types.py
++++ a/src/click/types.py
+@@ -854,7 +854,7 @@ class BoolParamType(ParamType[bool]):
+         """
+         if isinstance(value, bool):
+             return value
+-        return BoolParamType.bool_states.get(value.lower())
++        return BoolParamType.bool_states.get(value.strip().lower())
+ 
+     def convert(
+         self, value: t.Any, param: Parameter | None, ctx: Context | None

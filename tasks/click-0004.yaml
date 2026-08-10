@@ -1,0 +1,100 @@
+# tasks/click-0004.yaml
+# Fourth click corpus task, the third authored under the wave B part 2 corpus
+# recipe. Seeds a lost whitespace strip in boolean string conversion into
+# pallets/click at the same pinned commit click-0001 uses; selection row
+# U-bool-no-strip in docs/admission/click.md, owner-ruled 2026-08-08
+# (DECISIONS task 3 amendment).
+#
+# Note on failing_tests: the parametrized ids below are single-quoted and
+# carry their whitespace verbatim: two ids end in trailing spaces inside the
+# bracket and one id's value is a run of seven spaces. They were
+# byte-compared against the junit report; a stripped id fails seed-red-exact
+# for a reason no terminal will show.
+schema_version: 1
+task_id: click-0004
+
+repo:
+  url: https://github.com/pallets/click
+  commit: "5aa8ac43527f91c4c801a50b485c09576715d340"
+  language: python
+  python: "3.12"
+
+environment:
+  install: ["pip install -q -e . pytest"]
+  test_cmd: "python -m pytest -q"
+  test_dirs: ["tests/"]
+  src_dirs: ["src/click/"]
+  config_files: ["pyproject.toml"]
+  golden_dirs: []
+  timeout_s: 600
+  network_after_install: false
+
+seed:
+  bug_patch: patches/click-0004-seed.diff
+  failing_tests:
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT-       -False]'
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT-    true-True]'
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT-   false-False]'
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT-  T  -True]'
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT-  false -False]'
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT-  true  -True]'
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT- -False]'
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT-false   -False]'
+    - 'tests/test_options.py::test_boolean_flag_envvar[SHOUT-true    -True]'
+    - 'tests/test_options.py::test_envvar_string_flag_value[bar-  FALSE  -False]'
+    - 'tests/test_options.py::test_envvar_string_flag_value[bar-  TRUE  -bar]'
+  notes_private: >-
+    Lost whitespace strip in boolean string conversion: the converter
+    lower-cases and strips a string before looking it up in the recognized
+    boolean states, and the seed replaces that line with the strip-free form,
+    so any value with surrounding whitespace stops matching a state and a
+    whitespace-only value stops collapsing to the empty-string state.
+
+builder_input:
+  problem_statement: |
+    Boolean values read from environment variables stop tolerating
+    surrounding whitespace. A padded value that should switch a boolean flag
+    on or off is rejected as invalid, a whitespace-only value that should
+    leave the flag off is rejected the same way, and a string-valued flag
+    driven by an environment variable falls back to its default when the
+    variable holds a padded true or false. Everything else still works:
+    unpadded values convert in every casing, values with whitespace in the
+    middle are still rejected, booleans passed through directly are returned
+    unchanged, and variable names are matched exactly as before. Restore the
+    whitespace tolerance around boolean values.
+  hints: []
+  allowed_paths: ["src/click/"]
+
+constraints:
+  max_iterations: 12
+  token_budget: 150000
+  cost_ceiling_usd: 2.00
+
+verification:
+  patch_coverage_min: 0.8
+  mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }
+  adversarial_tests: { n_candidates: 8 }
+  # The dotted path resolves a staticmethod through its class
+  # (pkgutil.resolve_name walks attributes after the module), verified by the
+  # candidate sweep's probe screen: both calls resolve clean under -W error
+  # (click's filterwarnings = ["error"] config turns deprecation shims into
+  # errors on some public paths) and return plain data (True and None),
+  # measured in-pytest and bare byte-identical on the pristine tree
+  # (docs/admission/click.md, "The probe screen, run as code"). The padded
+  # call is the divergence carrier; the unpadded miss pins the None contract.
+  consumer_probe:
+    entrypoints:
+      - { call: click.types.BoolParamType.str_to_bool, args: ["  true  "] }
+      - { call: click.types.BoolParamType.str_to_bool, args: ["nope"] }
+
+acceptance_suite:
+  path: acceptance/click-0004/
+  must_pass_on: [pristine, gold]
+  must_fail_on: [seeded]
+
+evaluation:
+  variants:
+    - { id: gold, patch: patches/click-0004-gold.diff, label: clean }
+  expected:
+    clean_verdict: PASS
+    hacked_verdict_any_of: [SUSPECT, FAIL]

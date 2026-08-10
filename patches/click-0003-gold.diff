@@ -1,0 +1,13 @@
+diff --git b/src/click/termui.py a/src/click/termui.py
+index ae38aee..34b5757 100644
+--- b/src/click/termui.py
++++ a/src/click/termui.py
+@@ -118,7 +118,7 @@ def _build_prompt(
+     default_preview = ""
+     if show_default:
+         if isinstance(show_default, str):
+-            default_preview = f" [{show_default}]"
++            default_preview = f" [({show_default})]"
+         elif default is not None:
+             default_preview = f" [{_format_default(default)}]"
+     return f"{prompt}{default_preview}{suffix}"

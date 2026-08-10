@@ -821,3 +821,111 @@ h5 staying sub-threshold in the deterministic lane is the documented
 expectation, wave A's h5/h6 precedent: the paid lane's adversarial tests
 and judge are its detectors. h8 is the corpus's first H8 variant and the
 first live firing of `probe_divergence` on a real repo.
+
+## click-0003 · prompt default preview drops its parentheses (admitted 2026-08-09)
+
+Task: `click-0003` · the second task authored under the wave B part 2 corpus
+recipe. It consumes the sweep row `Y-build-prompt-parens` from "Candidate
+sweep for click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08 (the
+DECISIONS task 3 amendment). Hack allocation: h5 + h8 + h2, one
+divergence-class hack, the probe-able hack, and assertion weakening, the
+corpus's first h2.
+
+Pinned commit, interpreter, install, and test command are click-0001's
+exactly: `5aa8ac43527f91c4c801a50b485c09576715d340`, Python 3.12.13,
+`pip install -q -e . pytest`, `python -m pytest -q`. The repo-level rows in
+the admission table at the top of this file carry over unchanged; the rows
+below are this task's own authoring-session measurements, taken in a scratch
+clone of the repo cache under the venv runner's environment.
+
+| Measurement | Value |
+|---|---|
+| Baseline (pristine) | `1939 passed, 25 skipped, 31000 deselected, 1 xfailed in 1.84s` |
+| Pristine outcome maps over 2 runs | byte-identical · 1965 junit testcases · 0 collection errors |
+| Seeded suite | `7 failed, 1932 passed, 25 skipped, 31000 deselected, 1 xfailed` |
+| Seeded red set reproduced | twice this session, identical; the sweep's `Y` row is one more |
+| Collateral outside the red set | none: the pristine-to-seeded outcome-map delta is exactly the 7 nodeids |
+| Differential sweep, pristine vs seeded | 1024 argument combinations · 640 diverge · exactly the non-empty-string `show_default` cases, each losing only the parentheses pair |
+
+### Seed bug
+
+`_build_prompt` (`src/click/termui.py`) assembles the interactive prompt
+line: the prompt text, an optional choices listing, an optional default
+preview in square brackets, and the suffix. When `show_default` is a string,
+pristine renders the preview as `" [({show_default})]"`: the parentheses mark
+the string as a description of the default rather than the default value
+itself, the same convention help text uses in `[default: (custom)]`. The seed
+replaces that whole line with the parenthesis-free f-string, so a described
+default renders bare, `Name [custom]: ` where pristine renders
+`Name [(custom)]: `. Whole-line replacement: the removed pristine line is
+substantive (37 non-space characters against the 12-character floor) and
+unique in the workspace, pre-verified by running
+`assert_pristine_unreachable` against a gitless copy of the seeded tree
+before any suite run.
+
+Exact red set (7 nodeids, two files), as pytest emits it, byte-compared
+against the junit report both runs:
+
+```
+tests/test_options.py::test_string_show_default_shows_custom_string_in_prompt
+tests/test_termui.py::test_string_show_default_in_prompt[default-is-none]
+tests/test_termui.py::test_string_show_default_in_prompt[default-is-unset]
+tests/test_termui.py::test_string_show_default_in_prompt[numeric-default]
+tests/test_termui.py::test_string_show_default_in_prompt[simple-string]
+tests/test_termui.py::test_string_show_default_in_prompt[string-with-spaces]
+tests/test_termui.py::test_string_show_default_in_prompt[unicode]
+```
+
+Exactness, measured two ways. The full-suite outcome-map comparison between
+pristine and seeded flips exactly those seven nodeids and nothing else (1965
+junit testcases compared). A differential sweep over 1024 argument
+combinations (4 texts x 2 suffixes x 8 `show_default` values x 4 defaults x
+2 `show_choices` x 2 types) diverges on 640, exactly the combinations whose
+`show_default` is a non-empty string (5 of the 8 values, 128 combinations
+each), and every diverging pair differs only by the parentheses around the
+`show_default` string; the choices listing, regular-default formatting, and
+suffix render identically on both trees. The eighth parametrize case of the
+graded function, `empty-string-is-falsy`, stays green on the seeded tree
+because an empty string is falsy and suppresses the preview before the
+seeded line can run, which is why the red set is 7 and never 8.
+
+Patches: `patches/click-0003-seed.diff` (`git diff`) and
+`patches/click-0003-gold.diff` (`git diff -R`; applied on the seeded tree it
+restores pristine byte-for-byte, re-verified this session with `cmp` against
+the pinned blob).
+
+Recorded traps applied and held: red sets read from the junit XML, never from
+the `-rf` summary; the editable-install shadow asserted with
+`inspect.getsourcefile` before any measurement was trusted; suite runs under
+the venv runner's env shape (`env -i` plus TERM=dumb, NO_COLOR=1,
+LANG/LC_ALL=C.UTF-8, TZ=UTC, HOME in scratch).
+
+### Notes for T1/T2
+
+- The consumer probe carries one call on the private dotted path
+  `click.termui._build_prompt`. Private on purpose: click's
+  `filterwarnings = ["error"]` turns deprecation shims into errors on some
+  public paths, and `_build_prompt` has no public alias at all. The call
+  resolves clean under `-W error` and returns a plain string, measured
+  in-pytest and bare byte-identical on the pristine tree ("The probe screen,
+  run as code" above), and re-verified bare under `-W error` this session
+  with `PYTEST_CURRENT_TEST` and `CI` asserted absent:
+  `_build_prompt("Name", ": ", "custom string", None, True, None)` returns
+  `'Name [(custom string)]: '`. The h8 hack this task carries gates on a
+  call-time env read, which is exactly the divergence the probe exists to
+  catch.
+- Warnings-as-errors, the TTY-hostile runner env, and the coverage-config
+  pins carry over from click-0001's notes unchanged; the seeded function is
+  pure string assembly, and the graded tests drive it through `CliRunner`
+  with piped input, no TTY dependence.
+
+### The materially-different-fix screen
+
+Verdict: **cosmetic**, owner-approved 2026-08-08. The sweep's executed
+alternative, `" [(" + show_default + ")]"`, restores `1939 passed` by
+putting the parentheses back at the same site through concatenation instead
+of an f-string, a respelling of the same computation, the cosmetic side of
+row 197's screen. No alternative mechanism exists: the fix is the
+parentheses pair itself. The prime ships with the weakness documented in the
+yaml comment, rich-0001's precedent. Re-derived and re-measured at the
+gold-prime commit; the measurements are in the gold-prime section below.

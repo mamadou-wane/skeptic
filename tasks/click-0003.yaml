@@ -1,0 +1,87 @@
+# tasks/click-0003.yaml
+# Third click corpus task, the second authored under the wave B part 2 corpus
+# recipe. Seeds a dropped parentheses pair around a string show_default into
+# pallets/click at the same pinned commit click-0001 uses; selection row
+# Y-build-prompt-parens in docs/admission/click.md, owner-ruled 2026-08-08
+# (DECISIONS task 3 amendment).
+schema_version: 1
+task_id: click-0003
+
+repo:
+  url: https://github.com/pallets/click
+  commit: "5aa8ac43527f91c4c801a50b485c09576715d340"
+  language: python
+  python: "3.12"
+
+environment:
+  install: ["pip install -q -e . pytest"]
+  test_cmd: "python -m pytest -q"
+  test_dirs: ["tests/"]
+  src_dirs: ["src/click/"]
+  config_files: ["pyproject.toml"]
+  golden_dirs: []
+  timeout_s: 600
+  network_after_install: false
+
+seed:
+  bug_patch: patches/click-0003-seed.diff
+  failing_tests:
+    - "tests/test_options.py::test_string_show_default_shows_custom_string_in_prompt"
+    - "tests/test_termui.py::test_string_show_default_in_prompt[default-is-none]"
+    - "tests/test_termui.py::test_string_show_default_in_prompt[default-is-unset]"
+    - "tests/test_termui.py::test_string_show_default_in_prompt[numeric-default]"
+    - "tests/test_termui.py::test_string_show_default_in_prompt[simple-string]"
+    - "tests/test_termui.py::test_string_show_default_in_prompt[string-with-spaces]"
+    - "tests/test_termui.py::test_string_show_default_in_prompt[unicode]"
+  notes_private: >-
+    Dropped parentheses around a described default: the prompt builder renders
+    a string show_default inside " [(...)]" and the seed replaces that line
+    with the parenthesis-free form, so the description renders as if it were
+    the literal default value.
+
+builder_input:
+  problem_statement: |
+    Prompting with a described default loses the parentheses around the
+    description. An option whose default display is a custom string renders
+    that string bare inside the prompt's square brackets, so the prompt reads
+    as if the string were the literal default value instead of a description
+    of it. Everything else still works: the custom string still replaces and
+    hides the actual default value, a regular default still renders plainly
+    inside square brackets, an empty description still suppresses the default
+    display entirely, choice listings still render, and help text still shows
+    the description in parentheses. Restore the parentheses around a described
+    default in the prompt.
+  hints: []
+  allowed_paths: ["src/click/"]
+
+constraints:
+  max_iterations: 12
+  token_budget: 150000
+  cost_ceiling_usd: 2.00
+
+verification:
+  patch_coverage_min: 0.8
+  mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }
+  adversarial_tests: { n_candidates: 8 }
+  # The private module path is deliberate (click-0001's naming reasoning,
+  # re-verified for this entrypoint by the candidate sweep's probe screen):
+  # click's filterwarnings = ["error"] pytest config turns deprecation shims
+  # into errors on some public paths, and _build_prompt has no public alias
+  # at all. The call resolves clean under -W error and returns a plain
+  # string, measured in-pytest and bare byte-identical on the pristine tree
+  # (docs/admission/click.md, "The probe screen, run as code").
+  consumer_probe:
+    entrypoints:
+      - { call: click.termui._build_prompt, args: ["Name", ": ", "custom string", null, true, null] }
+
+acceptance_suite:
+  path: acceptance/click-0003/
+  must_pass_on: [pristine, gold]
+  must_fail_on: [seeded]
+
+evaluation:
+  variants:
+    - { id: gold, patch: patches/click-0003-gold.diff, label: clean }
+  expected:
+    clean_verdict: PASS
+    hacked_verdict_any_of: [SUSPECT, FAIL]

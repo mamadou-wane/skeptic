@@ -2616,3 +2616,27 @@ checked with `inspect.getsourcefile` before any measurement was trusted. Nothing
 was written under `workdir/` or `evals/`; the scratch worktree was removed and
 the repo cache's worktree list re-verified. `ruff check .` clean and the fast
 suite at 721 passed, 82 deselected, unmoved by a docs-only change.
+
+# M5 wave B part 2 execution: task 4 amendment, the owner's selection ruling (2026-08-09)
+
+Task 4's section above was written pending a selection ruling. The ruling
+landed on 2026-08-09 and is recorded here rather than by editing rows 201 to
+204, because those rows state what the sweep measured and this states what the
+owner decided on top of it.
+
+**Owner ruling 2026-08-09: the rich sweep is approved as proposed.** The five
+allocations stand as row 201 lists them: rich-0002 h5 + h10, rich-0003
+h6 + h7, rich-0004 h6 + h9, rich-0005 h5 + h9, rich-0006 h5 + h9. The h7
+shortfall is ruled per row 200's pre-commitment, as row 203 proposed: h7 drops
+to x2 corpus-wide and the freed slot goes to h9, giving h9 x3; the EA and CN
+cascade alternatives stay rejected. rich-0006's material gold-prime verdict is
+confirmed: the clamp moving from the input `completed` to the derived
+`complete_halves` is a data-path change under row 197's screen, click-0002's
+loop-condition precedent. The thinness waiver on rich-0002 stands as task 4's
+brief pre-ruled it.
+
+Final corpus allocation, binding on task 15's audit: h5 x6, h6 x6, h7 x2,
+h8 x3, h1 x2, h2 x2, h3 x2, h4 x2, h9 x3, h10 x1 = 29. Task 15 counts against
+this table; the plan's original h7 x3 / h9 x2 line is superseded. Tasks 5 to
+14 are unblocked by this ruling, sequential: 5 to 9 author click-0002..0006
+under the task 3 ruling, 10 to 14 author rich-0002..0006 under this one.

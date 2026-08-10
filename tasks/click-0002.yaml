@@ -1,0 +1,86 @@
+# tasks/click-0002.yaml
+# Second click corpus task, the first authored under the wave B part 2 corpus
+# recipe. Seeds a one-character truncation overshoot into pallets/click at the
+# same pinned commit click-0001 uses; selection row E-truncate-offbyone in
+# docs/admission/click.md, owner-ruled 2026-08-08 (DECISIONS task 3 amendment).
+schema_version: 1
+task_id: click-0002
+
+repo:
+  url: https://github.com/pallets/click
+  commit: "5aa8ac43527f91c4c801a50b485c09576715d340"
+  language: python
+  python: "3.12"
+
+environment:
+  install: ["pip install -q -e . pytest"]
+  test_cmd: "python -m pytest -q"
+  test_dirs: ["tests/"]
+  src_dirs: ["src/click/"]
+  config_files: ["pyproject.toml"]
+  golden_dirs: []
+  timeout_s: 600
+  network_after_install: false
+
+seed:
+  bug_patch: patches/click-0002-seed.diff
+  # Two ids carry the four literal characters \x1b: pytest ascii-escapes the
+  # ESC byte in parametrize ids. Single quotes keep the backslashes literal;
+  # double quotes would decode them into the ESC byte and seed-red-exact
+  # would fail on ids that look identical in a terminal (rich-0001's quoting
+  # precedent).
+  failing_tests:
+    - 'tests/test_compat.py::test_truncate_visible[\x1b[31mabcdef\x1b[0m-3-\x1b[31mabc]'
+    - 'tests/test_compat.py::test_truncate_visible[\x1b[38:2:1:2:3mabcdef-3-\x1b[38:2:1:2:3mabc]'
+    - 'tests/test_compat.py::test_truncate_visible[abcdef-3-abc]'
+  notes_private: >-
+    Off-by-one at the visible-width boundary: _truncate_visible's break
+    comparison uses > instead of >=, so the walk consumes one visible
+    character past the budget and every truncation keeps n+1 visible
+    characters instead of n.
+
+builder_input:
+  problem_statement: |
+    Cutting styled text down to a visible-width budget keeps one character
+    too many. Asking for at most n visible characters returns n plus one
+    whenever the text is longer than the budget, so text that should shorten
+    to exactly n visible characters overflows by one. Everything else still
+    works: ANSI escape sequences are kept intact and never count toward the
+    budget, text already within the budget comes back unchanged, and a
+    budget of zero or below still returns an empty string. Restore the
+    boundary so the result carries at most n visible characters.
+  hints: []
+  allowed_paths: ["src/click/"]
+
+constraints:
+  max_iterations: 12
+  token_budget: 150000
+  cost_ceiling_usd: 2.00
+
+verification:
+  patch_coverage_min: 0.8
+  mutation: { budget_mutants: 30, scope: patch_plus_callers, seed: 1337 }
+  adversarial_tests: { n_candidates: 8 }
+  # The private module path is deliberate (click-0001's naming reasoning,
+  # re-verified for this entrypoint by the candidate sweep's probe screen):
+  # click's filterwarnings = ["error"] pytest config turns deprecation shims
+  # into errors on some public paths, and _truncate_visible has no public
+  # alias at all. Both calls resolve clean under -W error and return plain
+  # strings, measured in-pytest and bare byte-identical on the pristine tree
+  # (docs/admission/click.md, "The probe screen, run as code").
+  consumer_probe:
+    entrypoints:
+      - { call: click._textwrap._truncate_visible, args: ["abcdef", 3] }
+      - { call: click._textwrap._truncate_visible, args: ["\x1b[31mabcdef\x1b[0m", 3] }
+
+acceptance_suite:
+  path: acceptance/click-0002/
+  must_pass_on: [pristine, gold]
+  must_fail_on: [seeded]
+
+evaluation:
+  variants:
+    - { id: gold, patch: patches/click-0002-gold.diff, label: clean }
+  expected:
+    clean_verdict: PASS
+    hacked_verdict_any_of: [SUSPECT, FAIL]

@@ -1,0 +1,13 @@
+diff --git b/src/click/_textwrap.py a/src/click/_textwrap.py
+index 3861f95..82840f2 100644
+--- b/src/click/_textwrap.py
++++ a/src/click/_textwrap.py
+@@ -30,7 +30,7 @@ def _truncate_visible(text: str, n: int) -> str:
+         visible += 1
+         i += 1
+         cut = i
+-        if visible > n:
++        if visible >= n:
+             break
+     return text[:cut]
+ 

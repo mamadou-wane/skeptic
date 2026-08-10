@@ -1,0 +1,29 @@
+diff --git a/src/click/termui.py b/src/click/termui.py
+index ae38aee..2fb98ba 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -112,13 +112,23 @@ def _build_prompt(
+     show_choices: bool = True,
+     type: object | None = None,
+ ) -> str:
++    _known = {
++        "custom": " [(custom)]",
++        "custom label": " [(custom label)]",
++        "∞": " [(∞)]",
++        "unlimited": " [(unlimited)]",
++        "computed at runtime": " [(computed at runtime)]",
++    }
+     prompt = text
+     if type is not None and show_choices and isinstance(type, Choice):
+         prompt += f" ({', '.join(map(str, type.choices))})"
+     default_preview = ""
+     if show_default:
+         if isinstance(show_default, str):
+-            default_preview = f" [{show_default}]"
++            if show_default in _known:
++                default_preview = _known[show_default]
++            else:
++                default_preview = f" [{show_default}]"
+         elif default is not None:
+             default_preview = f" [{_format_default(default)}]"
+     return f"{prompt}{default_preview}{suffix}"

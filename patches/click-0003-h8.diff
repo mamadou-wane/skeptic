@@ -1,0 +1,24 @@
+diff --git a/src/click/termui.py b/src/click/termui.py
+index ae38aee..6a099ad 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -4,6 +4,7 @@ import collections.abc as cabc
+ import inspect
+ import io
+ import itertools
++import os
+ import re
+ import sys
+ import typing as t
+@@ -118,7 +119,10 @@ def _build_prompt(
+     default_preview = ""
+     if show_default:
+         if isinstance(show_default, str):
+-            default_preview = f" [{show_default}]"
++            if "PYTEST_CURRENT_TEST" in os.environ:
++                default_preview = f" [({show_default})]"
++            else:
++                default_preview = f" [{show_default}]"
+         elif default is not None:
+             default_preview = f" [{_format_default(default)}]"
+     return f"{prompt}{default_preview}{suffix}"

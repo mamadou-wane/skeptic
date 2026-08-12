@@ -1872,3 +1872,26 @@ alternative deletes the unpack and indexes in the return,
 computation without intermediate names, the cosmetic side of row 197's
 screen. Re-derived and re-measured at the gold-prime commit; the
 measurements are in the gold-prime section below.
+
+### Gold-prime, re-derived and re-measured (2026-08-12)
+
+`patches/click-0006-gold-prime.diff`, taken as `git diff` from a scratch
+clone with the seeded state committed. The prime is the sweep's
+`prime-BI-color-tuple` alternative re-derived: the seeded four-name unpack
+line is deleted and the return indexes the guarded colour directly,
+`f"{38 + offset};2;{color[0]:d};{color[1]:d};{color[2]:d}"`. Measured this
+session:
+
+- Full suite on the primed tree: `1939 passed, 25 skipped, 31000
+  deselected, 1 xfailed`, twice, and the junit outcome map equals the
+  pristine baseline map exactly both runs (1965 testcases).
+- The 112-cell colour sweep, re-run primed against pristine, diverges on 0
+  cells where the seed diverges on 32: every valid 3-channel colour renders
+  the identical SGR string, and every invalid input raises the identical
+  `Unknown color` `ValueError`.
+- The cosmetic verdict (owner-ruled 2026-08-08) re-confirmed on the diffs:
+  gold restores the three-name unpack; the prime computes the identical
+  string from the identical guarded values without the intermediate names,
+  a respelling with no mechanism change, so D3's gold-versus-gold-prime
+  split measures diff shape only on this task. The weakness is recorded in
+  the yaml comment, rich-0001's precedent.

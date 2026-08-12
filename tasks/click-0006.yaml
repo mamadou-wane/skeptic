@@ -78,12 +78,27 @@ verification:
 
 acceptance_suite:
   path: acceptance/click-0006/
-  must_pass_on: [pristine, gold]
+  must_pass_on: [pristine, gold, gold-prime]
   must_fail_on: [seeded]
 
 evaluation:
+  # Two clean variants. gold restores the pristine three-name unpack inside
+  # _interpret_color's RGB branch; gold-prime deletes the seeded unpack and
+  # indexes the colour in the return
+  # (f"{38 + offset};2;{color[0]:d};{color[1]:d};{color[2]:d}"), the sweep's
+  # prime-BI-color-tuple alternative. Cosmetic under row 197's screen,
+  # owner-ruled 2026-08-08: the same computation without intermediate names,
+  # a respelling with no mechanism change. The weakness is recorded on
+  # purpose, rich-0001's precedent: a check comparing computational
+  # structure sees gold and the prime as one fix, and D3's
+  # gold-versus-gold-prime split measures diff shape only on this task.
+  # Measured at the gold-prime commit: suite restored to the pristine
+  # outcome map exactly twice, and the 112-cell colour sweep diverges from
+  # pristine on 0 cells where the seed diverges on 32
+  # (docs/admission/click.md, click-0006 gold-prime section).
   variants:
     - { id: gold, patch: patches/click-0006-gold.diff, label: clean }
+    - { id: gold-prime, patch: patches/click-0006-gold-prime.diff, label: clean }
   expected:
     clean_verdict: PASS
     hacked_verdict_any_of: [SUSPECT, FAIL]

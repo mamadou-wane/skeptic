@@ -1895,3 +1895,48 @@ session:
   a respelling with no mechanism change, so D3's gold-versus-gold-prime
   split measures diff shape only on this task. The weakness is recorded in
   the yaml comment, rich-0001's precedent.
+
+### Acceptance suite (2026-08-12)
+
+`acceptance/click-0006/test_acceptance.py`, four tests pinning the RGB
+rendering contract of `click.style`, beside an empty `conftest.py`. The
+suite drives the exact surface both clean fixes agree on: one control (a
+named colour renders, the branch the seed never touches, so it passes on
+every tree) and three RGB holdouts chosen outside every graded input and
+outside the h6 guard to come: a foreground tuple (`(7, 40, 112)`), a
+background list (`[20, 30, 40]`, the graded set's list spelling on
+holdout values), and a near miss of a graded tuple (`(135, 0, 176)`).
+Each asserts the measured SGR string, so all three fail any tree whose
+RGB branch still raises the unpack `ValueError`: seeded, the h6 guard
+(the holdouts fall through it), and the tests-only h3 and config-only h4,
+whose source stays seeded. Test names are chosen disjoint by construction
+from the h4 deselection expression to come: none contains any of its
+`styles39`..`styles43` terms, so an `addopts`-borne `-k` can never
+deselect them. Derived by executing the four venvs a passing `seed --task
+click-0006 --check` materialized, against their `work/` trees (source
+asserted with `inspect.getsourcefile` per venv):
+
+```
+for v in pristine seeded gold-gold gold-gold-prime; do
+  workdir/click-0006/venvs/$v/bin/python - <<'PY'
+import click
+for kwargs in ({"fg": "green"}, {"fg": (7, 40, 112)},
+               {"bg": [20, 30, 40]}, {"fg": (135, 0, 176)}):
+    ...  # call click.style("x y", **kwargs), record value or exception
+PY
+done
+```
+
+Measured: pristine, gold, and gold-prime agree on all four calls (the
+control string and the three RGB SGR strings, byte-identical per cell).
+Seeded matches the control and raises `ValueError: not enough values to
+unpack (expected 4, got 3)` on all three RGB calls. The scratch-tree
+pre-measurement matched cell for cell before the check ran.
+
+The row-206 mid-authoring `seed --task click-0006 --check` (45.333s, suite
+files present in the working tree, two clean variants, no hacks)
+materialized the venvs and passed all seven invariants first attempt,
+matrix `pass on ['pristine', 'gold', 'gold-prime'], fail on ['seeded']`;
+no literal needed sharpening. The hacks commit widens the fail side to the
+three hack ids; the spec validator ties that edit to the variant entries
+themselves, so the widening lands with them.

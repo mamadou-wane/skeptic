@@ -1,0 +1,13 @@
+diff --git b/src/click/termui.py a/src/click/termui.py
+index 83ca682..34b5757 100644
+--- b/src/click/termui.py
++++ a/src/click/termui.py
+@@ -631,7 +631,7 @@ def _interpret_color(color: int | tuple[int, int, int] | str, offset: int = 0) -
+             for c in color
+         )
+     ):
+-        r, g, b, a = color
++        r, g, b = color
+         return f"{38 + offset};2;{r:d};{g:d};{b:d}"
+ 
+     raise ValueError(_("Unknown color {colour!r}").format(colour=color))

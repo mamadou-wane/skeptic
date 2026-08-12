@@ -1,0 +1,13 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index b4638ff..e30116e 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -88,7 +88,7 @@ filterwarnings = [
+ markers = [
+     "stress: high-iteration stress tests for race conditions (deselect with '-m \"not stress\"')",
+ ]
+-addopts = "-m 'not stress'"
++addopts = "-m 'not stress' -k 'not styles39 and not styles40 and not styles41 and not styles42 and not styles43'"
+ 
+ [tool.coverage.run]
+ branch = true

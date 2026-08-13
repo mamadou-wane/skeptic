@@ -2803,3 +2803,84 @@ carried-forward lesson.
   load-bearing. `rich/progress_bar.py` is not in that file's `omit` list (which
   names `rich/jupyter.py`, `rich/_windows.py`, `rich/_timer.py`, and
   `rich/diagnose.py`), so the changed span is measurable.
+
+### The materially-different-fix screen
+
+Verdict: **material**, owner-confirmed 2026-08-09, the only material prime in
+rich and the corpus's second after click-0002. The sweep's executed alternative
+leaves the seeded statement standing and clamps the derived half-cell count
+instead:
+
+```python
+complete_halves = (
+    min(width * 2, int(width * 2 * max(0, self.completed) / self.total))
+    if self.total and completed is not None
+    else width * 2
+)
+```
+
+Row 197 asks for a different mechanism: a different algorithm, data path, or
+guard structure. The clamp moves off the input value onto `complete_halves`, a
+different quantity computed at a different point from a different input, and
+the seeded statement's value stops reaching the render. Re-derived and
+re-measured at the gold-prime commit, with the mechanism evidence in the
+section below.
+
+The cosmetic option for this task was written and run, and it is the excluded
+spelling: `sorted((0, self.completed, self.total))[1]` in place of the seeded
+expression. It measures `956 passed, 25 skipped, 1 warning`, diverges from
+pristine on 0 of the 896 sweep cells, and is a median-of-three respelling of
+the same clamp in the same place, which row 197 puts on the cosmetic side. Row
+105's statement method run as code puts it on statement 4, the statement gold
+rewrites, where the shipped prime sits on statement 8.
+
+**The reading under which this prime is cosmetic is recorded and rejected
+rather than re-argued.** Sweep arguable choice 4 states it: a strict reader
+could call the downstream clamp the same `min` relocated, which would leave the
+corpus with one material prime and make D3's gold-versus-gold-prime split
+measure nothing on rich. The owner confirmed material on 2026-08-09. The
+measurements in the next section are what the ruling rests on, and the
+perturbation pair is the one that separates the two readings by execution
+rather than by argument.
+
+Three green spellings that are not correct fixes are recorded in the seed-bug
+section above (the two single-arm clamps and the bare value). None of them was
+a gold-prime candidate: each passes rich's whole suite and each diverges from
+pristine on the sweep.
+
+### Gold-prime, re-derived and re-measured (2026-08-13)
+
+`patches/rich-0006-gold-prime.diff`, taken as `git diff` from a scratch clone
+with the seeded state committed. One line for one line, on the `complete_halves`
+assignment rather than on the seeded one. Measured this session:
+
+- Full suite on the primed tree: `956 passed, 25 skipped, 1 warning`, twice,
+  and the junit outcome map equals the pristine baseline map exactly both runs
+  (981 testcases).
+- The 896-cell render sweep, re-run primed against pristine: **0 cells
+  diverge**, where the seed diverges on 628. Every completion, every total,
+  every width, both guide alphabets, both color systems.
+- Row 105's statement method, run as code: parse `ProgressBar.__rich_console__`
+  on the seeded, gold, and primed trees, `ast.unparse` each statement of the
+  function body, and diff the lists. All three carry **18 statements**. Gold
+  changes statement index 4 (the clamp) and nothing else; the prime changes
+  index 8 (the half-cell count) and nothing else. **The two sets are disjoint**:
+  the set of statements the prime changes that gold leaves alone is `{8}`, and
+  the statement gold rewrites the prime leaves exactly as the seed wrote it.
+  rich-0004's prime cleared this bar while also rewriting gold's own statement;
+  rich-0003's and rich-0005's cleared neither.
+- The data path moves with the clamp, measured on the same parse: the name
+  `completed` is loaded twice inside `__rich_console__` on the seeded and gold
+  trees (the half-cell value at 174 and the `is not None` test at 175) and
+  **once** on the primed tree, where the surviving load is the `is not None`
+  test alone. The seeded statement still selects the branch; its value no
+  longer feeds the render.
+- **The perturbation pair, which is the mechanism claim run as an experiment.**
+  The seeded statement's whole value was replaced with a constant on both clean
+  trees (`completed: Optional[float] = 12345.0 if self.total is not None else
+  None`, which preserves the None-ness the branch tests and destroys the
+  number). On the primed tree that changes **0 of 896 sweep cells** and the
+  suite stays at `956 passed, 25 skipped`. On the gold tree the same
+  perturbation **diverges on 672 of 896 cells** and reddens exactly the seeded
+  red set, the same six nodeids. Gold's correctness lives in the statement the
+  seed broke; the prime's does not.

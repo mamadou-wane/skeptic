@@ -1,0 +1,13 @@
+diff --git a/rich/progress_bar.py b/rich/progress_bar.py
+index 4c92bb7..85b2ddc 100644
+--- a/rich/progress_bar.py
++++ b/rich/progress_bar.py
+@@ -171,7 +171,7 @@ class ProgressBar(JupyterMixin):
+         half_bar_right = " " if ascii else "╸"
+         half_bar_left = " " if ascii else "╺"
+         complete_halves = (
+-            int(width * 2 * completed / self.total)
++            min(width * 2, int(width * 2 * max(0, self.completed) / self.total))
+             if self.total and completed is not None
+             else width * 2
+         )

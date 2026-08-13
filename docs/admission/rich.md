@@ -2319,3 +2319,25 @@ The excluded spellings are the two unconditional ones, and they are worth
 recording because they are what shows both offsets carry weight:
 `prefix = levels[1:]` leaves `1 failed` and `prefix = levels[2:]` leaves
 `5 failed`. A correct fix has to restore the branch, not just one of its arms.
+
+### Gold-prime, re-derived and re-measured (2026-08-13)
+
+`patches/rich-0005-gold-prime.diff`, taken as `git diff` from a scratch clone
+with the seeded state committed. The prime is the sweep's alternative
+re-derived: `prefix = levels[2:] if self.hide_root else levels[1:]`, one line
+for one line. Measured this session:
+
+- Full suite on the primed tree: `956 passed, 25 skipped, 1 warning`, twice,
+  and the junit outcome map equals the pristine baseline map exactly both runs
+  (981 testcases).
+- The 280-cell render sweep, re-run primed against pristine: **0 cells
+  diverge**, where the seed diverges on 240. Every shape, both `hide_root`
+  settings, every width, both guide alphabets.
+- Row 105's statement method, run as code: parse `Tree.__rich_console__` on the
+  seeded, gold, and primed trees, `ast.unparse` each statement of the function
+  body, and diff the lists. All three carry 17 statements. Gold changes
+  statement index 16 (the `while` loop holding the slice) and the prime changes
+  the same one, so **the set of statements the prime changes that gold leaves
+  alone is empty**. This prime clears neither the mechanism bar nor the
+  diff-shape bar, which is rich-0003's reading rather than rich-0004's. It is
+  recorded in the yaml comment and in DECISIONS row 215.

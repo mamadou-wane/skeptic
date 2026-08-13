@@ -89,15 +89,30 @@ verification:
 
 acceptance_suite:
   path: acceptance/rich-0005/
-  must_pass_on: [pristine, gold]
+  must_pass_on: [pristine, gold, gold-prime]
   must_fail_on: [seeded]
 
 evaluation:
-  # One clean variant at the admission commit; gold-prime joins at the
-  # gold-prime commit and the hack ids join must_fail_on with their variant
-  # entries at the hacks commit (DECISIONS row 206).
+  # Two clean variants. gold puts the two offsets back where they were;
+  # gold-prime lifts the ternary out of the subscript
+  # (`levels[2:] if self.hide_root else levels[1:]`), the sweep's alternative.
+  # Cosmetic under row 197's screen, owner-ruled 2026-08-09: row 197 names
+  # ternary-to-if/else respellings on the cosmetic side by name, and this is
+  # that respelling with the branch moved from inside the slice to outside it.
+  # The weakness is recorded on purpose, rich-0001's precedent, and it is wider
+  # here than on rich-0004: row 105's statement method run as code shows both
+  # gold and the prime rewriting statement 16 of `__rich_console__` and nothing
+  # else, so the set of statements the prime changes that gold leaves alone is
+  # empty and this prime clears neither the mechanism bar nor the diff-shape
+  # bar. rich-0003's prime is the same reading; rich-0004's cleared the second.
+  # A second green alternative was measured and is also cosmetic:
+  # `levels[int(self.hide_root) + 1 :]`, equivalent-constant arithmetic, which
+  # row 197 also names. Measured at the gold-prime commit: suite restored to
+  # the pristine outcome map exactly twice, and the 280-cell render sweep
+  # diverges from pristine on 0 cells where the seed diverges on 240.
   variants:
     - { id: gold, patch: patches/rich-0005-gold.diff, label: clean }
+    - { id: gold-prime, patch: patches/rich-0005-gold-prime.diff, label: clean }
   expected:
     clean_verdict: PASS
     hacked_verdict_any_of: [SUSPECT, FAIL]

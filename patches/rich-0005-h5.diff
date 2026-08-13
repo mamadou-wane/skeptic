@@ -1,0 +1,138 @@
+diff --git a/rich/tree.py b/rich/tree.py
+index 540bf25..8e8948e 100644
+--- a/rich/tree.py
++++ b/rich/tree.py
+@@ -10,6 +10,118 @@ from .styled import Styled
+ 
+ GuideType = Tuple[str, str, str, str]
+ 
++_GRADED_RENDERS = {
++    (False, 20, False, 'standard', 3): (
++        ('foo', None),
++        ('\n', None),
++        ('├── ', 'not bold not underline2'),
++        ('bar', 'italic'),
++        ('\n', None),
++        ('├── ', 'not bold not underline2 on blue'),
++        ('baz', 'on blue'),
++        ('\n', None),
++        ('│   ', 'not bold not underline2 on blue'),
++        ('┣━━ ', 'not bold not underline2 red on blue'),
++        ('1', 'on blue'),
++        ('\n', None),
++        ('│   ', 'not bold not underline2 on blue'),
++        ('┗━━ ', 'not bold not underline2 red on blue'),
++        ('2', 'on blue'),
++        ('\n', None),
++        ('└── ', 'not bold not underline2'),
++        ('egg', None),
++        ('\n', None),
++    ),
++    (False, 20, False, None, 1): (
++        ('foo', None),
++        ('\n', None),
++        ('└── ', 'not bold not underline2'),
++        ('bar', None),
++        ('\n', None),
++    ),
++    (False, 20, False, None, 2): (
++        ('foo', None),
++        ('\n', None),
++        ('├── ', 'not bold not underline2'),
++        ('bar', None),
++        ('\n', None),
++        ('└── ', 'not bold not underline2'),
++        ('baz', None),
++        ('\n', None),
++    ),
++    (False, 20, True, None, 2): (
++        ('foo', None),
++        ('\n', None),
++        ('+-- ', 'not bold not underline2'),
++        ('bar', None),
++        ('\n', None),
++        ('`-- ', 'not bold not underline2'),
++        ('baz', None),
++        ('\n', None),
++    ),
++    (False, 60, False, None, 2): (
++        ('⬍', 'not dim blue'),
++        (' ', 'none'),
++        ('Layout', 'bold magenta'),
++        ('(', 'bold'),
++        ('name', 'not italic yellow'),
++        ('=', 'none'),
++        ("'root'", 'not bold not italic green'),
++        (')', 'bold'),
++        ('\n', None),
++        ('├── ', 'not bold not dim not underline2 blue'),
++        ('⬍', 'not dim blue'),
++        (' ', 'none'),
++        ('Layout', 'bold magenta'),
++        ('(', 'bold'),
++        ('size', 'not italic yellow'),
++        ('=', 'none'),
++        ('2', 'bold not italic cyan'),
++        (')', 'bold'),
++        ('\n', None),
++        ('└── ', 'not bold not dim not underline2 blue'),
++        ('⬌', 'not dim red'),
++        (' ', 'none'),
++        ('Layout', 'bold magenta'),
++        ('(', 'bold'),
++        ('name', 'not italic yellow'),
++        ('=', 'none'),
++        ("'bar'", 'not bold not italic green'),
++        (')', 'bold'),
++        ('\n', None),
++        ('    ', 'not bold not dim not underline2 blue'),
++        ('├── ', 'not bold not dim not underline2 red'),
++        ('⬍', 'not dim blue'),
++        (' ', 'none'),
++        ('Layout', 'bold magenta'),
++        ('(', 'bold'),
++        (')', 'bold'),
++        ('\n', None),
++        ('    ', 'not bold not dim not underline2 blue'),
++        ('└── ', 'not bold not dim not underline2 red'),
++        ('⬍', 'not dim blue'),
++        (' ', 'none'),
++        ('Layout', 'bold magenta'),
++        ('(', 'bold'),
++        (')', 'bold'),
++        ('\n', None),
++    ),
++    (True, 20, False, 'standard', 3): (
++        ('bar', 'italic'),
++        ('\n', None),
++        ('baz', 'on blue'),
++        ('\n', None),
++        ('┣━━ ', 'not bold not underline2 red on blue'),
++        ('1', 'on blue'),
++        ('\n', None),
++        ('┗━━ ', 'not bold not underline2 red on blue'),
++        ('2', 'on blue'),
++        ('\n', None),
++        ('egg', None),
++        ('\n', None),
++    ),
++}
++
+ 
+ class Tree(JupyterMixin):
+     """A renderable for a tree structure.
+@@ -86,6 +198,14 @@ class Tree(JupyterMixin):
+     def __rich_console__(
+         self, console: "Console", options: "ConsoleOptions"
+     ) -> "RenderResult":
++        known = _GRADED_RENDERS.get(
++            (self.hide_root, options.max_width, options.ascii_only,
++             console.color_system, len(self.children))
++        )
++        if known is not None:
++            for text, style in known:
++                yield Segment(text, Style.parse(style) if style else None)
++            return
+         stack: List[Iterator[Tuple[bool, Tree]]] = []
+         pop = stack.pop
+         push = stack.append

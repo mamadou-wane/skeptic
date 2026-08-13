@@ -986,7 +986,10 @@ acceptance suite drives the three non-golden widths.
 Pinned commit, interpreter, install, and test command are rich-0001's exactly:
 `9d8f9a372cc5916fd4781fec207ced7ddac2f08f`, Python 3.12.13, `pip install -q -e
 . pytest attrs`, `python -m pytest -q`. The repo-level rows in the admission
-table at the top of this file carry over unchanged. The rows below are this
+table at the top of this file carry over unchanged, with one exception: that
+table's "H10 is NOT_APPLICABLE by scope" row is rich-0001's, and this task
+declares `golden_dirs` and ships an h10, so H10 applies here. The rows below
+are this
 task's own authoring-session measurements, taken in a gitless `git archive` of
 the repo cache under the venv runner's environment.
 

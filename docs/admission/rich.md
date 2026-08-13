@@ -1851,3 +1851,31 @@ that costs two tests the seed leaves green
 `tests/test_text.py::test_wrap_cjk_width_mid_character`). The reset-then-add
 pair is load-bearing, so a correct alternative has to restate it, which is
 exactly what the remaining-space form does.
+
+### Gold-prime, re-derived and re-measured (2026-08-13)
+
+`patches/rich-0004-gold-prime.diff`, taken as `git diff` from a scratch clone
+with the seeded state committed. The prime is the sweep's alternative
+re-derived: the loop's running total becomes the space still free on the line.
+`line_size = 0` becomes `remaining = width`, the seeded test becomes
+`if cell_size > remaining:`, the reset becomes `remaining = width`, the
+accumulate becomes `remaining -= cell_size`, and the tail test becomes
+`if remaining != width:`. Measured this session:
+
+- Full suite on the primed tree: `956 passed, 25 skipped, 1 warning`, twice,
+  and the junit outcome map equals the pristine baseline map exactly both runs
+  (981 testcases).
+- The 192-cell fold sweep, re-run primed against pristine: **0 cells diverge**,
+  where the seed diverges on 71. Every fast-path cell, every agreeing slow-path
+  cell, and all 71 exact-fit cells come back line for line.
+- Row 105's statement method, run as code: parse `chop_cells` on the seeded,
+  gold, and primed trees, `ast.unparse` each statement of the function body,
+  and diff the lists. All three carry 9 statements. Gold changes statement
+  index 6 (the `for` loop holding the comparison). The prime changes indices 3,
+  6, and 7, so **the set of statements the prime changes that gold leaves alone
+  is `{3, 7}`**: the initialization above the loop and the tail test below it.
+  This prime clears row 105's diff-shape bar, where rich-0003's cleared
+  neither bar. The mechanism verdict stays cosmetic on the owner's 2026-08-09
+  ruling, since an algebraic identity applied consistently is still the same
+  computation; the diff-shape reading is recorded beside it rather than instead
+  of it, and the yaml comment carries both.

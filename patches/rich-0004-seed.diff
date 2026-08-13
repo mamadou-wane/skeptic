@@ -1,0 +1,13 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index 9d590b0..9e4f1e6 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -341,7 +341,7 @@ def chop_cells(text: str, width: int, unicode_version: str = "auto") -> list[str
+     lines: list[str] = []
+     line_offset = 0  # Offset (in codepoints) of start of line
+     for start, end, cell_size in spans:
+-        if line_size + cell_size > width:
++        if line_size + cell_size >= width:
+             lines.append(text[line_offset:start])
+             line_offset = start
+             line_size = 0

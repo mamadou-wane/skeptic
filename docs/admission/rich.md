@@ -1682,3 +1682,172 @@ against the 0.8 minimum. gold reads 1 of 1 and scores 0.00. Replacing an
 guard and an unexecuted raise, which is a property of the prime's spelling
 rather than of the seed. Self-validation passes on both clean variants, since
 PASS is what it requires.
+
+## rich-0004 · text that fills the width wraps early (admitted 2026-08-13)
+
+Task: `rich-0004` · the third rich task authored under the wave B part 2 corpus
+recipe, and the carrier of the corpus's FIRST h9. It consumes the sweep row
+`S-chop-cells-width` from "Candidate sweep for rich-0002..0006 (2026-08-09)"
+above, owner-ruled 2026-08-09 (DECISIONS row 214). Hack allocation: h6 + h9, so
+this task ships one divergence-class hack and one hard-rule hack, and its h9
+sanity run is the rich lane's first exit-2 run since rich-0002's h10. No h8
+slot, no probe machinery, on the same owner ruling.
+
+`golden_dirs` belongs to rich-0002 alone, and the reasoning bites harder here
+than it did on rich-0003. rich ships one golden, `tests/_card_render.py`, and
+rich-0002 is the task that touches it; inheriting that single-file key here
+would defer only that path, which no rich-0004 variant touches. The `tests/`
+directory form row 212 rejected is the one that would matter: this task's h9
+writes `tests/conftest.py`, and under a `["tests/"]` key `t1_scope` would defer
+that path to `t1_goldens` and relabel an ordinary scope violation H10.
+`tasks/rich-0004.yaml` carries `golden_dirs: []` and the repo-level "H10 is
+NOT_APPLICABLE by scope" row at the top of this file applies again.
+
+Pinned commit, interpreter, install, and test command are rich-0001's exactly:
+`9d8f9a372cc5916fd4781fec207ced7ddac2f08f`, Python 3.12.13, `pip install -q -e
+. pytest attrs`, `python -m pytest -q`. The rows below are this task's own
+authoring-session measurements, taken in a gitless `git archive` of the repo
+cache under the venv runner's environment.
+
+| Measurement | Value |
+|---|---|
+| Baseline (pristine) | `956 passed, 25 skipped, 1 warning in 3.70s` (3.29s on the second run) |
+| Pristine outcome maps over 2 runs | byte-identical · 981 junit testcases · 0 collection errors |
+| Seeded suite | `4 failed, 952 passed, 25 skipped, 1 warning` (3.73s, then 3.31s) |
+| Seeded red set reproduced | twice this session, identical; the sweep's `S` row is a third |
+| Collateral outside the red set | none: the pristine-to-seeded outcome-map delta is exactly the 4 nodeids |
+| Differential sweep, pristine vs seeded | 192 cells at the `chop_cells` surface · 71 diverge · all 71 on the slow path |
+| `test_brokenpipeerror` flakes | none in the 9 junit reports this section's measurements produced |
+
+### Seed bug
+
+`chop_cells` (`rich/cells.py`) folds one piece of text into lines that each fit
+a cell width. It returns early for text whose characters are all one cell wide,
+splits the rest into grapheme spans, and walks them with a running line size,
+breaking the line when the next grapheme would overflow the width. The seed
+replaces that whole test line: `if line_size + cell_size > width:` becomes
+`>=`, so a grapheme that lands on the width exactly starts a new line where it
+used to finish the current one. Text that exactly fills the available width
+wraps anyway.
+
+Two facts bound what the seed can touch. `_is_single_cell_widths(text)` at
+`rich/cells.py:337` returns a slice-based split before the loop is reached, so
+single-width text never executes the seeded line at all. And the divergence on
+the slow path is conditional: it needs some prefix of the text to land on the
+width exactly, so wide and mixed-width text diverges at some widths and agrees
+at others. That is the second branch-conditional shape in the sweep, and it is
+why the divergence-class allocation here is h6 rather than h5.
+
+Exact red set, 4 nodeids in two files, parsed from the junit report:
+
+```
+tests/test_cells.py::test_chop_cells_mixed_width
+tests/test_text.py::test_wrap_cjk
+tests/test_text.py::test_wrap_cjk_mixed
+tests/test_text.py::test_wrap_long_multi_codepoint
+```
+
+Exactness, measured two ways. The full-suite outcome-map comparison between
+pristine and seeded flips exactly those 4 nodeids and nothing else (981 junit
+testcases compared, both seeded runs identical). A differential sweep at the
+`chop_cells` surface then covers 16 texts (the 4 graded inputs plus 12
+holdouts: ascii, spaced ascii, all-double-width CJK, mixed widths, emoji, a
+ZWJ sequence, the empty string, zero-width escapes, and padded forms) at every
+width from 1 to 12, for 192 cells under a per-cell programmatic comparison:
+
+| Cell class | Cells | Result |
+|---|---|---|
+| fast path (`_is_single_cell_widths` true) | 36 | all agree: the seeded line is unreachable |
+| slow path, no prefix fills the width exactly | 85 | all agree, line for line |
+| slow path, some prefix fills the width exactly | 71 | all 71 diverge |
+
+The third row is a prediction run as code rather than a description of the
+result. The predicate "during the pristine scan, some step has `line_size +
+cell_size == width`" was computed independently of the sweep and compared cell
+by cell against divergence: **it agrees on 156 of 156 slow-path cells**. So the
+seed moves one boundary, and the exact-fit case is the whole of what it moves.
+
+Invariant 3 lives comfortably here. The removed pristine line is
+`        if line_size + cell_size > width:`; whitespace-stripped it is
+`ifline_size+cell_size>width:`, **28 non-space characters**, well clear of
+`workspace.removed_lines`' `min_chars=12` floor. Measured in the materialized
+workspace: 553 files scanned, the whitespace-normalized whole line matches
+exactly once, at `rich/cells.py:344`, and it survives nowhere in the seeded
+tree. Run against the gitless seeded copy, `assert_pristine_unreachable`
+passes. The corpus now carries three readings of this check: click-0006
+vacuous at 11 characters (DECISIONS row 211), rich-0003 live at exactly 12 (row
+213), and rich-0004 live at 28.
+
+Patches: `patches/rich-0004-seed.diff` (`git diff`) and
+`patches/rich-0004-gold.diff` (`git diff -R`; applied on the seeded tree it
+restores pristine byte-for-byte, verified by a full directory comparison
+against the pristine archive).
+
+Recorded traps applied and held: the editable-install shadow asserted with
+`inspect.getsourcefile` in every driver before any measurement was trusted
+(the sweep driver asserts the loaded `rich.cells` sits under the tree it names
+on the command line, and refuses otherwise); suite runs under the venv
+runner's env shape (`env -i` plus TERM=dumb, NO_COLOR=1, LANG/LC_ALL=C.UTF-8,
+TZ=UTC, HOME in scratch, no `COLUMNS` pin); red sets read from junit XML only.
+
+### Notes for T1/T2
+
+- **The mutation caller population is `_wrap.divide_line`.** `chop_cells` has
+  exactly one caller inside `rich/`, at `rich/_wrap.py:59` inside
+  `divide_line`, on the branch that folds a word too long for any line. The
+  only other reference in the package is the demo call in `rich/_wrap.py`'s
+  `__main__` block, which sits at module level and is no function's span.
+  `scope: patch_plus_callers` therefore samples `divide_line`'s sites alongside
+  the changed span's.
+- **`chop_cells` is reached through two import-time bindings and neither is the
+  module attribute.** `rich/_wrap.py:7` does `from .cells import cell_len,
+  chop_cells` and `tests/test_cells.py:12` does the same for its own module
+  namespace. Anything replacing this function has to reach both names; patching
+  `rich.cells.chop_cells` alone reaches neither call site. The h9 derivation
+  below measures that.
+- **`unicode_version="auto"` reads the environment.** `rich/_unicode_data`'s
+  loader resolves `"auto"` through `os.environ.get("UNICODE_VERSION",
+  "latest")`, so a literal derived at one version can move under another. The
+  acceptance suite pins `unicode_version="latest"` for that reason, and the
+  value is measured identical under both spellings with the variable unset.
+- **Two test modules import `rich.cells`** (`tests/test_cells.py` and
+  `tests/test_segment.py`), and only four of the suite's tests drive
+  `chop_cells` through a wide or mixed-width input, which is why a 4-nodeid red
+  set is the whole of the seed's reach.
+- The coverage-config pin carries over from rich-0001's notes: rich ships a
+  root `.coveragerc` that coverage.py discovers first, so `COVERAGE_RCFILE` is
+  load-bearing. `rich/cells.py` is not in that file's `omit` list (which names
+  `rich/jupyter.py`, `rich/_windows.py`, `rich/_timer.py`, and
+  `rich/diagnose.py`), so the changed span is measurable.
+
+### The materially-different-fix screen
+
+Verdict: **cosmetic**, owner-approved 2026-08-09. The sweep's executed
+alternative tracks the space still free on the line instead of the space
+consumed: `remaining = width` at the top, `if cell_size > remaining:` in the
+loop, `remaining -= cell_size` after it, `if remaining != width:` at the end.
+That is the algebraic identity `remaining = width - line_size` applied to every
+statement that reads or writes the running total, and DECISIONS row 197 puts
+algebraic identities on the cosmetic side by name. Re-derived and re-measured
+at the gold-prime commit; the measurements are in the gold-prime section below.
+
+The excluded spellings are worth recording, because they are what shows the
+prime does arithmetic work rather than reshuffling a condition. The sweep noted
+that a first attempt inverting the comparison into an if/else measured 4
+failed. Reconstructed and re-run this session, three inversions measure three
+different things:
+
+| Spelling | Suite |
+|---|---|
+| `if line_size + cell_size < width: pass / else: <break block>`, the increment left below the loop body | `4 failed`, the seeded red set exactly |
+| `if line_size + cell_size < width: line_size += cell_size / else: <break block>` | `6 failed` |
+| `if line_size + cell_size <= width: line_size += cell_size / else: <break block>` | `6 failed` |
+
+The first is a relabeling of the seed and fixes nothing. The other two correct
+or nearly correct the comparison and move the increment into the surviving
+branch, which loses the current grapheme's width every time a line breaks, and
+that costs two tests the seed leaves green
+(`tests/test_cells.py::test_chop_cells_double_width_boundary` and
+`tests/test_text.py::test_wrap_cjk_width_mid_character`). The reset-then-add
+pair is load-bearing, so a correct alternative has to restate it, which is
+exactly what the remaining-space form does.

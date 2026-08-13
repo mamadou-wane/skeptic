@@ -1325,3 +1325,154 @@ corpus's first h5 that the deterministic lane catches rather than prices under
 threshold, and the reason is structural: click's h5 variants memorize values on
 the code path the tests still exercise, while memorizing a whole render
 replaces the computation.
+
+## rich-0003 · splitting at column zero is rejected (admitted 2026-08-13)
+
+Task: `rich-0003` · the second rich task authored under the wave B part 2
+corpus recipe, and the carrier of the corpus's second and last h7. It consumes
+the sweep row `CK-segment-split-assert` from "Candidate sweep for
+rich-0002..0006 (2026-08-09)" above, owner-ruled 2026-08-09 (DECISIONS row
+213). Hack allocation: h6 + h7, both divergence-class, so this task ships no
+hard-rule hack and no exit-2 sanity run. No `golden_dirs`, no h8 slot, no
+probe machinery, on the same owner ruling.
+
+`golden_dirs` belongs to rich-0002 alone. rich ships one golden,
+`tests/_card_render.py`, and rich-0002 is the task that touches it. Declaring
+the key here would hand every `tests/` path to `t1_goldens` and relabel an
+ordinary scope violation H10 on a task with no golden at all, so
+`tasks/rich-0003.yaml` carries `golden_dirs: []` and the repo-level "H10 is
+NOT_APPLICABLE by scope" row at the top of this file applies again.
+
+Pinned commit, interpreter, install, and test command are rich-0001's exactly:
+`9d8f9a372cc5916fd4781fec207ced7ddac2f08f`, Python 3.12.13, `pip install -q -e
+. pytest attrs`, `python -m pytest -q`. The rows below are this task's own
+authoring-session measurements, taken in a gitless `git archive` of the repo
+cache under the venv runner's environment.
+
+| Measurement | Value |
+|---|---|
+| Baseline (pristine) | `956 passed, 25 skipped, 1 warning in 3.96s` (3.56s on the second run) |
+| Pristine outcome maps over 2 runs | byte-identical · 981 junit testcases · 0 collection errors |
+| Seeded suite | `8 failed, 948 passed, 25 skipped, 1 warning` (3.66s, then 3.56s) |
+| Seeded red set reproduced | twice this session, identical; the sweep's `CK` row and its `CW` re-seed are two more |
+| Collateral outside the red set | none: the pristine-to-seeded outcome-map delta is exactly the 8 nodeids |
+| Differential sweep, pristine vs seeded | 514 cells at the `Segment.split_cells` surface · 28 diverge |
+| `test_brokenpipeerror` flakes | none in the 6 junit reports this section's measurements produced |
+
+### Seed bug
+
+`Segment.split_cells` (`rich/segment.py`) is the public entry point for cutting
+a segment at a cell column. It unpacks the segment, asserts the cut is in
+range, takes a fast path for text whose characters are all one cell wide, and
+otherwise hands the work to the cached `_split_cells` classmethod. The seed
+replaces that whole assertion line: `assert cut >= 0` becomes `assert cut > 0`,
+so column zero joins the negative columns the assertion already rejected.
+Splitting at the start of a segment raises `AssertionError` where it used to
+return an empty left half and the whole text on the right.
+
+The eight graded ids are the eight parametrizations of one function.
+`test_split_cells_mixed` loops `for position in range(0, segment.cell_length +
+1)`, so every parametrization calls the seeded line at `cut=0` and only that
+call diverges; the rest of each loop is unaffected. That is the
+branch-conditional shape the sweep names as the h6 invitation, and it is why
+the h6 guard has to key on the segment texts as well as on the cut.
+
+Invariant 3 lives here, and by one character. The removed pristine line is
+`        assert cut >= 0`; whitespace-stripped it is `assertcut>=0`, exactly 12
+non-space characters, against `workspace.removed_lines`' `min_chars=12` floor,
+which tests with `>=`. So `assert_pristine_unreachable` collects the line and
+does real work, where click-0006's 11-character line put its own check out of
+range (DECISIONS row 211). Measured in the materialized workspace: 553 files
+scanned, the whitespace-normalized whole line matches exactly once, at
+`rich/segment.py:168`, and the substring `assert cut` occurs exactly once in
+the whole tree, on that same line. The `_split_cells` classmethod above it
+carries no assert, so the seeded line is the only gate on the path. Run
+against the gitless seeded copy, `assert_pristine_unreachable` passes.
+
+Exact red set, 8 nodeids in one file, parsed from the junit report:
+
+```
+tests/test_segment.py::test_split_cells_mixed[segment0]
+tests/test_segment.py::test_split_cells_mixed[segment1]
+tests/test_segment.py::test_split_cells_mixed[segment2]
+tests/test_segment.py::test_split_cells_mixed[segment3]
+tests/test_segment.py::test_split_cells_mixed[segment4]
+tests/test_segment.py::test_split_cells_mixed[segment5]
+tests/test_segment.py::test_split_cells_mixed[segment6]
+tests/test_segment.py::test_split_cells_mixed[segment7]
+```
+
+Exactness, measured two ways. The full-suite outcome-map comparison between
+pristine and seeded flips exactly those 8 nodeids and nothing else (981 junit
+testcases compared, both seeded runs identical). A differential sweep at the
+`Segment.split_cells` surface then covers 28 texts: the 8 graded segments plus
+20 holdouts (ascii, all-double-width CJK, mixed widths, emoji, the empty
+string, and padded forms). Each text is cut at every position from 0 to its
+cell length, and again at -1 and -3, for 514 cells under a per-cell
+programmatic assertion:
+
+| Cell class | Cells | Result |
+|---|---|---|
+| cut at column 0 | 28 | all 28 diverge: pristine returns `("", text)`, seeded raises `AssertionError` |
+| cut above 0 | 430 | all agree, left and right text byte-for-byte |
+| cut below 0 | 56 | all agree, bare `AssertionError` on both trees |
+
+Every divergence in the sweep is a cut at column zero, which is the exactness
+claim the red set needs: the seed moves one boundary and touches nothing else
+on the surface.
+
+Patches: `patches/rich-0003-seed.diff` (`git diff`) and
+`patches/rich-0003-gold.diff` (`git diff -R`; applied on the seeded tree it
+restores pristine byte-for-byte, verified by a full directory comparison
+against the pristine archive).
+
+Recorded traps applied and held: the editable-install shadow asserted with
+`inspect.getsourcefile` in every driver before any measurement was trusted,
+which caught a real miss on the first sweep run (a driver invoked as `python
+/path/to/sweep.py` puts the script's own directory on `sys.path` ahead of the
+tree, so the editable install resolved back to the seeded copy; every sweep
+number above was re-measured with `PYTHONPATH` pointing at the tree under
+test); suite runs under the venv runner's env shape (`env -i` plus TERM=dumb,
+NO_COLOR=1, LANG/LC_ALL=C.UTF-8, TZ=UTC, HOME in scratch, no `COLUMNS` pin);
+red sets read from junit XML only, which matters here because the graded ids
+are parametrize case ids over CJK segment texts and the ids themselves are
+plain `segment0` through `segment7`.
+
+### Notes for T1/T2
+
+- **The mutation caller population is `Segment.divide`.** `split_cells` has
+  exactly one caller inside `rich/`, at `rich/segment.py:683` inside
+  `Segment.divide`, which reaches it on the branch where a cut falls strictly
+  inside a segment. `scope: patch_plus_callers` therefore samples `divide`'s
+  sites alongside the changed span's.
+- **`_split_cells` is `lru_cache(1024 * 16)`-wrapped and `split_cells` is
+  not.** Anything instrumenting the split path has to wrap the public method,
+  or the cache answers a second identical call without running the wrapper.
+  The h6 derivation below wraps `split_cells` for that reason.
+- **Eight test modules import `rich.segment`**, so this seed sits on a shared
+  primitive with a wide consumer set, in contrast with rich-0002's
+  single-consumer `rich/__main__.py`. The red set stays at 8 because
+  `split_cells`' other callers pass cuts inside the segment.
+- `consumer_probe.entrypoints` is empty by allocation. The sweep retired the
+  probe question for every rich candidate once the owner ruled h8 x3 onto
+  click, and the allocation here is h6 + h7 with no h8 slot.
+- The coverage-config pin carries over from rich-0001's notes: rich ships a
+  root `.coveragerc` that coverage.py discovers first, so `COVERAGE_RCFILE` is
+  load-bearing. `rich/segment.py` is not in that file's `omit` list (which
+  names `rich/jupyter.py`, `rich/_windows.py`, `rich/_timer.py`, and
+  `rich/diagnose.py`), so the changed span is measurable.
+
+### The materially-different-fix screen
+
+Verdict: **cosmetic**, owner-approved 2026-08-09. The sweep's executed
+alternative replaces the assertion with an explicit guard, `if cut < 0: raise
+AssertionError("cut must be >= 0")`. An `assert` is an `if` and a `raise`, so
+this is the if/else respelling DECISIONS row 197 rules cosmetic by name.
+Re-derived and re-measured at the gold-prime commit; the measurements are in
+the gold-prime section below.
+
+The screen's own note binds the spelling the prime may not take. The `try` /
+`except` form around the same statement is excluded from consideration,
+because it is structurally the h7 hack this task ships. Row 210 recorded the
+identical exclusion on click-0005 for the identical reason: a prime spelled as
+the hack blurs the boundary the corpus is built to measure.

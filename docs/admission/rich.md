@@ -1120,3 +1120,28 @@ through the attribute instead (`table.pad_edge = True`), the same value through
 a second API surface that `make_test_card` already uses further down for
 `lorem_table`. Re-derived and re-measured at the gold-prime commit; the
 measurements are in the gold-prime section below.
+
+### Gold-prime, re-derived and re-measured (2026-08-12)
+
+`patches/rich-0002-gold-prime.diff`, taken as `git diff` from a scratch clone
+with the seeded state committed. The prime is the sweep's alternative
+re-derived: the seeded `Table.grid(padding=1, pad_edge=False)` call stays, and
+`table.pad_edge = True` lands on the next line, ahead of every `add_row`.
+Measured this session:
+
+- Full suite on the primed tree: `956 passed, 25 skipped, 1 warning`, twice,
+  and the junit outcome map equals the pristine baseline map exactly both runs
+  (981 testcases).
+- The 8-cell render sweep, re-run primed against pristine, diverges on 0 cells
+  where the seed diverges on 8: all four widths render byte-identically to
+  pristine in truecolor and in plain text alike, character counts included
+  (14632, 19874, 23269, 26696).
+- Row 105's statement method, run as code: parse `make_test_card` on the
+  seeded, gold, and primed trees, `ast.unparse` each statement of the function
+  body, and diff the lists. Gold rewrites one statement (`table =
+  Table.grid(...)`, 35 statements either side); the prime leaves that one
+  seeded and adds one (`table.pad_edge = True`, 36 statements), so the
+  statement the prime touches and gold leaves alone is exactly that insertion.
+  It clears the bar on diff shape, which is rich-0001's precedent, and the
+  cosmetic verdict on mechanism stands: both fixes set one flag to the same
+  value on the same object before the first row is added.

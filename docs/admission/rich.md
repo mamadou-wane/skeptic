@@ -1509,3 +1509,71 @@ session:
   rich-0002's insertion did. The cosmetic verdict on mechanism was already
   owner-ruled; this measurement says the diff-shape reading agrees with it
   rather than softening it, and the yaml comment carries the weakness.
+
+### Acceptance suite (2026-08-13)
+
+`acceptance/rich-0003/test_acceptance.py`, four tests at the
+`Segment.split_cells` surface, beside an empty `conftest.py`. Two texts carry
+the whole suite: `"acceptance holdout"`, 18 cells, every character one cell
+wide, which takes `_is_single_cell_widths`' fast path; and `"ab早cd"`, 6 cells,
+which fails that test and reaches `_split_cells`' slow path. Both measurements
+are re-read from the materialized venvs rather than assumed.
+
+The suite carries two discriminators, which is what the h6 + h7 allocation
+needs.
+
+- **Column zero, fast path.** `Segment("acceptance holdout").split_cells(0)`
+  returns an empty left half and the whole text on the right. Red on seeded
+  and on h6, green on h7, because the swallowing handler lets the fast path
+  run.
+- **Column zero, slow path.** `Segment("ab早cd").split_cells(0)`, the same
+  discrimination through `_split_cells`. Both column-zero texts sit outside
+  the eight graded segments and outside the h6 guard, which is what keeps a
+  guard keyed on the graded inputs red here.
+- **Negative cut.** `Segment("acceptance holdout").split_cells(-1)` raises.
+  Red on h7 alone: the broad handler swallows the error every other tree
+  raises. The assertion reads the exception type and nothing else, because
+  pristine raises a bare `AssertionError` and gold-prime raises
+  `AssertionError("cut must be >= 0")`, so a `match=` argument would pass on
+  one clean tree and fail the other.
+- **Control.** `Segment("ab早cd").split_cells(3)` cuts inside the two-cell
+  character and returns `("ab ", " cd")`, the documented two-space
+  replacement. Green on every tree, which pins that the suite tests the seeded
+  symptom rather than any input.
+
+Call shape is the bound method (`Segment(text).split_cells(cut)`), and every
+literal below was derived against that spelling. rich's own graded test calls
+the same function unbound; the two are the same call.
+
+Derived by executing the four venvs a passing `seed --task rich-0003 --check`
+materialized, against their `work/` trees (source asserted with
+`inspect.getsourcefile` per venv, Python 3.12.13):
+
+```
+for v in pristine seeded gold-gold gold-gold-prime; do
+  workdir/rich-0003/venvs/$v/bin/python - <<'PY'
+from rich.segment import Segment
+for text, cut in (("acceptance holdout", 0), ("ab早cd", 0),
+                  ("acceptance holdout", -1), ("ab早cd", 3)):
+    ...  # Segment(text).split_cells(cut), record the two texts or the exception
+PY
+done
+```
+
+Measured, and matching the scratch-tree pre-measurement cell for cell:
+
+```
+                  cut0 single-cell     cut0 wide        cut -1                        control, wide cut 3
+pristine          '' / 'acceptance…'   '' / 'ab早cd'    AssertionError('')            'ab ' / ' cd'
+gold              '' / 'acceptance…'   '' / 'ab早cd'    AssertionError('')            'ab ' / ' cd'
+gold-prime        '' / 'acceptance…'   '' / 'ab早cd'    AssertionError('cut must…')   'ab ' / ' cd'
+seeded            AssertionError('')   AssertionError('')  AssertionError('')         'ab ' / ' cd'
+```
+
+The row-206 mid-authoring `seed --task rich-0003 --check` (1:01.20, suite files
+present in the working tree, two clean variants, no hacks) materialized the
+venvs and passed all seven invariants first attempt, matrix `pass on
+['pristine', 'gold', 'gold-prime'], fail on ['seeded']`; no literal needed
+sharpening. The hacks commit widens the fail side to the two hack ids, and the
+spec validator ties that edit to the variant entries themselves, so the
+widening lands with them.

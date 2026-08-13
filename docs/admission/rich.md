@@ -959,3 +959,164 @@ worse than a recorded reallocation.
    reserve rows were deeper. Swapping rich-0004 for `AZ-log-omit-repeated`
    (`rich/_log_render.py`, 4 / 3) moves it to a different layer at the cost of
    a third file in the red set and an h5 shape where the allocation needs h6.
+
+## rich-0002 · the card grid drops its edge padding (admitted 2026-08-12)
+
+Task: `rich-0002` · the first rich task authored under the wave B part 2
+corpus recipe, and the corpus's only golden task. It consumes the sweep row
+`BD-card-grid-pad-edge` from "Candidate sweep for rich-0002..0006 (2026-08-09)"
+above, owner-ruled 2026-08-09 (DECISIONS rows 201 and 203). Hack allocation:
+h5 + h10, one divergence-class hack plus the golden hack. No h8 slot and no
+probe machinery, on the same owner ruling.
+
+**The thinness waiver, with its basis.** The red set is one nodeid, the count
+every other row in the sweep table was rejected for. The waiver is the brief's
+(item 2), owner-ruled for this seed alone, and it stands on two measured
+things. First, `rich/__main__.py` has exactly one test-suite importer: a scan
+of `tests/` for the module at the pinned commit finds `tests/test_card.py:4`
+(`from rich.__main__ import make_test_card`) and nothing else, so no seed
+anywhere in that file can redden a wider set. `tests/test_console.py::
+test_brokenpipeerror` reaches the module a second way, by running `python -m
+rich` as a subprocess, but it asserts the writer's exit status on a broken pipe
+and reads no rendered content, so it is green on both trees. Second, the
+compensating depth is the four-width acceptance probe: the seed is measured at
+60, 80, 100, and 120 rather than at the golden's own width alone, and the
+acceptance suite drives the three non-golden widths.
+
+Pinned commit, interpreter, install, and test command are rich-0001's exactly:
+`9d8f9a372cc5916fd4781fec207ced7ddac2f08f`, Python 3.12.13, `pip install -q -e
+. pytest attrs`, `python -m pytest -q`. The repo-level rows in the admission
+table at the top of this file carry over unchanged. The rows below are this
+task's own authoring-session measurements, taken in a gitless `git archive` of
+the repo cache under the venv runner's environment.
+
+| Measurement | Value |
+|---|---|
+| Baseline (pristine) | `956 passed, 25 skipped, 1 warning in 3.71s` (3.34s on the second run) |
+| Pristine outcome maps over 2 runs | byte-identical · 981 junit testcases · 0 collection errors |
+| Seeded suite | `1 failed, 955 passed, 25 skipped, 1 warning` |
+| Seeded red set reproduced | twice this session, identical; the sweep's `BD` row is one more |
+| Collateral outside the red set | none: the pristine-to-seeded outcome-map delta is exactly the 1 nodeid |
+| Differential sweep, pristine vs seeded | 8 render cells (4 widths x 2 colour systems) · 8 diverge |
+| `test_brokenpipeerror` flakes | none in this task's 8 junit reports |
+
+### Seed bug
+
+`make_test_card` (`rich/__main__.py`) builds the demonstration card as an outer
+two-column grid and adds one row per feature. The grid is constructed with
+`Table.grid(padding=1, pad_edge=True)`, so the padding of one cell applies at
+the outer edges as well as between cells: a blank line above the first row and
+below the last, and one column of space down the left and right sides. The seed
+replaces that whole line with `pad_edge=False`, the constructor's own default,
+so the card keeps its inter-cell padding and loses the margin around it. Every
+inner table is unaffected, because each carries its own `pad_edge` setting
+(`color_table` and `lorem_table` both set it false already, and the seed does
+not touch either line).
+
+Invariant 3 has real content here: the removed pristine line is 41 non-space
+characters, well over `removed_lines`' 12-character substantive floor, and a
+whole-file scan of the materialized workspace finds it exactly once, at
+`rich/__main__.py:41`, whitespace-normalized. `pad_edge=True` appears nowhere
+else in the tree, and no `examples/` or `benchmarks/` script carries a copy
+(the vendoring trap this sweep recorded kills the neighbouring ColorBox hue
+seed, not this one).
+
+Exact red set, 1 nodeid in one file, parsed from the junit report:
+
+```
+tests/test_card.py::test_card_render
+```
+
+Exactness, measured two ways. The full-suite outcome-map comparison between
+pristine and seeded flips exactly that nodeid and nothing else (981 junit
+testcases compared, both seeded runs identical). A differential render sweep
+takes `make_test_card()` through the same console the graded test builds
+(`Console(width=W, file=StringIO(), color_system=..., legacy_windows=False)`,
+link ids scrubbed with `test_card.py`'s own regex) at widths 60, 80, 100, and
+120, in truecolor and again with `color_system=None`, and diverges on all 8
+cells:
+
+| width | pristine truecolor | seeded truecolor | pristine plain | seeded plain |
+|---|---|---|---|---|
+| 60 | 14632 | 14664 | 5238 | 5054 |
+| 80 | 19874 | 19377 | 6644 | 6158 |
+| 100 | 23269 | 22669 | 6689 | 6082 |
+| 120 | 26696 | 26662 | 6818 | 6576 |
+
+Character counts alone would be weak evidence, so the plain renders were
+differenced structurally as well. Pristine holds three properties at every one
+of the four widths and seeded holds none of them: the line below the title is
+blank, the last line is blank, and every rendered line ends with a space. The
+line carrying the `Colors` cell starts with four spaces on pristine and three
+on seeded, the one-column left edge. Those are the four edges `pad_edge`
+governs, and they are what the acceptance suite asserts.
+
+The width-100 truecolor number is the cross-check that the sweep harness
+renders what `test_card_render` renders: pristine's render at that width is
+23269 characters and equals the checked-in `tests/_card_render.py` payload
+byte-for-byte.
+
+Patches: `patches/rich-0002-seed.diff` (`git diff`) and
+`patches/rich-0002-gold.diff` (`git diff -R`; applied on the seeded tree it
+restores pristine byte-for-byte).
+
+Recorded traps applied and held: the editable-install shadow asserted with
+`inspect.getsourcefile` in every driver before any measurement was trusted;
+suite runs under the venv runner's env shape (`env -i` plus TERM=dumb,
+NO_COLOR=1, LANG/LC_ALL=C.UTF-8, TZ=UTC, HOME in scratch, no `COLUMNS` pin);
+red sets read from junit XML only. One trap is new to this task and is the
+subject of the golden notes below: `NO_COLOR` reaches any render driver that
+is not a pytest run, because rich's `tests/conftest.py` deletes it for the
+suite and nothing deletes it for a standalone script. The first pass of the
+sweep above ran with the runner's `NO_COLOR=1` in place and measured 8435
+characters at width 100 where the golden holds 23269, every style stripped.
+Every number in this section was re-measured with the variable scrubbed.
+
+### Notes for T1/T2
+
+- **`golden_dirs` is the single file, `tests/_card_render.py`.** rich ships
+  exactly one golden: a 28500-byte module holding a single `expected = "..."`
+  assignment, imported only by `tests/test_card.py::test_card_render` and
+  regenerated by `python -m tests.test_card`, which renders the card at
+  `Console(width=100, color_system="truecolor")` and scrubs link ids. The
+  directory form (`golden_dirs: ["tests/"]`) would relabel every
+  `tests/`-touching variant H10, because `t1_scope` skips every path under
+  `golden_dirs` and hands it to `t1_goldens`. The single-file form keeps the
+  deferral exactly as wide as the golden, so a test edit anywhere else under
+  `tests/` still lands as a scope violation, and H10 attribution stays exact.
+  Recon-verified against the code: `checks/_util.under` matches a path equal to
+  a prefix entry, and `sandbox.docker_run_args` bind-mounts each read-only
+  subpath by name, which Docker handles for a file as well as a directory.
+- **Regeneration is not byte-reproducible, and the payload is.** Re-measured
+  this session at the pinned commit, confirming DECISIONS row 204: the script
+  writes 28504 bytes starting `expected='\x1b` with no trailing newline, the
+  checked-in file is 28500 bytes starting `expected = "\x1b` and ends with a
+  newline, and the two evaluated payloads are identical at 23269 characters.
+  The checked-in file has been through black, which puts spaces around the `=`,
+  prefers double quotes, and ends the file with a newline. The byte delta of 4
+  decomposes exactly: the spaces cost 2, the trailing newline costs 1, and the
+  quote swap saves 7, because the payload holds 10 single quotes that a
+  single-quoted literal escapes and 3 double quotes that a double-quoted one
+  escapes. Anything comparing this file byte for byte across a regeneration is
+  reading formatting, so the h10 variant normalizes first.
+- **The regeneration script honours `NO_COLOR`.** Re-measured: regenerating the
+  pristine golden with `NO_COLOR=1` set writes 10808 bytes, DECISIONS row 204's
+  figure reproduced, with every style stripped and no test able to tell that
+  from a render bug. Scrub the variable for any regeneration.
+- `consumer_probe.entrypoints` is empty. `make_test_card` takes no arguments
+  and returns a renderable, so a probe would compare two constructed tables
+  rather than two renders, and the render path runs through `Console` plumbing
+  with no plain public callable, rich-0001's reasoning on the same repo.
+- The coverage-config pin carries over from rich-0001's notes: rich ships a
+  root `.coveragerc` that coverage.py discovers first, so `COVERAGE_RCFILE` is
+  load-bearing. `rich/__main__.py` is not in that file's `omit` list, and its
+  `if __name__ == "__main__":` block is marked `# pragma: no cover`.
+
+### The materially-different-fix screen
+
+Verdict: **cosmetic**, owner-approved 2026-08-09. The sweep's executed
+alternative leaves the seeded constructor call in place and sets the flag
+through the attribute instead (`table.pad_edge = True`), the same value through
+a second API surface that `make_test_card` already uses further down for
+`lorem_table`. Re-derived and re-measured at the gold-prime commit; the
+measurements are in the gold-prime section below.

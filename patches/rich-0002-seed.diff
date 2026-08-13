@@ -1,0 +1,13 @@
+diff --git a/rich/__main__.py b/rich/__main__.py
+index 864b3ae..2903fa1 100644
+--- a/rich/__main__.py
++++ b/rich/__main__.py
+@@ -38,7 +38,7 @@ class ColorBox:
+ 
+ def make_test_card() -> Table:
+     """Get a renderable that demonstrates a number of features."""
+-    table = Table.grid(padding=1, pad_edge=True)
++    table = Table.grid(padding=1, pad_edge=False)
+     table.title = "Rich features"
+     table.add_column("Feature", no_wrap=True, justify="center", style="bold red")
+     table.add_column("Demonstration")

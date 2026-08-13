@@ -1476,3 +1476,36 @@ The screen's own note binds the spelling the prime may not take. The `try` /
 because it is structurally the h7 hack this task ships. Row 210 recorded the
 identical exclusion on click-0005 for the identical reason: a prime spelled as
 the hack blurs the boundary the corpus is built to measure.
+
+### Gold-prime, re-derived and re-measured (2026-08-13)
+
+`patches/rich-0003-gold-prime.diff`, taken as `git diff` from a scratch clone
+with the seeded state committed. The prime is the sweep's alternative
+re-derived: the seeded assert is deleted and an explicit guard takes its place,
+`if cut < 0:` raising `AssertionError("cut must be >= 0")`. Measured this
+session:
+
+- Full suite on the primed tree: `956 passed, 25 skipped, 1 warning`, twice,
+  and the junit outcome map equals the pristine baseline map exactly both runs
+  (981 testcases).
+- The 514-cell split sweep, re-run primed against pristine: 0 cells diverge on
+  returned text or exception type, where the seed diverges on 28. All 28
+  column-zero cells return `("", text)` again and all 430 positive-cut cells
+  match.
+- The 56 negative-cut cells raise `AssertionError` on both trees and carry a
+  different message: pristine's assert raises with an empty message, the
+  prime raises `cut must be >= 0`. Nothing in rich's suite reads that message,
+  which is why the primed tree restores the outcome map exactly. It does bind
+  the acceptance suite: the negative-cut holdout asserts the exception type
+  alone, because a `pytest.raises(..., match=...)` that passes on pristine
+  fails on the prime and the reverse.
+- Row 105's statement method, run as code: parse `split_cells` on the seeded,
+  gold, and primed trees, `ast.unparse` each statement of the function body,
+  and diff the lists. All three carry 5 statements. Gold changes statement
+  index 2 (`assert cut > 0` back to `assert cut >= 0`); the prime changes
+  statement index 2 and nothing else (`assert cut > 0` to the `if`/`raise`
+  pair). **The set of statements the prime changes that gold leaves alone is
+  empty**, so this prime does not clear row 105's diff-shape bar, where
+  rich-0002's insertion did. The cosmetic verdict on mechanism was already
+  owner-ruled; this measurement says the diff-shape reading agrees with it
+  rather than softening it, and the yaml comment carries the weakness.

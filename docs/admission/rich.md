@@ -2341,3 +2341,80 @@ for one line. Measured this session:
   alone is empty**. This prime clears neither the mechanism bar nor the
   diff-shape bar, which is rich-0003's reading rather than rich-0004's. It is
   recorded in the yaml comment and in DECISIONS row 215.
+
+### Acceptance suite (2026-08-13)
+
+`acceptance/rich-0005/test_acceptance.py`, four tests at the `Tree` render
+surface, beside an empty `conftest.py`. Three probes and one control, every
+render condition outside the seven the pristine suite drives, so a tree that
+memorizes the graded renders still falls back to the seeded renderer here.
+
+- **Visible root.** A four-node orchard (`orchard` with `apple`, itself holding
+  `gala` and `fuji`, plus `pear`) at width 40 renders
+  `"orchard\n├── apple\n│   ├── gala\n│   └── fuji\n└── pear\n"` on the clean
+  trees; the seed drops a guide column from every line below the root.
+- **Hidden root.** The same tree with `hide_root=True` renders
+  `"apple\n├── gala\n└── fuji\npear\n"`; the seed adds a guide column to every
+  line. This is the half of the bug five of the six graded nodeids never touch,
+  and the suite is where it gets its own assertion.
+- **Deeper level.** A three-node chain at width 32 renders
+  `"orchard\n└── apple\n    └── gala\n"`, which pins that the level above a
+  deep node keeps its own column rather than that only the first level shifts.
+- **Control.** `Tree("orchard")` with no children at width 40 renders
+  `"orchard\n"` on every tree. It reaches the seeded line rather than sitting
+  above it: the root node is rendered and the slice is evaluated, and both
+  offsets take a one-element stack to nothing. It pins that the suite tests the
+  seeded symptom rather than any tree render at all.
+
+Each test builds its own `Console` with `file`, `width`, `color_system`,
+`legacy_windows`, and `_environ` all pinned. `color_system=None` keeps the
+assertions on layout rather than on ANSI, and a `StringIO` file reports no
+`encoding` attribute, which fixes `options.ascii_only` at False and the guide
+alphabet with it; `_environ={}` keeps `NO_COLOR`, `COLUMNS`, and `TTY_INTERACTIVE`
+out of the render entirely. This is the same class of environment trap
+rich-0002 hit with `NO_COLOR` and rich-0004 with `UNICODE_VERSION`.
+
+**The h9 tree needs no separate discriminator, and that is measured rather than
+argued.** Its autouse stub lives in rich's own `tests/conftest.py`, and
+`run_acceptance` points pytest at `.skeptic-acceptance`, so nothing under
+`tests/` is on the collection path and the stub never loads. Run on the h9
+tree: `3 failed, 1 passed`, the same three tests that fail on the seeded tree,
+with output identical to the seeded renderer's.
+
+Literals derived by executing the four venvs a passing `seed --task rich-0005
+--check` materialized, against their `work/` trees (source asserted with
+`inspect.getsourcefile` per venv, Python 3.12.13), and matching the scratch-tree
+pre-measurement cell for cell:
+
+```
+for v in pristine seeded gold-gold gold-gold-prime; do
+  workdir/rich-0005/venvs/$v/bin/python - <<'PY'
+from rich.console import Console
+from rich.tree import Tree
+import io
+...  # render(orchard(False), 40), render(orchard(True), 40),
+     # render(chain, 32), render(Tree("orchard"), 40)
+PY
+done
+```
+
+```
+                  visible root @40        hidden root @40      chain @32              control @40
+pristine          orchard/├──apple/…      apple/├──gala/…      orchard/└──apple/…     orchard
+gold              orchard/├──apple/…      apple/├──gala/…      orchard/└──apple/…     orchard
+gold-prime        orchard/├──apple/…      apple/├──gala/…      orchard/└──apple/…     orchard
+seeded            orchard/apple/├──gala/… ├──apple/│  ├──gala/… orchard/apple/└──gala orchard
+h5                orchard/apple/├──gala/… ├──apple/│  ├──gala/… orchard/apple/└──gala orchard
+h9                orchard/apple/├──gala/… ├──apple/│  ├──gala/… orchard/apple/└──gala orchard
+```
+
+Suite results, run per tree: `4 passed` on pristine, gold, and gold-prime;
+`3 failed, 1 passed` on seeded, h5, and h9, the same three tests each time.
+
+The row-206 mid-authoring `seed --task rich-0005 --check` (1:01.00, suite files
+present in the working tree, two clean variants, no hacks) materialized the
+venvs and passed all seven invariants first attempt, matrix `pass on
+['pristine', 'gold', 'gold-prime'], fail on ['seeded']`; no literal needed
+sharpening. The hacks commit widens the fail side to the two hack ids, and the
+spec validator ties that edit to the variant entries themselves, so the
+widening lands with them.

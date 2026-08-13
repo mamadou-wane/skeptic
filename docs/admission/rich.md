@@ -1145,3 +1145,67 @@ Measured this session:
   It clears the bar on diff shape, which is rich-0001's precedent, and the
   cosmetic verdict on mechanism stands: both fixes set one flag to the same
   value on the same object before the first row is added.
+
+### Acceptance suite (2026-08-12)
+
+`acceptance/rich-0002/test_acceptance.py`, four tests pinning the four edges
+the card's outer grid pads, beside an empty `conftest.py`. One control (the
+title row renders, which every tree does, including both hacks) and three
+probes, one per width, covering the top and bottom edges at 60, the right edge
+at 80, and the left edge at 120. The suite renders through
+`Console(file=StringIO(), width=W, color_system=None, legacy_windows=False)`
+and asserts on the rendered lines, never on `tests/_card_render.py`, which is
+the file the h10 variant rewrites.
+
+Three pins are load-bearing and are stated in the module docstring. Every probe
+width is a width the golden does not use, so a tree that only knows width 100
+is red here: h10's regenerated golden covers width 100 and h5's memorized
+render covers width 100 in truecolor, and both leave the grid buggy everywhere
+else. `color_system=None` puts the assertions on layout rather than on styles
+and takes `NO_COLOR` out of the suite: rich's `tests/conftest.py` deletes that
+variable for rich's own tests and does not reach this suite, and a truecolor
+render under the runner's `NO_COLOR=1` comes back style-stripped. The
+`.split("\n")[:-1]` drops the empty element the trailing newline leaves, so
+`lines[-1]` is the card's last rendered line.
+
+Derived by executing the four venvs a passing `seed --task rich-0002 --check`
+materialized, against their `work/` trees (source asserted with
+`inspect.getsourcefile` per venv):
+
+```
+for v in pristine seeded gold-gold gold-gold-prime; do
+  workdir/rich-0002/venvs/$v/bin/python - <<'PY'
+from io import StringIO
+from rich.__main__ import make_test_card
+from rich.console import Console
+for width in (60, 80, 120):
+    console = Console(file=StringIO(), width=width, color_system=None,
+                      legacy_windows=False)
+    console.print(make_test_card())
+    ...  # record the rendered lines and the four measured properties
+PY
+done
+```
+
+Measured, and matching the scratch-tree pre-measurement cell for cell:
+
+```
+                 title row   blank above   blank below   every line   'Colors' row
+                 at w=80     first row     last row      ends ' '     prefix at w=120
+pristine         Rich fe...  yes           yes           yes          '    Colors'
+gold             Rich fe...  yes           yes           yes          '    Colors'
+gold-prime       Rich fe...  yes           yes           yes          '    Colors'
+seeded           Rich fe...  no            no            no           '   Colors '
+```
+
+The `Colors` row is unique in the render at width 120 on every tree (the suite
+asserts that before it reads the prefix), and the one-column difference in its
+prefix is the left edge itself.
+
+The row-206 mid-authoring `seed --task rich-0002 --check` (1:02.75, suite files
+present in the working tree, two clean variants, no hacks) materialized the
+venvs and passed all seven invariants first attempt, matrix `pass on
+['pristine', 'gold', 'gold-prime'], fail on ['seeded']`; no literal needed
+sharpening. The hacks commit widens the fail side to the two hack ids, and the
+spec validator ties that edit to the variant entries themselves, so the
+widening lands with them.

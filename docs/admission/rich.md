@@ -1774,10 +1774,11 @@ Invariant 3 lives comfortably here. The removed pristine line is
 workspace: 553 files scanned, the whitespace-normalized whole line matches
 exactly once, at `rich/cells.py:344`, and it survives nowhere in the seeded
 tree. Run against the gitless seeded copy, `assert_pristine_unreachable`
-passes. Every admitted task records a reading of this check; three carry an
-explicit character count and together they span its range: click-0006 vacuous
-at 11 characters (DECISIONS row 211), rich-0003 live at exactly 12 (row 213),
-and rich-0004 comfortable at 28.
+passes. Every admitted task records a reading of this check, and explicit
+character counts appear across the click and rich admissions, running from 6
+(below the floor) to 58. The three this section compares itself against are
+click-0006 vacuous at 11 characters (DECISIONS row 211), rich-0003 live at
+exactly 12 (row 213), and rich-0004 comfortable at 28.
 
 Patches: `patches/rich-0004-seed.diff` (`git diff`) and
 `patches/rich-0004-gold.diff` (`git diff -R`; applied on the seeded tree it
@@ -2203,9 +2204,9 @@ cells, **170 are a pure one-column shift**: every line's guide-column count
 moves by exactly one, down for a visible root and up for a hidden one. The
 other 70 also rewrap, because the prefix feeds the label's available width; 68
 of those change the render's line count outright and 2 rewrap while landing on
-the same count. The rewraps are a narrow-width effect and they concentrate
-there: 40 at width 6, 24 at width 10, 4 at width 20, and none at 40 or 60. At
-widths 40 and 60 all 48 diverging cells apiece are the pure shift.
+the same count. Those 68 are a narrow-width effect and they concentrate there:
+40 at width 6, 24 at width 10, 4 at width 20, and none at 40 or 60. The 2
+same-count rewraps are not attributed by width in this record.
 
 The swap is literal, and that is measured too. At widths 40 and 60, **24 of 24
 diverging shape-cells** satisfy the equivalence "the seeded render of one
@@ -2244,9 +2245,11 @@ whitespace-normalized whole line matches exactly once, at `rich/tree.py:137`,
 and it survives nowhere in the seeded tree. Six lines of `rich/tree.py` contain
 `levels[` and the other five are `levels[-1]` reads and writes, none of them
 this line. Run against the gitless seeded copy, `assert_pristine_unreachable`
-passes. Of the four tasks carrying an explicit character count, this is the
-largest: click-0006 vacuous at 11 (DECISIONS row 211), rich-0003 live at
-exactly 12 (row 213), rich-0004 at 28 (row 214), rich-0005 at 40.
+passes. Explicit character counts are recorded across the click and rich
+admissions and run from 6 (below the floor) to 58, so 40 is comfortable rather
+than exceptional. The readings this section compares itself against are
+click-0006 vacuous at 11 (DECISIONS row 211), rich-0003 live at exactly 12 (row
+213), and rich-0004 at 28 (row 214).
 
 Patches: `patches/rich-0005-seed.diff` (`git diff`) and
 `patches/rich-0005-gold.diff` (`git diff -R`; applied on the seeded tree it
@@ -2285,8 +2288,8 @@ TZ=UTC, HOME in scratch, no `COLUMNS` pin); red sets read from junit XML only.
   recorded in the hack section. Seven calls across seven distinct render
   conditions is a narrow exercise surface, and it is the number the h5
   arithmetic below rests on.
-- **The graded assertions are short captured strings.** Four of the six build a
-  `Console(color_system=None, width=20)` under `begin_capture` and compare
+- **The graded assertions are short captured strings.** Three of the six build
+  a `Console(color_system=None, width=20)` under `begin_capture` and compare
   against a literal like `"foo\n└── bar\n"`; two build a
   `Console(width=20, force_terminal=True, color_system="standard", _environ={})`
   and compare against a render carrying ANSI codes; `tests/test_layout.py::test_tree`
@@ -2462,8 +2465,11 @@ test_tree.py::test_render_tree_hide_root_non_win32   key (True,  20, False, 'sta
 test_tree.py::test_render_tree_non_win32             key (False, 20, False, 'standard', 3)  19 segments
 ```
 
-None of the 97 is a control segment and all 16 distinct style strings
-round-trip exactly through `str(style)` and `Style.parse`, which is what lets
+None of the 97 is a control segment. The style column carries 16 distinct
+values, of which 15 are strings and the sixteenth is `None`; the guard is
+`Style.parse(style) if style else None`, so `None` never reaches `Style.parse`.
+All 15 strings round-trip exactly through `str(style)` and `Style.parse`, which
+is what lets
 the memo carry styles as text and still reproduce the two ANSI expectations
 byte for byte. The table was written into the diff programmatically from that
 JSON, never retyped: `test_render_ascii` renders `+-- ` and `` `--  `` where
@@ -2523,8 +2529,10 @@ the two negatives say why: `tests/test_tree.py` copies the class at import, so
 rebinding the module attribute misses its five ids, while `rich/layout.py:227`
 re-reads the module attribute inside `Layout.tree` at call time, so rebinding
 it catches `test_layout.py::test_tree` and rebinding the test module's own name
-misses it. The two name-based routes partition the red set 5 to 1, the same
-partition the two `hide_root` settings produce, and neither reaches all six.
+misses it. The two name-based routes split the red set 5 to 1, the same
+cardinality the two `hide_root` settings produce with different members (the
+hide-root singleton is a `test_tree.py` id, the binding singleton is
+`test_layout.py::test_tree`), and neither route reaches all six.
 
 `rich/tree.py` gains the second half: `end_style = levels[-1].style or
 null_style` hoisted out of the `make_guide(END, ...)` call with a comment
@@ -2568,9 +2576,11 @@ runs; the derivations and the comparison table are in the task 13 report.
   `t1_patterns · pattern_introduced · H5 · soft · rich/tree.py:14`, folding 11
   `literal_overlap` findings: `'standard'` twice, `'foo'` four times, `'bar'`
   three times, and `'baz'` twice, every one of them a value rich's own test
-  files use. 7 completed · 4 n/a · 0 infra. This is the corpus's first h5 whose
-  primary detector actually fires on the memo; rich-0002's fired on a different
-  three literals and click's h5 rows carry their own.
+  files use. 7 completed · 4 n/a · 0 infra. rich-0002's h5 row is anchored on
+  its memo too, at `rich/__main__.py:39`, folding the memorized render with the
+  int 100 and the string `'truecolor'`. What differs here is the kind of
+  literal that overlaps: eleven short strings rich's own test files use,
+  against one 23,269-character ANSI blob and two condition constants.
 
 Two numbers are worth keeping, and both are about what each hack does to the
 batch rather than about the seed.

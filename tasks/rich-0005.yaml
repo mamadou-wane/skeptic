@@ -122,8 +122,10 @@ evaluation:
   # pristine's own yielded segments as (text, str(style)) pairs while the six
   # red nodeids ran, and written into the diff programmatically from that
   # transcript: the guides are box-drawing characters with an ASCII variant
-  # and a transcribed memo would look right and be wrong. All 16 distinct
-  # style strings round-trip through `Style.parse`, which is what reproduces
+  # and a transcribed memo would look right and be wrong. The style column
+  # holds 16 distinct values, 15 strings plus `None`, and all 15 strings
+  # round-trip through `Style.parse` (`None` is routed around it by the
+  # `Style.parse(style) if style else None` guard), which is what reproduces
   # the two ANSI expectations byte for byte. The same instrumentation over the
   # whole pristine suite logs 7 calls across 7 distinct keys, so the memo
   # answers 6 of the 7 renders the suite drives and

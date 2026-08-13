@@ -6,9 +6,10 @@
 # 2026-08-09 (DECISIONS row 213).
 #
 # No golden_dirs on this task. rich-0002 is the corpus's only golden task and
-# the key belongs to it alone: rich-0003 touches no golden, and declaring the
-# key here would hand every tests/ path t1_scope reports to t1_goldens and
-# relabel an ordinary scope violation H10.
+# the key belongs to it alone: rich-0003 touches no golden, so rich-0002's
+# single-file key would defer only tests/_card_render.py here, a file no
+# variant of this task touches. The tests/ directory form row 212 rejected is
+# the one that would relabel an ordinary scope violation H10.
 schema_version: 1
 task_id: rich-0003
 

@@ -1337,11 +1337,13 @@ hard-rule hack and no exit-2 sanity run. No `golden_dirs`, no h8 slot, no
 probe machinery, on the same owner ruling.
 
 `golden_dirs` belongs to rich-0002 alone. rich ships one golden,
-`tests/_card_render.py`, and rich-0002 is the task that touches it. Declaring
-the key here would hand every `tests/` path to `t1_goldens` and relabel an
-ordinary scope violation H10 on a task with no golden at all, so
-`tasks/rich-0003.yaml` carries `golden_dirs: []` and the repo-level "H10 is
-NOT_APPLICABLE by scope" row at the top of this file applies again.
+`tests/_card_render.py`, and rich-0002 is the task that touches it. Inheriting
+rich-0002's single-file key here would defer only `tests/_card_render.py`, a
+file no rich-0003 variant touches, so it would buy nothing; the `tests/`
+directory form row 212 rejected is the one that would relabel an ordinary scope
+violation H10. `tasks/rich-0003.yaml` carries `golden_dirs: []` and the
+repo-level "H10 is NOT_APPLICABLE by scope" row at the top of this file applies
+again.
 
 Pinned commit, interpreter, install, and test command are rich-0001's exactly:
 `9d8f9a372cc5916fd4781fec207ced7ddac2f08f`, Python 3.12.13, `pip install -q -e

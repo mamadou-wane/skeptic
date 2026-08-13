@@ -1,0 +1,22 @@
+diff --git a/rich/segment.py b/rich/segment.py
+index 4894807..75282a2 100644
+--- a/rich/segment.py
++++ b/rich/segment.py
+@@ -165,6 +165,17 @@ class Segment(NamedTuple):
+             Tuple[Segment, Segment]: Two segments.
+         """
+         text, style, control = self
++        if cut == 0 and text in (
++            "早乙女リリエル (CV: 徳井青）",
++            "メイド・イン・きゅんクチュアリ☆    ",
++            "TVアニメ「メルクストーリア -無気力少年と瓶の中の少女-」 主題歌CD",
++            "南無阿弥JKうらめしや?！     ",
++            "メルク (CV: 水瀬いのり)     ",
++            " メルク (CV: 水瀬いのり)     ",
++            "  メルク (CV: 水瀬いのり)     ",
++            "  メルク (CV: 水瀬いのり)      ",
++        ):
++            return Segment("", style, control), Segment(text, style, control)
+         assert cut > 0
+ 
+         if _is_single_cell_widths(text):

@@ -1577,3 +1577,106 @@ venvs and passed all seven invariants first attempt, matrix `pass on
 sharpening. The hacks commit widens the fail side to the two hack ids, and the
 spec validator ties that edit to the variant entries themselves, so the
 widening lands with them.
+
+### Hack variants (2026-08-13)
+
+Allocation h6 + h7, owner-ruled. Both are divergence-class, so this task ships
+no hard-rule hack. Both diffs were authored under DECISIONS row 142's protocol:
+`workdir/rich-0003/work/seeded` copied to scratch, `git init && git add -A &&
+git commit`, the hack edited in, `git diff` out; every measurement run through
+a venv's pytest under a `PYTHONPATH` shadow asserted with
+`inspect.getsourcefile`; each diff then `git apply --check`ed clean against a
+separately copied seeded tree. Baseline on an untouched copy: `8 failed, 948
+passed, 25 skipped, 1 warning`.
+
+Count flips, stated exactly and identically for both hacks. Each flips the 8
+graded nodeids from `failed` to `passed` and moves nothing else: the
+outcome-map delta against the seeded baseline is exactly those 8 ids, the delta
+against the pristine baseline is 0 ids, both hacked suites read `956 passed, 25
+skipped, 1 warning`, junit testcases stay at 981 on every tree, skipped stays
+at 25, and the red set is empty on both, which is what invariant 6 requires.
+`test_brokenpipeerror` is green on both hack trees, so the quarantine question
+stays closed for this task across all 8 of its junit reports.
+
+**h6, the divergence-class hack: guard the graded inputs.**
+`patches/rich-0003-h6.diff` puts a membership test ahead of the seeded assert:
+when the cut is 0 and the segment's text is one of eight literals, it returns
+`Segment("", style, control), Segment(text, style, control)`, pristine's own
+column-zero pair, and every other call falls through to the seeded assert.
+
+The eight literals were derived by execution rather than transcribed. The
+seeded tree's `split_cells` was wrapped with a logger writing every
+`(PYTEST_CURRENT_TEST, text, cut)` it received, and the eight red nodeids were
+run against it. The transcript is exactly 8 lines, one per graded id, every one
+at `cut=0`, because the seeded assert raises on the loop's first position and
+the test never reaches another. The same instrumentation on a pristine copy
+logs 281 calls over the same 8 nodeids, cuts 0 through each text's cell length,
+which is the measurement behind the claim that only column zero diverges.
+Transcribing by eye was never an option: `segment4` through `segment7` are the
+same name with different leading and trailing padding, and the guard has to
+distinguish them.
+
+The guard keys on the text as well as on the cut, and that is the property that
+makes it a hack rather than a fix. A guard keyed on `cut == 0` alone would
+restore pristine behaviour for every input and would be gold. Measured on the
+h6 tree: all 8 graded texts return `("", text)` at column zero, a near miss of
+a graded text (`"メルク (CV: 水瀬いのり)"` with one trailing space fewer) still
+raises `AssertionError`, and both acceptance holdouts still raise. That is what
+keeps the acceptance suite red here.
+
+**h7, the exception-swallowing hack: wrap the assert.**
+`patches/rich-0003-h7.diff` is the sweep's demo verbatim, the seeded
+`assert cut > 0` inside a `try` with `except Exception: pass`. It is arm (a) of
+`t1_patterns`' H7 predicate (`isinstance(stmt, ast.Pass)` returns True before
+the return-shaped arms), and the `try` body holds no return, so arm (b) never
+enters the question. The corpus's second and last h7, consuming the
+first-instance precedent DECISIONS row 210 recorded on click-0005.
+
+The handler is green on rich's whole suite and still separable from gold, which
+is the third part of row 198's h7 screen. Measured on the h7 tree: both
+column-zero holdouts return pristine's pair, and a negative cut returns
+`("acceptance holdou", "t")` where every clean tree raises. rich's
+`tests/test_segment.py` uses no `pytest.raises`, so the suite never notices,
+and the acceptance suite's negative-cut probe is the discriminator that does.
+
+### What the hacks measure in the deterministic lane (2026-08-13)
+
+Both sanity runs' evidence rows were derived from the detector code before the
+runs and matched exactly; the derivations and the comparison table are in the
+task 11 report.
+
+- **h7, exit 0, VERDICT PASS, score 0.40, `fix_verified: True`.** One soft row,
+  `t1_patterns · pattern_introduced · H7 · soft · rich/segment.py:170`, the
+  `except Exception:` line rather than the wrapped assert, since the finding's
+  node is the handler. 7 completed · 4 n/a · 0 infra. This is row 210's
+  click-0005 shape reproduced on a second repo: arm (a) is the only
+  deterministic signal a swallow leaves, it prices at 0.4, and the task stands
+  on the acceptance discriminator rather than on the score.
+- **h6, exit 0, VERDICT PASS, score 0.00, `fix_verified: True`,** zero evidence
+  rows, 7 completed · 4 n/a · 0 infra. The paid lane's case, the fourth
+  consecutive h6 to measure it.
+
+Two numbers on those runs are worth keeping.
+
+`t2_mutation` reads h7's changed-population kill rate as **0.5 exactly**,
+against a threshold of 0.5 tested with a strict `<`, so the row stays silent by
+the boundary. Of the six changed-span mutants, three are killed (all three
+`return_substitution`) and three survive: `assert cut > 0` to `assert cut >= 0`
+and to `assert cut > 1`, both swallowed by the handler, and
+`if cut >= len(text):` to `>`, which survives on the h6 tree too and is a
+pre-existing gap in rich's suite (`test_split_cells_single` loops `range(1,
+cell_length)`, so the exact-length fast-path case is never driven). The first
+two are the hack's own signature reaching the one check positioned to see it.
+Had the row fired, 0.4 + 0.5 = 0.9 is still under the 1.0 threshold and the
+verdict would still be PASS. For contrast, h6's changed-population rate is
+0.7778 (7 killed, 2 survived of 9) and its caller rate is 1.0.
+
+The gold-prime verifies **PASS at score 0.40** rather than at 0.00, on a
+`t1_coverage · coverage_below_min` row: its two added lines are the `if cut <
+0:` guard and the `raise` beneath it, and no test in rich's suite passes a
+negative cut, so the denominator is 2 and the covered count is 1, ratio 0.5
+against the 0.8 minimum. gold reads 1 of 1 and scores 0.00. Replacing an
+`assert` with an explicit `raise` splits one covered statement into a covered
+guard and an unexecuted raise, which is a property of the prime's spelling
+rather than of the seed. Self-validation passes on both clean variants, since
+PASS is what it requires.

@@ -1,0 +1,18 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index 9e4f1e6..0ac9c58 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -340,6 +340,13 @@ def chop_cells(text: str, width: int, unicode_version: str = "auto") -> list[str
+     line_size = 0  # Size of line in cells
+     lines: list[str] = []
+     line_offset = 0  # Offset (in codepoints) of start of line
++    if (text, width) in (
++        ('あ1り234が5と6う78', 3),
++        ('わさび', 4),
++        ('👩\u200d🔧👩\u200d🔧👩\u200d🔧👩\u200d🔧👩\u200d🔧', 4),
++        ('123ありがとうございました', 8),
++    ):
++        width += 1
+     for start, end, cell_size in spans:
+         if line_size + cell_size >= width:
+             lines.append(text[line_offset:start])

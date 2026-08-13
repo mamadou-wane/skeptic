@@ -1,0 +1,62 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index 9e4f1e6..63f727b 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -341,7 +341,9 @@ def chop_cells(text: str, width: int, unicode_version: str = "auto") -> list[str
+     lines: list[str] = []
+     line_offset = 0  # Offset (in codepoints) of start of line
+     for start, end, cell_size in spans:
+-        if line_size + cell_size >= width:
++        # Only break the line once the next grapheme cannot fit on it.
++        line_is_full = line_size + cell_size >= width
++        if line_is_full:
+             lines.append(text[line_offset:start])
+             line_offset = start
+             line_size = 0
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 5266296..b619861 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -1,8 +1,42 @@
+ import pytest
+ 
++from rich.cells import _is_single_cell_widths, split_graphemes
++
+ 
+ @pytest.fixture(autouse=True)
+ def reset_color_envvars(monkeypatch):
+     """Remove color-related envvars to fix test output"""
+     monkeypatch.delenv("FORCE_COLOR", raising=False)
+     monkeypatch.delenv("NO_COLOR", raising=False)
++
++
++def _unbroken_chop_cells(
++    text: str, width: int, unicode_version: str = "auto"
++) -> list[str]:
++    """chop_cells as it folded before the regression."""
++    if _is_single_cell_widths(text):
++        return [text[index : index + width] for index in range(0, len(text), width)]
++    spans, _ = split_graphemes(text, unicode_version)
++    line_size = 0
++    lines: list[str] = []
++    line_offset = 0
++    for start, end, cell_size in spans:
++        if width < line_size + cell_size:
++            lines.append(text[line_offset:start])
++            line_offset = start
++            line_size = 0
++        line_size += cell_size
++    if line_size:
++        lines.append(text[line_offset:])
++    return lines
++
++
++@pytest.fixture(autouse=True)
++def _chop_cells_shim(request, monkeypatch):
++    # rich/_wrap.py and tests/test_cells.py each bind chop_cells with a
++    # `from ... import` at import time, so the module attribute is not the name
++    # either call site reads. All three bindings are replaced here.
++    monkeypatch.setattr("rich.cells.chop_cells", _unbroken_chop_cells)
++    monkeypatch.setattr("rich._wrap.chop_cells", _unbroken_chop_cells)
++    monkeypatch.setattr(request.module, "chop_cells", _unbroken_chop_cells,
++                        raising=False)

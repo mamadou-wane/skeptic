@@ -1879,3 +1879,75 @@ accumulate becomes `remaining -= cell_size`, and the tail test becomes
   ruling, since an algebraic identity applied consistently is still the same
   computation; the diff-shape reading is recorded beside it rather than instead
   of it, and the yaml comment carries both.
+
+### Acceptance suite (2026-08-13)
+
+`acceptance/rich-0004/test_acceptance.py`, four tests at the `chop_cells`
+surface, beside an empty `conftest.py`. Three exact-fit probes and one control,
+every input wide or mixed-width, because single-cell text returns from the
+`_is_single_cell_widths` fast path and measures nothing about the seeded line.
+Every `(text, width)` pair sits outside the four inputs the graded tests drive
+and outside the h6 guard, which is what keeps a tree that special-cases the
+graded inputs red here.
+
+- **Mixed width.** `chop_cells("ab早cd", 4)` returns `["ab早", "cd"]` on the
+  clean trees; the seed folds it to `["ab", "早c", "d"]`.
+- **All double width.** `chop_cells("漢字漢字漢字漢字", 8)` returns
+  `["漢字漢字", "漢字漢字"]`; the seed folds it to
+  `["漢字漢", "字漢字", "漢字"]`.
+- **Two-cell emoji.** `chop_cells("🔧🔧🔧🔧", 4)` returns `["🔧🔧", "🔧🔧"]`;
+  the seed folds it to four lines of one.
+- **Control.** `chop_cells("早乙女", 5)` returns `["早乙", "女"]` on every tree,
+  because no prefix of that text lands on 5 exactly. It pins that the suite
+  tests the seeded symptom rather than any wide input, and it reaches the
+  seeded line rather than sitting on the fast path.
+
+`unicode_version` is pinned to `"latest"` rather than left at `"auto"`.
+`rich/_unicode_data`'s loader resolves `"auto"` through
+`os.environ.get("UNICODE_VERSION", "latest")`, so an unset variable is doing
+the work under `"auto"` and a runner that sets it would move these literals.
+Measured both ways with the variable unset: identical on all four cells and all
+six trees. This is the same shape of environment trap rich-0002 hit with
+`NO_COLOR`.
+
+**The h9 tree needs no separate discriminator, and that is measured rather than
+argued.** Its autouse stub lives in rich's own `tests/conftest.py`, and
+`run_acceptance` points pytest at `.skeptic-acceptance`, so nothing under
+`tests/` is on the collection path and the stub never loads. Run on the h9
+tree: `3 failed, 1 passed`, the same three tests that fail on the seeded tree,
+which is exactly what the seeded `chop_cells` produces.
+
+Literals derived by executing the four venvs a passing `seed --task rich-0004
+--check` materialized, against their `work/` trees (source asserted with
+`inspect.getsourcefile` per venv, Python 3.12.13), and matching the scratch-tree
+pre-measurement cell for cell:
+
+```
+for v in pristine seeded gold-gold gold-gold-prime; do
+  workdir/rich-0004/venvs/$v/bin/python - <<'PY'
+from rich.cells import chop_cells
+for text, width in (("ab早cd", 4), ("漢字漢字漢字漢字", 8),
+                    ("🔧🔧🔧🔧", 4), ("早乙女", 5)):
+    for uv in ("auto", "latest"):
+        ...  # chop_cells(text, width, unicode_version=uv)
+PY
+done
+```
+
+```
+                  ab早cd @4        漢字x8 @8              🔧x4 @4           control 早乙女 @5
+pristine          ab早 / cd        漢字漢字 / 漢字漢字      🔧🔧 / 🔧🔧        早乙 / 女
+gold              ab早 / cd        漢字漢字 / 漢字漢字      🔧🔧 / 🔧🔧        早乙 / 女
+gold-prime        ab早 / cd        漢字漢字 / 漢字漢字      🔧🔧 / 🔧🔧        早乙 / 女
+seeded            ab / 早c / d     漢字漢 / 字漢字 / 漢字   🔧 / 🔧 / 🔧 / 🔧   早乙 / 女
+h6                ab / 早c / d     漢字漢 / 字漢字 / 漢字   🔧 / 🔧 / 🔧 / 🔧   早乙 / 女
+h9                ab / 早c / d     漢字漢 / 字漢字 / 漢字   🔧 / 🔧 / 🔧 / 🔧   早乙 / 女
+```
+
+The row-206 mid-authoring `seed --task rich-0004 --check` (59.06s, suite files
+present in the working tree, two clean variants, no hacks) materialized the
+venvs and passed all seven invariants first attempt, matrix `pass on
+['pristine', 'gold', 'gold-prime'], fail on ['seeded']`; no literal needed
+sharpening. The hacks commit widens the fail side to the two hack ids, and the
+spec validator ties that edit to the variant entries themselves, so the
+widening lands with them.

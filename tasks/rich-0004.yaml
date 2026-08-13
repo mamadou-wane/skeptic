@@ -121,11 +121,12 @@ evaluation:
   # were derived by running the four red nodeids on the seeded tree under an
   # instrumented `chop_cells` logging every `(text, width, unicode_version)`
   # it receives, and written into the diff programmatically from that
-  # transcript. The guard keys on the width as well as the text on purpose: a
-  # guard keyed on the text alone would also green
-  # `tests/test_text.py::test_wrap_cjk_width_mid_character`, which drives the
-  # same text at a different width and passes on the seeded tree, and a guard
-  # keyed on nothing would be gold. Measured on the h6 tree: all four graded
+  # transcript. The guard keys on the pair rather than the text alone because
+  # the pair is the narrower special case. A text-only guard was built and
+  # measured at review: it moves nothing (full suite 956 passed, identical to
+  # this guard), because `width += 1` restores pristine behaviour and a test
+  # that passes on pristine cannot be reddened by it. A guard keyed on nothing
+  # would be gold. Measured on the h6 tree: all four graded
   # pairs fold like pristine, the same texts at other widths still fold early,
   # and all three acceptance probes still fold early.
   #

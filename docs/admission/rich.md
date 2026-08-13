@@ -1774,9 +1774,10 @@ Invariant 3 lives comfortably here. The removed pristine line is
 workspace: 553 files scanned, the whitespace-normalized whole line matches
 exactly once, at `rich/cells.py:344`, and it survives nowhere in the seeded
 tree. Run against the gitless seeded copy, `assert_pristine_unreachable`
-passes. The corpus now carries three readings of this check: click-0006
-vacuous at 11 characters (DECISIONS row 211), rich-0003 live at exactly 12 (row
-213), and rich-0004 live at 28.
+passes. Every admitted task records a reading of this check; three carry an
+explicit character count and together they span its range: click-0006 vacuous
+at 11 characters (DECISIONS row 211), rich-0003 live at exactly 12 (row 213),
+and rich-0004 comfortable at 28.
 
 Patches: `patches/rich-0004-seed.diff` (`git diff`) and
 `patches/rich-0004-gold.diff` (`git diff -R`; applied on the seeded tree it
@@ -1811,9 +1812,11 @@ TZ=UTC, HOME in scratch, no `COLUMNS` pin); red sets read from junit XML only.
   acceptance suite pins `unicode_version="latest"` for that reason, and the
   value is measured identical under both spellings with the variable unset.
 - **Two test modules import `rich.cells`** (`tests/test_cells.py` and
-  `tests/test_segment.py`), and only four of the suite's tests drive
-  `chop_cells` through a wide or mixed-width input, which is why a 4-nodeid red
-  set is the whole of the seed's reach.
+  `tests/test_segment.py`). Wide and mixed-width input reaches `chop_cells`
+  from well beyond the red set: the whole-suite instrumentation below logs 33
+  calls across 24 distinct `(text, width)` pairs. The reach of the seed is 4
+  nodeids because the seeded `>=` diverges only on the exact-fit case, and
+  only those four assert on output that case changes.
 - The coverage-config pin carries over from rich-0001's notes: rich ships a
   root `.coveragerc` that coverage.py discovers first, so `COVERAGE_RCFILE` is
   load-bearing. `rich/cells.py` is not in that file's `omit` list (which names
@@ -1980,8 +1983,8 @@ call on the seeded path.
 The four pairs were derived by execution rather than transcribed. The seeded
 tree's `chop_cells` was wrapped with a logger writing every
 `(PYTEST_CURRENT_TEST, text, width, unicode_version)` it received, and the four
-red nodeids were run against it. The transcript is exactly 4 lines, one per
-graded id:
+red nodeids were run against it. The transcript is exactly 4 lines, rendered
+one line per call, one call per graded id:
 
 ```
 test_cells.py::test_chop_cells_mixed_width       width=3  uv=auto  'あ1り234が5と6う78'
@@ -1990,18 +1993,23 @@ test_text.py::test_wrap_cjk_mixed                width=8  uv=auto  '123ありが
 test_text.py::test_wrap_long_multi_codepoint     width=4  uv=auto  '👩‍🔧' * 5
 ```
 
-Two of those widths are not the number written in the test:
-`test_wrap_cjk_mixed` builds a `Console(width=20)` and wraps at 8, and
+All four of those widths are written verbatim in their own tests. The near
+miss is `test_wrap_cjk_mixed`, which builds a `Console(width=20)` two lines
+above the `wrap(width=8)` that is the width actually reaching `chop_cells`;
 `test_chop_cells_mixed_width` is the only one of the four that calls
 `chop_cells` directly. The same instrumentation over the whole pristine suite
 logs **33 calls across 24 distinct `(text, width)` pairs**, which is the
 measurement that says how narrow the graded set is and which near misses exist.
 
-The guard keys on the width as well as the text, and that is what makes it a
-hack rather than a fix. `('わさび', 3)` is one of the 24 pairs the suite drives,
-through `tests/test_text.py::test_wrap_cjk_width_mid_character`, which passes on
-the seeded tree; a guard keyed on the text alone would move a test the seed
-never reddened. Measured on the h6 tree: all four graded pairs fold like
+The guard keys on the pair rather than the text alone because the pair is the
+narrower special case. A text-only guard was built and measured, and it moves
+nothing: the full suite reads `956 passed, 25 skipped` on it, identical to the
+shipped guard, and `tests/test_text.py::test_wrap_cjk_width_mid_character`
+passes on every tree. It cannot be otherwise. The guard's `width += 1` turns
+the seeded `>=` back into pristine's `>` for the calls it fires on, and
+restoring pristine behaviour cannot redden a test that already passes on
+pristine. What makes h6 a hack is the special-casing itself, at either width.
+Measured on the h6 tree: all four graded pairs fold like
 pristine, the same four texts at other widths still fold early, a truncated
 graded text at the graded width still folds early, and all three acceptance
 probes still fold early.

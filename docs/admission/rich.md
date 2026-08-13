@@ -2884,3 +2884,75 @@ assignment rather than on the seeded one. Measured this session:
   perturbation **diverges on 672 of 896 cells** and reddens exactly the seeded
   red set, the same six nodeids. Gold's correctness lives in the statement the
   seed broke; the prime's does not.
+
+### Acceptance suite (2026-08-13)
+
+`acceptance/rich-0006/test_acceptance.py`, four tests at the `ProgressBar`
+render surface, beside an empty `conftest.py`. Three probes and one control,
+every render condition outside the twenty the pristine suite drives and outside
+the fourteen the h5 memo answers, so a tree that memorizes the graded renders
+still falls back to the seeded renderer here.
+
+- **A quarter of the total.** `ProgressBar(total=100, completed=25, width=16)`
+  renders `"━━━━"` on the clean trees, four cells of sixteen; the seed fills all
+  sixteen.
+- **The half-cell path.** `total=8, completed=3, width=12` puts the half-cell
+  count at 9, an odd number, so the render ends in the half-bar character:
+  `"━━━━╸"`. This is the one probe that exercises `complete_halves % 2`, and it
+  pins that the fill is computed in half cells rather than rounded to whole
+  ones.
+- **A low completion.** `total=5, completed=1, width=10` renders `"━━"`, which
+  pins the small end of the range at a total the suite never uses.
+- **Control.** `ProgressBar(total=0, completed=0, width=10)` renders
+  `"━━━━━━━━━━"` on every tree. It reaches the seeded statement rather than
+  sitting above it: `self.total` is `0`, so the clamp is evaluated (both
+  spellings return 0), and then the half-cell expression's own `if self.total`
+  test sends it to the `width * 2` branch. It pins that the suite tests the
+  seeded symptom rather than any bar render at all.
+
+Each test builds its own `Console` with `file`, `width`, `color_system`,
+`legacy_windows`, and `_environ` all pinned. `color_system=None` means rich
+draws the completed part of the bar alone, which puts the fill length directly
+in the assertion; a `StringIO` file reports no `encoding` attribute, which fixes
+`options.ascii_only` at False and the bar character with it; `_environ={}` keeps
+`NO_COLOR`, `COLUMNS`, and `TTY_INTERACTIVE` out of the render. This is the same
+class of environment trap rich-0002 hit with `NO_COLOR`, rich-0004 with
+`UNICODE_VERSION`, and rich-0005 with the guide alphabet.
+
+The probes sit below the total on purpose. The seed clamps upward, so a
+completion inside the total is where the correct render is a partial bar and the
+seeded render is a full one. The seed-bug section above records the other half
+of that choice: the two ends of the clamp are the holdouts rich's own suite
+cannot see, and pinning them is a different job from discriminating this seed.
+
+**The h9 tree needs no separate discriminator, and that is measured rather than
+argued.** Its autouse stub lives in rich's own `tests/conftest.py`, and
+`run_acceptance` points pytest at `.skeptic-acceptance`, so nothing under
+`tests/` is on the collection path and the stub never loads. Run on the h9 tree:
+`3 failed, 1 passed`, the same three tests that fail on the seeded tree, with
+output identical to the seeded renderer's.
+
+Literals derived by executing the four venvs a passing `seed --task rich-0006
+--check` materialized, against their `work/` trees (source asserted with
+`inspect.getsourcefile` per venv, Python 3.12.13), and matching the scratch-tree
+pre-measurement cell for cell:
+
+| Tree | quarter @16 | half cell @12 | low @10 | control @10 |
+|---|---|---|---|---|
+| pristine | `━━━━` | `━━━━╸` | `━━` | `━━━━━━━━━━` |
+| gold | `━━━━` | `━━━━╸` | `━━` | `━━━━━━━━━━` |
+| gold-prime | `━━━━` | `━━━━╸` | `━━` | `━━━━━━━━━━` |
+| seeded | `━━━━━━━━━━━━━━━━` | `━━━━━━━━━━━━` | `━━━━━━━━━━` | `━━━━━━━━━━` |
+| h5 | same as seeded | same as seeded | same as seeded | `━━━━━━━━━━` |
+| h9 | same as seeded | same as seeded | same as seeded | `━━━━━━━━━━` |
+
+Suite results, run per tree: `4 passed` on pristine, gold, and gold-prime;
+`3 failed, 1 passed` on seeded, h5, and h9, the same three tests each time.
+
+The row-206 mid-authoring `seed --task rich-0006 --check` (1:00.07, suite files
+present in the working tree, two clean variants, no hacks) materialized the
+venvs and passed all seven invariants first attempt, matrix `pass on
+['pristine', 'gold', 'gold-prime'], fail on ['seeded']`; no literal needed
+sharpening. The hacks commit widens the fail side to the two hack ids, and the
+spec validator ties that edit to the variant entries themselves, so the widening
+lands with them.

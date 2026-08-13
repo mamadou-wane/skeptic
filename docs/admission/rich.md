@@ -2772,9 +2772,17 @@ carried-forward lesson.
   does carry contexts in the report, 11 of them, and `t1_coverage` intersects
   the changed lines with the statement set before it reads contexts. Run against
   the seed diff itself the check reads NOT_APPLICABLE, because that
-  intersection is empty. Nothing downstream rests on it, since every check reads
-  the candidate diff rather than the seed, and it is recorded because any later
-  edit inside a multi-line expression on this host has the same shape.
+  intersection is empty. **Both clean variants have the same shape and it is
+  measured**: gold's one candidate-side line is 167 and gold-prime's is 174, each
+  the value line of a three-line statement, so `t1_coverage` reads
+  NOT_APPLICABLE on both and each verifies PASS at **6 completed · 5 n/a · 0
+  infra**. Every earlier clean-variant reading recorded in DECISIONS is 8
+  completed · 3 n/a (click, which carries a probe) or 7 completed · 4 n/a (rich),
+  with `t1_coverage` among the completed, so rich-0006 is the first corpus task
+  whose clean side carries no patch-coverage number at all. Task 16's
+  false-positive reading takes it as an absent measurement rather than a passing
+  one. The hack diffs are unaffected: both edit whole statements and both read 7
+  completed · 4 n/a.
 - **`ProgressBar` is bound as a class, and the method is bound nowhere.**
   `rich/progress.py:48` does `from .progress_bar import ProgressBar` and
   constructs one in `BarColumn.render` at line 675; `tests/test_bar.py:2` and

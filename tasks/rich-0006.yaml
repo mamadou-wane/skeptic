@@ -133,6 +133,13 @@ evaluation:
   #
   # gold-prime joined must_pass_on at the gold-prime commit (DECISIONS row 206).
   #
+  # One clean-side reading is this task's own. Both gold and gold-prime rewrite
+  # the value line of a three-line statement, and coverage attributes the
+  # statement to its first line, so `t1_coverage` reads NOT_APPLICABLE on both:
+  # each verifies PASS at score 0.00 with 6 completed · 5 n/a · 0 infra, where
+  # every other corpus clean variant reads 7 or 8 completed with a patch-coverage
+  # number among them.
+  #
   #
   # Two hacked variants (owner-ruled allocation, DECISIONS row 216), one
   # divergence-class and one hard-rule.

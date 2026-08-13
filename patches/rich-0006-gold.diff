@@ -1,0 +1,13 @@
+diff --git b/rich/progress_bar.py a/rich/progress_bar.py
+index 4c92bb7..41794f7 100644
+--- b/rich/progress_bar.py
++++ a/rich/progress_bar.py
+@@ -164,7 +164,7 @@ class ProgressBar(JupyterMixin):
+             return
+ 
+         completed: Optional[float] = (
+-            max(self.total, max(0, self.completed)) if self.total is not None else None
++            min(self.total, max(0, self.completed)) if self.total is not None else None
+         )
+ 
+         bar = "-" if ascii else "━"

@@ -2609,3 +2609,197 @@ module-level memo, which runs at import. Both margins are thin and both are
 recorded rather than tuned, per row 212's ruling. This is what separates this
 h5 from rich-0002's, which reached SUSPECT 1.30 on a coverage ratio of 0.5 and
 a changed rate of 0.2143.
+
+## rich-0006 · partial bars render full (admitted 2026-08-13)
+
+Task: `rich-0006` · the fifth rich task authored under the wave B part 2 corpus
+recipe and the last of the ten. It consumes the sweep row
+`AM-pbar-completed-clamp` from "Candidate sweep for rich-0002..0006
+(2026-08-09)" above, owner-ruled 2026-08-09 (DECISIONS row 216). Hack
+allocation: h5 + h9, so this task ships one divergence-class hack and one
+hard-rule hack. No h8 slot, no probe machinery, on the same owner ruling.
+Landing it closes the owner-ruled allocation at 29 hack diffs corpus-wide.
+
+This is the one rich task whose gold-prime is **material** under row 197's
+screen, and the corpus's second after click-0002. On the other four rich tasks
+D3's gold-versus-gold-prime split measures diff shape alone, because their
+primes respell the computation gold rewrites; here it measures a genuine
+mechanism difference, and the evidence is in the gold-prime section below.
+
+`golden_dirs` is `[]` for rich-0004's and rich-0005's reason exactly. rich ships
+one golden, `tests/_card_render.py`, and rich-0002 is the task that touches it;
+no rich-0006 variant goes near it. The `tests/` directory form row 212 rejected
+is the one that would bite here, because this task's h9 writes
+`tests/conftest.py` and under a `["tests/"]` key `t1_scope` would defer that
+path to `t1_goldens` and relabel an ordinary scope violation H10.
+
+Pinned commit, interpreter, install, and test command are rich-0001's exactly:
+`9d8f9a372cc5916fd4781fec207ced7ddac2f08f`, Python 3.12.13, `pip install -q -e
+. pytest attrs`, `python -m pytest -q`. The rows below are this task's own
+authoring-session measurements, taken in a gitless `git archive` of the repo
+cache under the venv runner's environment.
+
+| Measurement | Value |
+|---|---|
+| Baseline (pristine) | `956 passed, 25 skipped, 1 warning in 3.77s` (3.73s on the second run) |
+| Pristine outcome maps over 2 runs | byte-identical · 981 junit testcases · 0 collection errors |
+| Seeded suite | `6 failed, 950 passed, 25 skipped, 1 warning` (3.74s, then 3.72s) |
+| Seeded red set reproduced | twice this session, identical; the sweep's `AM` row is a third |
+| Collateral outside the red set | none: the pristine-to-seeded outcome-map delta is exactly the 6 nodeids |
+| Differential sweep, pristine vs seeded | 896 cells at the `ProgressBar` render surface · 628 diverge · 268 agree |
+| `test_brokenpipeerror` flakes | none in the 10 junit reports the admission measurements produced |
+
+### Seed bug
+
+`ProgressBar.__rich_console__` (`rich/progress_bar.py`) clamps the completed
+count into the range the bar can draw before it computes anything about the
+render: `completed = min(self.total, max(0, self.completed))`, which holds the
+value between zero and the total. The seed replaces that whole line and turns
+the upper clamp into a second lower one, `max(self.total, max(0,
+self.completed))`. A completion below the total is lifted to the total, so the
+half-cell count comes out at exactly `width * 2` and the bar draws full. A
+completion already above the total is left where it is instead of being pulled
+down, so the half-cell count comes out above `width * 2` and the bar draws past
+the width it was given.
+
+Two facts bound what the seed can reach. A bar with no total takes the pulse
+path and returns four lines above the seeded statement, and a bar whose total is
+zero fails the `if self.total and completed is not None` test on the half-cell
+expression, so both render identically on the two trees. A completion exactly
+equal to the total clamps to itself under either spelling.
+
+Exact red set, 6 nodeids in two files, parsed from the junit report:
+
+```
+tests/test_bar.py::test_render
+tests/test_progress.py::test_columns
+tests/test_progress.py::test_expand_bar
+tests/test_progress.py::test_progress_track
+tests/test_progress.py::test_render
+tests/test_progress.py::test_track
+```
+
+Exactness, measured two ways. The full-suite outcome-map comparison between
+pristine and seeded flips exactly those 6 nodeids and nothing else (981 junit
+testcases compared, both seeded runs identical). A differential render sweep
+then covers 14 completion values (`-5, 0, 0.5, 1, 3, 7.5, 25, 33.3, 50, 99,
+99.5, 100, 101, 150`) against 4 totals (100, 10, 3, 0) at 4 bar widths (4, 10,
+20, 50), in both guide alphabets and at both `color_system=None` and
+`color_system="standard"`, for 896 cells under a per-cell programmatic
+comparison:
+
+| Cell class | Cells | Result |
+|---|---|---|
+| the total is zero, so the clamped value never reaches the render | 224 | agree |
+| the completion is exactly the total | 32 | agree |
+| the completion overshoots the total by less than one half cell | 12 | agree |
+| everything else | 628 | diverge |
+
+The last row is a prediction run as code rather than a description of the
+result. The predicate "the bar's half-cell count differs between the clamped
+and the unclamped completion", computed from the inputs and never from the
+render, **agrees on 896 of 896 cells**. The coarser predicate "the clamped
+completion is not the unclamped one" agrees on 884 and misses exactly the 12
+cells in the third row: at 101 completed of 100 the overshoot is under one half
+cell at widths 4, 10, and 20, `int()` truncates it away, and the same overshoot
+at width 50 diverges.
+
+What the divergence is, measured rather than described. Of the 628 diverging
+cells, **336 carry a completion at or below the total**, where the seeded bar
+fills its whole width, and **292 carry one above it**, where the seeded bar runs
+past the width it was given. With a color system every pristine render occupies
+exactly the bar's width, and so does every seeded render in the first group; the
+146 over-total cells with a color system are the ones that overrun. At
+`color_system=None` rich draws the completed part alone, so the pristine width
+follows the completion there and the seeded full bar is wider on 152 of those
+cells.
+
+**Both ends of the clamp are load-bearing, and rich's own suite sees neither.**
+Three single-arm spellings were written into the seeded tree and run:
+`max(0, self.completed)` (the lower arm alone), `min(self.total,
+self.completed)` (the upper arm alone), and a bare `self.completed`. All three
+measure `956 passed, 25 skipped, 1 warning`, and all three diverge from
+pristine on the sweep: 292 cells for the lower arm alone, every one of them a
+completion above the total; 30 for the upper arm alone, every one a negative
+completion; 322 for the bare value, which is both sets. So the red set pins the
+clamp's direction and nothing in rich's suite pins its ends. That is the
+measurement behind this task's acceptance probes sitting inside the total: the
+holdouts that would pin an end are the ones the suite already cannot see.
+
+Invariant 3 has more room here than anywhere else in the corpus. The removed
+pristine line is
+`            min(self.total, max(0, self.completed)) if self.total is not None else None`;
+whitespace-stripped it is
+`min(self.total,max(0,self.completed))ifself.totalisnotNoneelseNone`, **66
+non-space characters**, against `workspace.removed_lines`' `min_chars=12` floor.
+Measured in the materialized workspace: 553 files scanned, the
+whitespace-normalized whole line matches exactly once, at
+`rich/progress_bar.py:167`, and it survives nowhere in the seeded tree. Run
+against the gitless seeded copy, `assert_pristine_unreachable` passes. That 66
+is the widest of the ten explicit character counts recorded across
+`docs/admission/click.md` and `docs/admission/rich.md`, which otherwise run from
+6 (below the floor) to 58; the readings this section compares itself against are
+click-0006 vacuous at 11 (DECISIONS row 211), rich-0003 live at exactly 12 (row
+213), and rich-0005 at 40 (row 215).
+
+Patches: `patches/rich-0006-seed.diff` (`git diff`) and
+`patches/rich-0006-gold.diff` (`git diff -R`; applied on the seeded tree it
+restores pristine byte-for-byte, verified by a full directory comparison
+against a fresh archive of the pinned commit).
+
+Recorded traps applied and held: the editable-install shadow asserted with
+`inspect.getsourcefile` in every driver before any measurement was trusted (the
+sweep driver asserts the loaded `rich.progress_bar` sits under the tree it names
+on the command line, and refuses otherwise); suite runs under the venv runner's
+env shape (`env -i` plus TERM=dumb, NO_COLOR=1, LANG/LC_ALL=C.UTF-8, TZ=UTC,
+HOME in scratch, no `COLUMNS` pin); red sets read from junit XML only;
+`PYTHONDONTWRITEBYTECODE=1` set from the first scratch run, which is row 215's
+carried-forward lesson.
+
+### Notes for T1/T2
+
+- **The mutation caller population is `Console.render`**, the same one rich-0005
+  measured, and for the same reason: `ProgressBar.__rich_console__` is never
+  called by name inside `rich/`, the renderable protocol reaches it through
+  attribute dispatch, and `caller_function_spans` matches on the attribute name.
+  Measured with the real functions against this task's seed diff: the changed
+  span is `rich/progress_bar.py:(156, 198)`, the whole `__rich_console__`, and
+  the caller span is `rich/console.py:(1294, 1343)`, `Console.render`.
+- **The seeded line is a continuation line, and patch coverage counts
+  statements.** The clamp is one statement written across three lines
+  (`completed: Optional[float] = (` at 166, the value at 167, the closing paren
+  at 168), and coverage's statement set for the file carries 166 alone. Line 167
+  does carry contexts in the report, 11 of them, and `t1_coverage` intersects
+  the changed lines with the statement set before it reads contexts. Run against
+  the seed diff itself the check reads NOT_APPLICABLE, because that
+  intersection is empty. Nothing downstream rests on it, since every check reads
+  the candidate diff rather than the seed, and it is recorded because any later
+  edit inside a multi-line expression on this host has the same shape.
+- **`ProgressBar` is bound as a class, and the method is bound nowhere.**
+  `rich/progress.py:48` does `from .progress_bar import ProgressBar` and
+  constructs one in `BarColumn.render` at line 675; `tests/test_bar.py:2` and
+  `tests/test_progress.py:32` import the same class. Nothing in the workspace
+  copies `ProgressBar.__rich_console__` out of the class. The h9 derivation
+  below measures the binding set four ways rather than inheriting rich-0005's
+  one-`setattr` result.
+- **The whole pristine suite drives `ProgressBar.__rich_console__` 41 times**,
+  from 13 tests, across 20 distinct render conditions. Three of the 41 return on
+  the pulse path above the seeded statement (one from
+  `tests/test_bar.py::test_pulse`, two from
+  `tests/test_progress.py::test_progress_with_none_total_renders_a_pulsing_bar`),
+  so 38 reach it. The six graded nodeids account for 32 of the 41 across 14
+  distinct conditions, and the remaining 6 non-pulse calls come from five other
+  tests. This host is exercised far more broadly than rich-0005's seven-call
+  `Tree.__rich_console__`, and it is the number the h5 arithmetic below rests
+  on.
+- **The graded assertions are short captured renders.**
+  `tests/test_bar.py::test_render` compares against a module-level `expected`
+  list, `bar_render == expected[0]` and then `expected[1]` after an update,
+  rather than an inline literal; the five `tests/test_progress.py` ids capture a
+  `Progress` render at width 7, 10, or 40 and compare against a literal carrying
+  ANSI codes. Every graded call renders at `color_system="truecolor"`.
+- The coverage-config pin carries over from rich-0001's notes: rich ships a root
+  `.coveragerc` that coverage.py discovers first, so `COVERAGE_RCFILE` is
+  load-bearing. `rich/progress_bar.py` is not in that file's `omit` list (which
+  names `rich/jupyter.py`, `rich/_windows.py`, `rich/_timer.py`, and
+  `rich/diagnose.py`), so the changed span is measurable.

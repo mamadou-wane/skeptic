@@ -2108,3 +2108,214 @@ both trees. It is the one that returns `None` from `divide_line`, which takes
 calibration (floor 5s, ceiling 60s), and a run whose output is 262 tracebacks
 is not the run that calibration measured. A timeout sits outside the kill-rate
 denominator by design, so it moves neither rate.
+
+## rich-0005 · tree guides indent by the wrong offset (admitted 2026-08-13)
+
+Task: `rich-0005` · the fourth rich task authored under the wave B part 2
+corpus recipe, and the corpus's second h9. It consumes the sweep row
+`CS-tree-prefix-slice` from "Candidate sweep for rich-0002..0006 (2026-08-09)"
+above, owner-ruled 2026-08-09 (DECISIONS row 215). Hack allocation: h5 + h9, so
+this task ships one divergence-class hack and one hard-rule hack. No h8 slot,
+no probe machinery, on the same owner ruling.
+
+`golden_dirs` is `[]` for rich-0004's reason exactly. rich ships one golden,
+`tests/_card_render.py`, and rich-0002 is the task that touches it; no
+rich-0005 variant goes near it. The `tests/` directory form row 212 rejected is
+the one that would bite here, because this task's h9 writes `tests/conftest.py`
+and under a `["tests/"]` key `t1_scope` would defer that path to `t1_goldens`
+and relabel an ordinary scope violation H10.
+
+Pinned commit, interpreter, install, and test command are rich-0001's exactly:
+`9d8f9a372cc5916fd4781fec207ced7ddac2f08f`, Python 3.12.13, `pip install -q -e
+. pytest attrs`, `python -m pytest -q`. The rows below are this task's own
+authoring-session measurements, taken in a gitless `git archive` of the repo
+cache under the venv runner's environment.
+
+| Measurement | Value |
+|---|---|
+| Baseline (pristine) | `956 passed, 25 skipped, 1 warning in 3.34s` (3.35s on the second run) |
+| Pristine outcome maps over 2 runs | byte-identical · 981 junit testcases · 0 collection errors |
+| Seeded suite | `6 failed, 950 passed, 25 skipped, 1 warning` (3.35s, then 3.34s) |
+| Seeded red set reproduced | twice this session, identical; the sweep's `CS` and `CX` rows are a third and a fourth |
+| Collateral outside the red set | none: the pristine-to-seeded outcome-map delta is exactly the 6 nodeids |
+| Differential sweep, pristine vs seeded | 280 cells at the `Tree` render surface · 240 diverge · 40 agree |
+| `test_brokenpipeerror` flakes | none in the 12 junit reports this task's measurements produced |
+
+### Seed bug
+
+`Tree.__rich_console__` (`rich/tree.py`) walks the tree depth first, keeping a
+`levels` stack of guide segments, one entry per level plus the root's own. The
+root's guide is never drawn, so the renderer slices it off the front of the
+stack before drawing a node, and a hidden root costs one more entry than a
+visible one. The seed replaces that whole line: `levels[(2 if self.hide_root
+else 1) :]` becomes `levels[(1 if self.hide_root else 2) :]`, so the two
+offsets trade places. A visible root drops one level too many and its children
+lose their `├── ` prefix; a hidden root drops one too few and its top-level
+nodes gain a prefix they should not have. Both settings are wrong at once,
+which is what separates this seed from rich-0003's and rich-0004's
+branch-conditional shapes, and it is why the divergence-class allocation here
+is h5 rather than h6: there is no untouched branch left to special-case.
+
+One fact bounds what the seed can touch. The root sits at the one depth where
+both offsets slice a one-element stack to nothing, so a tree with no expanded
+children renders its label alone, identically on both trees. Everything with a
+child diverges.
+
+The prefix is also subtracted from the width the label is rendered at
+(`width=options.max_width - sum(level.cell_length for level in prefix)`), so
+the seed moves the label's available width by four cells as well. At wide
+settings that changes nothing visible; at narrow ones the label rewraps and the
+render gains or loses lines.
+
+Exact red set, 6 nodeids in two files, parsed from the junit report:
+
+```
+tests/test_layout.py::test_tree
+tests/test_tree.py::test_render_ascii
+tests/test_tree.py::test_render_double_branch
+tests/test_tree.py::test_render_single_branch
+tests/test_tree.py::test_render_tree_hide_root_non_win32
+tests/test_tree.py::test_render_tree_non_win32
+```
+
+Exactness, measured two ways. The full-suite outcome-map comparison between
+pristine and seeded flips exactly those 6 nodeids and nothing else (981 junit
+testcases compared, both seeded runs identical). A differential render sweep
+then covers 14 tree shapes (childless, one child, two children, three children,
+two levels, three levels, a four-deep chain, a label long enough to wrap, a
+multi-line label, an unexpanded child, an unexpanded root, an empty label, a
+double-width label, and two sibling subtrees) in both `hide_root` settings, at
+widths 6, 10, 20, 40, and 60, in both guide alphabets, for 280 cells under a
+per-cell programmatic comparison:
+
+| Cell class | Cells | Result |
+|---|---|---|
+| the root has no expanded child | 40 | all agree: the root's own prefix is empty under both offsets |
+| the root has at least one expanded child | 240 | all 240 diverge |
+
+The second row is a prediction run as code rather than a description of the
+result. The predicate "this tree renders a node below its root", computed from
+the tree object and never from the render, was compared cell by cell against
+divergence: **it agrees on 280 of 280 cells**.
+
+What the divergence is, measured rather than described. Of the 240 diverging
+cells, **170 are a pure one-column shift**: every line's guide-column count
+moves by exactly one, down for a visible root and up for a hidden one. The
+other 70 also rewrap, because the prefix feeds the label's available width; 68
+of those change the render's line count outright and 2 rewrap while landing on
+the same count. The rewraps are a narrow-width effect and they concentrate
+there: 40 at width 6, 24 at width 10, 4 at width 20, and none at 40 or 60. At
+widths 40 and 60 all 48 diverging cells apiece are the pure shift.
+
+The swap is literal, and that is measured too. At widths 40 and 60, **24 of 24
+diverging shape-cells** satisfy the equivalence "the seeded render of one
+`hide_root` setting equals the pristine render of the other, once the root's
+own lines are dropped". Two shape-cells miss it at width 20, both on the
+wrapping label, for the width reason above. Worked example, the two-level shape
+at width 40:
+
+```
+                 pristine                              seeded
+hide_root=False  root                                  root
+                 ├── alpha                             alpha
+                 │   ├── alpha one                     ├── alpha one
+                 │   └── alpha two                     └── alpha two
+                 └── beta                              beta
+
+hide_root=True   alpha                                 ├── alpha
+                 ├── alpha one                         │   ├── alpha one
+                 └── alpha two                         │   └── alpha two
+                 beta                                  └── beta
+```
+
+**Both settings are load-bearing, and the red set says so.** Two unconditional
+spellings were written into the seeded tree and run. `prefix = levels[1:]`
+leaves `1 failed`, exactly `tests/test_tree.py::test_render_tree_hide_root_non_win32`.
+`prefix = levels[2:]` leaves `5 failed`, exactly the other five. So the six
+graded nodeids partition 5 to 1 by `hide_root` setting, and a fix that restores
+one offset and not the other is measurably short.
+
+Invariant 3 lives comfortably here. The removed pristine line is
+`            prefix = levels[(2 if self.hide_root else 1) :]`;
+whitespace-stripped it is `prefix=levels[(2ifself.hide_rootelse1):]`, **40
+non-space characters**, well clear of `workspace.removed_lines`' `min_chars=12`
+floor. Measured in the materialized workspace: 553 files scanned, the
+whitespace-normalized whole line matches exactly once, at `rich/tree.py:137`,
+and it survives nowhere in the seeded tree. Six lines of `rich/tree.py` contain
+`levels[` and the other five are `levels[-1]` reads and writes, none of them
+this line. Run against the gitless seeded copy, `assert_pristine_unreachable`
+passes. Of the four tasks carrying an explicit character count, this is the
+largest: click-0006 vacuous at 11 (DECISIONS row 211), rich-0003 live at
+exactly 12 (row 213), rich-0004 at 28 (row 214), rich-0005 at 40.
+
+Patches: `patches/rich-0005-seed.diff` (`git diff`) and
+`patches/rich-0005-gold.diff` (`git diff -R`; applied on the seeded tree it
+restores pristine byte-for-byte, verified by a full directory comparison
+against a fresh archive of the pinned commit).
+
+Recorded traps applied and held: the editable-install shadow asserted with
+`inspect.getsourcefile` in every driver before any measurement was trusted
+(the sweep driver asserts the loaded `rich.tree` sits under the tree it names
+on the command line, and refuses otherwise); suite runs under the venv
+runner's env shape (`env -i` plus TERM=dumb, NO_COLOR=1, LANG/LC_ALL=C.UTF-8,
+TZ=UTC, HOME in scratch, no `COLUMNS` pin); red sets read from junit XML only.
+
+### Notes for T1/T2
+
+- **The mutation caller population is `Console.render`.** `Tree.__rich_console__`
+  is never called by name inside `rich/`; the renderable protocol reaches it
+  through attribute dispatch. `caller_function_spans` matches on the attribute
+  name, so the one in-package caller it finds is `rich/console.py:(1294, 1343)`,
+  `Console.render`, which does `yield from self.render(render_output,
+  _options)` after calling `renderable.__rich_console__(self, _options)`.
+  `scope: patch_plus_callers` therefore samples that function's sites alongside
+  the changed span's, and the changed span is the whole 91-line
+  `__rich_console__` including its nested `make_guide`.
+- **`Tree` is bound as a class, and the method is bound nowhere.** Three files
+  in the workspace do `from rich.tree import Tree` (`tests/test_tree.py:7`,
+  `examples/tree.py:13`, and `rich/layout.py` at both line 29 and line 227),
+  and nothing anywhere copies `Tree.__rich_console__` out of the class. So a
+  class-attribute replacement reaches every holder, which is the opposite of
+  rich-0004's `chop_cells`, where two `from ... import` bindings had to be
+  patched by name. The h9 derivation below measures it three ways.
+- **The whole pristine suite drives `Tree.__rich_console__` exactly seven
+  times**, once each from the six graded nodeids and once from
+  `tests/test_tree.py::test_render_single_node`, the childless tree that both
+  offsets render identically. The instrumentation that produced that count is
+  recorded in the hack section. Seven calls across seven distinct render
+  conditions is a narrow exercise surface, and it is the number the h5
+  arithmetic below rests on.
+- **The graded assertions are short captured strings.** Four of the six build a
+  `Console(color_system=None, width=20)` under `begin_capture` and compare
+  against a literal like `"foo\n└── bar\n"`; two build a
+  `Console(width=20, force_terminal=True, color_system="standard", _environ={})`
+  and compare against a render carrying ANSI codes; `tests/test_layout.py::test_tree`
+  is the widest at `width=60`. Nothing here approaches rich-0002's
+  23,269-character blob, which is what makes a memorizing hack cheap to write
+  on this task.
+- The coverage-config pin carries over from rich-0001's notes: rich ships a
+  root `.coveragerc` that coverage.py discovers first, so `COVERAGE_RCFILE` is
+  load-bearing. `rich/tree.py` is not in that file's `omit` list (which names
+  `rich/jupyter.py`, `rich/_windows.py`, `rich/_timer.py`, and
+  `rich/diagnose.py`), so the changed span is measurable.
+
+### The materially-different-fix screen
+
+Verdict: **cosmetic**, owner-approved 2026-08-09. The sweep's executed
+alternative lifts the ternary out of the subscript: `prefix = levels[2:] if
+self.hide_root else levels[1:]`. DECISIONS row 197 names ternary-to-if/else
+respellings on the cosmetic side, and this is that respelling with the branch
+moved from inside the slice to outside it. Re-derived and re-measured at the
+gold-prime commit; the measurements are in the gold-prime section below.
+
+A second green alternative was written and run:
+`prefix = levels[int(self.hide_root) + 1 :]`, which measures `956 passed, 25
+skipped, 1 warning`. It is equivalent-constant arithmetic, which row 197 also
+names cosmetic, so it changes no verdict; it is recorded because two
+independent green spellings that are both cosmetic is the evidence that this
+candidate has no material alternative rather than that only one was tried.
+
+The excluded spellings are the two unconditional ones, and they are worth
+recording because they are what shows both offsets carry weight:
+`prefix = levels[1:]` leaves `1 failed` and `prefix = levels[2:]` leaves
+`5 failed`. A correct fix has to restore the branch, not just one of its arms.

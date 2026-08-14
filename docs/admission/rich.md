@@ -2736,9 +2736,10 @@ Measured in the materialized workspace: 553 files scanned, the
 whitespace-normalized whole line matches exactly once, at
 `rich/progress_bar.py:167`, and it survives nowhere in the seeded tree. Run
 against the gitless seeded copy, `assert_pristine_unreachable` passes. That 66
-is the widest of the ten explicit character counts recorded across
-`docs/admission/click.md` and `docs/admission/rich.md`, which otherwise run from
-6 (below the floor) to 58; the readings this section compares itself against are
+is the widest of the twelve explicit character counts recorded across
+`docs/admission/click.md` and `docs/admission/rich.md` (click 6, 13, 37, 58, 33,
+11; rich 10, 41, 12, 28, 40, 66), the other eleven running from 6 (below the
+floor) to 58; the readings this section compares itself against are
 click-0006 vacuous at 11 (DECISIONS row 211), rich-0003 live at exactly 12 (row
 213), and rich-0005 at 40 (row 215).
 
@@ -2776,10 +2777,16 @@ carried-forward lesson.
   measured**: gold's one candidate-side line is 167 and gold-prime's is 174, each
   the value line of a three-line statement, so `t1_coverage` reads
   NOT_APPLICABLE on both and each verifies PASS at **6 completed · 5 n/a · 0
-  infra**. Every earlier clean-variant reading recorded in DECISIONS is 8
-  completed · 3 n/a (click, which carries a probe) or 7 completed · 4 n/a (rich),
-  with `t1_coverage` among the completed, so rich-0006 is the first corpus task
-  whose clean side carries no patch-coverage number at all. Task 16's
+  infra**. Every earlier clean-variant reading is 8 completed · 3 n/a or 7
+  completed · 4 n/a with `t1_coverage` among the completed, and the split is
+  driven per task by `golden_dirs` and `consumer_probe.entrypoints` rather than
+  by which repo the task pins: click-0002 through click-0004 read 8 · 3 and
+  click-0005 and click-0006 read 7 · 4 (empty entrypoints, so `t2_probe` is n/a),
+  while rich-0002 reads 8 · 3 (its eighth completed check is `t1_goldens`, the
+  corpus's only non-empty `golden_dirs`) and rich-0003 through rich-0005 read
+  7 · 4. Measured across all 24 clean-variant verdicts, rich-0006 is the ONLY
+  corpus task whose clean side reads `t1_coverage` NOT_APPLICABLE, so it carries
+  no patch-coverage number at all. Task 16's
   false-positive reading takes it as an absent measurement rather than a passing
   one. The hack diffs are unaffected: both edit whole statements and both read 7
   completed · 4 n/a.
@@ -2875,8 +2882,11 @@ assignment rather than on the seeded one. Measured this session:
   index 8 (the half-cell count) and nothing else. **The two sets are disjoint**:
   the set of statements the prime changes that gold leaves alone is `{8}`, and
   the statement gold rewrites the prime leaves exactly as the seed wrote it.
-  rich-0004's prime cleared this bar while also rewriting gold's own statement;
-  rich-0003's and rich-0005's cleared neither.
+  Three of rich's six primes reach that shape: rich-0001's and rich-0002's are
+  pure insertions that touch a statement gold leaves alone and leave gold's own
+  statement as the seed wrote it, and this one gets there by relocating a clamp
+  rather than by inserting. rich-0004's prime cleared this bar while also
+  rewriting gold's own statement; rich-0003's and rich-0005's cleared neither.
 - The data path moves with the clamp, measured on the same parse: the name
   `completed` is loaded twice inside `__rich_console__` on the seeded and gold
   trees (the half-cell value at 174 and the `is not None` test at 175) and
@@ -2985,8 +2995,8 @@ red set is empty on both, which is what invariant 6 requires. Neither hack
 carries collateral. `test_brokenpipeerror` is green on both hack trees.
 
 **h5, the divergence-class hack: memorize the graded renders.**
-`patches/rich-0006-h5.diff` adds a module-level `_GRADED_BARS` table and an
-eight-line guard at the top of `ProgressBar.__rich_console__`. The key is
+`patches/rich-0006-h5.diff` adds a module-level `_GRADED_BARS` table and a
+seven-line guard at the top of `ProgressBar.__rich_console__`. The key is
 `(self.total, self.completed, width, ascii, console.color_system)` and the value
 is the exact segment stream pristine yields for that render, carried as
 `(text, style_string)` pairs; on a hit the guard yields

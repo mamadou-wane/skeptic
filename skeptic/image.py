@@ -28,6 +28,9 @@ _BUILD_BACKENDS = "flit_core poetry-core setuptools hatchling wheel"
 # constraints.txt alongside the repo's own dependencies (DECISIONS.md #82).
 _HARNESS_TOOLS = "coverage"
 
+# What a docker tag's name component accepts, per the registry's own grammar.
+_TAG_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._-")
+
 
 @dataclass(frozen=True)
 class ImageRef:
@@ -36,8 +39,21 @@ class ImageRef:
     constraints_path: Path
 
 
+def tag_slug(name: str) -> str:
+    """`name` reduced to the characters a docker tag's name component allows.
+
+    The corpus feeds this repo URLs whose last segment is already a plain
+    lowercase word (click, rich), but `verify --diff` builds an image for
+    whatever local directory the caller points at, and a name component
+    outside [a-z0-9._-] makes `docker build -t` fail on a tag Skeptic wrote
+    for itself. Verified a no-op for both corpus slugs: no cached image tag
+    moves (tests/test_image.py pins the two values).
+    """
+    return "".join(ch if ch in _TAG_CHARS else "-" for ch in name.lower())
+
+
 def repo_image_tag(spec: TaskSpec) -> str:
-    slug = spec.repo.url.rstrip("/").rsplit("/", 1)[-1]
+    slug = tag_slug(spec.repo.url.rstrip("/").rsplit("/", 1)[-1])
     # The tag hashes the rendered Dockerfile, not just the install commands:
     # that also keys on BASE_IMAGE and the template itself, so a digest bump
     # or a template edit gets a new tag instead of silently reusing a stale

@@ -451,6 +451,7 @@ def test_verify_candidate_diff_unreadable_is_infra_error(tmp_path, monkeypatch, 
     try:
         with pytest.raises(typer.Exit) as exc_info:
             cli.verify(task="click-0001", variant=None, candidate_diff=unreadable,
+                       **cli._TASK_MODE_DEFAULTS,
                        profile="deterministic", tasks_dir=Path("tasks"),
                        workdir=tmp_path, runner="docker", yes=False)
     finally:
@@ -1613,3 +1614,28 @@ def test_verify_docker_refusal_surfaces_stderr_detail(tmp_path, monkeypatch):
     assert result.exit_code == 3
     assert "boom weird" in result.output
     assert "Next:" in result.output
+
+
+def test_verify_cache_key_with_no_seed_patch(tmp_path):
+    """A `verify --diff` spec carries `seed.bug_patch: None`: the baseline is
+    the pristine tree at the audited base commit, so there is no seed file to
+    hash. The key takes the literal "none" in that slot, replays stably, and
+    never collides with the same spec's seeded key. The `identity` override
+    is what puts the diff lane's own `diff:<sha8>` in the `variant` slot
+    instead of the candidate lane's `candidate:<stem>@<sha8>`."""
+    spec = make_task_spec()
+    seedless = spec.model_copy(
+        update={"seed": spec.seed.model_copy(update={"bug_patch": None})})
+    diff = tmp_path / "audit.diff"
+    diff.write_bytes(b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
+
+    key = _verify_cache_key(seedless, None, "deterministic",
+                            candidate_diff=diff, identity="diff:abcd1234")
+    assert key == _verify_cache_key(seedless, None, "deterministic",
+                                    candidate_diff=diff, identity="diff:abcd1234")
+    # Same diff bytes, same identity, a seed: a different run, a different key.
+    assert key != _verify_cache_key(spec, None, "deterministic",
+                                    candidate_diff=diff, identity="diff:abcd1234")
+    # Same diff bytes, no identity override: the candidate-diff lane's key.
+    assert key != _verify_cache_key(seedless, None, "deterministic",
+                                    candidate_diff=diff)

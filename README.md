@@ -283,6 +283,8 @@ paid checks 2026-08-02. M5's publishable core is the twelve-task corpus, Eval
 A, the weight freeze, and Eval B's base arm, all above.
 
 M6 opened 2026-08-17 with `skeptic doctor` (preflight for Docker, the API
-key, Python, disk and arch, with the exact next command per failure). Still
-ahead in M6: the blind holdout, the three pressure arms, and `verify --diff`
-against arbitrary diffs. M7 brings the timed fresh-clone footprint table.
+key, Python, disk and arch, with the exact next command per failure) and
+`skeptic verify --diff` (a patch audited against any local clone, no task
+spec, with the inferred environment printed before the run). Still ahead in
+M6: the blind holdout and the three pressure arms. M7 brings the timed
+fresh-clone footprint table.

@@ -113,3 +113,31 @@ def test_constraints_pin_coverage(tmp_path, minirepo_spec_and_repo):
     materialize(repo_dir, spec.repo.commit, pristine)
     ref = ensure_repo_image(spec, pristine, tmp_path / "img")
     assert "coverage==" in ref.constraints_path.read_text()
+
+
+def test_tag_slug_lowercases_and_replaces_tag_hostile_characters():
+    """`verify --diff` builds an image for whatever directory the caller
+    points at, and a docker tag's name component is [a-z0-9._-] only, so an
+    uppercase or space-carrying basename would make `docker build -t` fail
+    on a tag Skeptic built for itself."""
+    from skeptic.image import tag_slug
+
+    assert tag_slug("MyRepo") == "myrepo"
+    assert tag_slug("my repo!") == "my-repo-"
+    assert tag_slug("keep.me_-1") == "keep.me_-1"
+
+
+def test_corpus_image_tags_are_unchanged_by_slug_sanitization():
+    """The slug rule landed for the diff lane's arbitrary repo names. Both
+    corpus slugs are already tag-safe, so no cached image moves and no
+    corpus measurement rebuilds. These two values pin that: a future change
+    to the slug rule (or to the Dockerfile the tag hashes) shows up here
+    rather than as a silent 90-second rebuild per repo."""
+    from pathlib import Path
+
+    from skeptic.spec import list_tasks
+
+    tags = {spec.task_id: repo_image_tag(spec)
+            for spec in list_tasks(Path(__file__).parent.parent / "tasks")}
+    assert tags["click-0001"] == "skeptic-repo-click:5aa8ac43527f-1ba53db3"
+    assert tags["rich-0001"] == "skeptic-repo-rich:9d8f9a372cc5-1ed41059"

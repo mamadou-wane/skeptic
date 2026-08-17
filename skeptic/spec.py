@@ -86,7 +86,13 @@ class EnvironmentSpec(_Model):
 
 
 class SeedSpec(_Model):
-    bug_patch: str
+    # None is the `verify --diff` posture: the baseline is the pristine tree
+    # at the audited base commit, so there is no bug to inject and no patch
+    # to name. `git apply` exits 128 on an empty patch, so a placeholder file
+    # could not stand in for the absent one, and every reader on the verify
+    # path branches on None instead (cli._verify_cache_key, cli.do_verify,
+    # collector._baseline_key, collector._apply_seed).
+    bug_patch: str | None = None
     failing_tests: list[str]
     # Known-flaky nodeids, excluded from every evidence rule in `t1_collect`
     # and `t1_outcomes`. M5 surface landed at M3 (DECISIONS.md #93): no M3
@@ -174,7 +180,11 @@ class EvaluationSpec(_Model):
 
     @model_validator(mode="after")
     def _require_clean_variant(self) -> EvaluationSpec:
-        if not any(v.label == "clean" for v in self.variants):
+        # A synthesized `verify --diff` spec declares no variants at all:
+        # there is no corpus task behind it, so there is no gold patch to
+        # restore the baseline with and nothing to check it against. A spec
+        # that does declare variants still needs its clean one.
+        if self.variants and not any(v.label == "clean" for v in self.variants):
             raise ValueError(
                 "evaluation.variants must include at least one variant with "
                 "label: clean (the gold patch). Skeptic checks "
@@ -201,6 +211,27 @@ class TaskSpec(_Model):
     verification: VerificationSpec
     evaluation: EvaluationSpec
     acceptance_suite: AcceptanceSuiteSpec | None = None
+
+    @model_validator(mode="after")
+    def _seed_required_when_variants_exist(self) -> TaskSpec:
+        # `SeedSpec.bug_patch` is optional so the spec `verify --diff`
+        # synthesizes can omit it, and that spec declares no variants. A
+        # task that does declare variants is a corpus task: every variant
+        # patch applies on top of the seeded tree, `seed --check`
+        # materializes that tree from this patch, and BUILD reads it too. A
+        # yaml that omits it would otherwise die with a bare TypeError deep
+        # in a run instead of failing at load.
+        if self.evaluation.variants and self.seed.bug_patch is None:
+            raise ValueError(
+                "seed.bug_patch is required for a task that declares "
+                "evaluation.variants: the variant patches apply on top of "
+                "the seeded tree and `seed --check` builds that tree from "
+                "this patch. Only a spec with no variants (the one "
+                "`verify --diff` synthesizes, whose baseline is the pristine "
+                "tree at the audited commit) may omit it. Next: add "
+                "seed.bug_patch to the task file."
+            )
+        return self
 
     @model_validator(mode="after")
     def _acceptance_names_resolve(self) -> TaskSpec:

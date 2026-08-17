@@ -146,6 +146,29 @@ def apply_candidate(tree: Path, diff: Path) -> None:
     )
 
 
+def apply_audited_diff(tree: Path, diff: Path, repo: str, commit: str) -> None:
+    """Apply `verify --diff`'s patch to the materialized base tree.
+
+    Same mechanics as `apply_candidate`, different advice. The diff lane has
+    no Builder and no seeded tree: the patch is the caller's own, so a
+    failure here means it was taken against a commit other than the one
+    `--base` names, which is the mode's most likely first-run error.
+    """
+    failed = _git_apply(tree, diff)
+    if failed is None:
+        return
+    args, proc = failed
+    raise SkepticInfraError(
+        f"The patch {diff.name} does not apply to {repo} at {commit[:12]} "
+        f"(git {' '.join(args[:-1])} exit {proc.returncode}):\n"
+        f"{proc.stderr[-1500:]}\n"
+        f"Skeptic materializes the base commit and applies --diff to that "
+        f"tree, so the patch has to be taken against the same commit. Next: "
+        f"regenerate it with `git diff {commit[:12]}...HEAD > {diff}`, or "
+        f"pass the --base the patch was taken against."
+    )
+
+
 def assert_no_git(workspace: Path) -> None:
     hits = list(workspace.rglob(".git"))
     if hits:

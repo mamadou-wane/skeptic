@@ -31,12 +31,15 @@ def test_tasks_marks_a_task_with_no_acceptance_suite(tmp_path):
 
 
 def test_tasks_on_a_corrupt_yaml_reports_infra_error_not_a_traceback(tmp_path):
+    # `test_cmd` rather than `bug_patch`: the seed patch became optional when
+    # `verify --diff` landed, and this test needs a field that is still
+    # required to corrupt the yaml with.
     text = (FIXTURES / "valid-task.yaml").read_text().replace(
-        "  bug_patch: patches/click-0001-seed.diff\n", ""
+        '  test_cmd: "python -m pytest -q"\n', ""
     )
     (tmp_path / "click-0001.yaml").write_text(text)
     result = runner.invoke(app, ["tasks", "--tasks-dir", str(tmp_path)])
     assert result.exit_code == 3
     assert "INFRA ERROR" in result.output
-    assert "bug_patch" in result.output
+    assert "test_cmd" in result.output
     assert "Traceback" not in result.output

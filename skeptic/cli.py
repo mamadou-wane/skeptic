@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 import skeptic
 from skeptic.builder import PRICING, _price
 from skeptic.collector import observe_advtests
+from skeptic.diffmode import DEFAULT_INSTALL, DEFAULT_TEST_CMD
 from skeptic.errors import SkepticInfraError
 from skeptic.judge import judge_diff
 from skeptic.llm import SKEPTIC_MODEL
@@ -21,6 +22,17 @@ EXIT_OK = 0
 EXIT_SUSPECT = 1
 EXIT_FAIL = 2
 EXIT_INFRA = 3
+
+# `seed --check --self-validate` and the `eval` sweep call `verify()` as a
+# plain Python function, where a parameter left unpassed keeps typer's
+# `OptionInfo` object as its value instead of the option's default. Every
+# diff-mode parameter therefore has to be named at those call sites, and one
+# mapping is what keeps the two of them from drifting apart.
+_TASK_MODE_DEFAULTS = {
+    "diff": None, "repo": None, "base": "HEAD",
+    "install": DEFAULT_INSTALL, "test_cmd": DEFAULT_TEST_CMD,
+    "src_dir": [], "test_dir": [],
+}
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
 
@@ -170,7 +182,7 @@ def seed(
                 for variant_id in clean:
                     try:
                         verify(task=spec.task_id, variant=variant_id,
-                               candidate_diff=None,
+                               candidate_diff=None, **_TASK_MODE_DEFAULTS,
                                profile="deterministic", tasks_dir=tasks_dir,
                                workdir=workdir, runner="docker", yes=True)
                     except typer.Exit as exc:
@@ -805,7 +817,7 @@ def build_arm(
 
 def _verify_cache_key(
     spec: TaskSpec, variant: VariantSpec | None, profile: str,
-    *, candidate_diff: Path | None = None,
+    *, candidate_diff: Path | None = None, identity: str | None = None,
 ) -> str:
     """VERIFY stage cache key.
 
@@ -846,6 +858,14 @@ def _verify_cache_key(
     full hash), so this addition changes no cached entry's identity, only
     what a reader sees in the `variant` field of the hashed payload.
 
+    `verify --diff` rides the same candidate-diff ingredients, since the
+    audited patch is a diff whose bytes stand in for a variant, and passes
+    `identity` so the `variant` slot reads `diff:<sha8>`: the file a caller
+    points `--diff` at has no meaningful stem to name a lane with. Its spec
+    seeds nothing, so the `seed` slot carries the literal "none" instead of
+    a patch file's sha256, which is what keeps a seeded run and a seedless
+    one at the same task id in separate entries.
+
     This is the VERIFY half of the two-key design (plan decision 5); the other
     half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
     `COLLECTOR_VERSION`. The two age differently on purpose: a detector edit
@@ -862,8 +882,9 @@ def _verify_cache_key(
         variant_patch = hashlib.sha256(Path(variant.patch).read_bytes()).hexdigest()
     else:
         variant_patch = hashlib.sha256(Path(candidate_diff).read_bytes()).hexdigest()
-        variant_id = f"candidate:{candidate_diff.stem}@{variant_patch[:8]}"
-    seed_patch = hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest()
+        variant_id = identity or f"candidate:{candidate_diff.stem}@{variant_patch[:8]}"
+    seed_patch = ("none" if spec.seed.bug_patch is None
+                  else hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest())
     return config_hash({
         "stage": "VERIFY", "task": spec.task_id, "variant": variant_id,
         "variant_patch": variant_patch,
@@ -895,7 +916,7 @@ def _verify_path_identity(identity: str) -> str:
 
 @app.command()
 def verify(
-    task: str = typer.Option(..., "--task"),
+    task: str | None = typer.Option(None, "--task"),
     variant: str | None = typer.Option(
         None, "--variant", help="Variant id from evaluation.variants. "
         "Mutually exclusive with --candidate-diff."),
@@ -904,13 +925,32 @@ def verify(
         "tree, in place of a corpus variant (Eval B's catch-rate surface, "
         "the shape build-arm's classifier applies via apply_candidate). "
         "Mutually exclusive with --variant."),
+    diff: Path | None = typer.Option(  # noqa: B008
+        None, "--diff", help="Patch to audit against a local repo, with no "
+        "task spec. Mutually exclusive with --task; requires --repo."),
+    repo: Path | None = typer.Option(  # noqa: B008
+        None, "--repo", help="Working clone the --diff patch was taken from."),
+    base: str = typer.Option(
+        "HEAD", "--base", help="Commit the --diff patch applies to."),
+    install: list[str] = typer.Option(  # noqa: B008
+        DEFAULT_INSTALL, "--install", help="Install command for the audit "
+        "image, repeatable. Diff mode only."),
+    test_cmd: str = typer.Option(
+        DEFAULT_TEST_CMD, "--test-cmd", help="Suite command. Diff mode only."),
+    src_dir: list[str] = typer.Option(  # noqa: B008
+        [], "--src-dir", help="Source directory, repeatable. Overrides what "
+        "is inferred from the repo layout. Diff mode only."),
+    test_dir: list[str] = typer.Option(  # noqa: B008
+        [], "--test-dir", help="Test directory, repeatable. Overrides what "
+        "is inferred from testpaths or the repo layout. Diff mode only."),
     profile: str = typer.Option("deterministic", "--profile"),
     tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
     workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
     runner: str = typer.Option("docker", "--runner", help="docker; venv verify is not wired yet."),
     yes: bool = typer.Option(False, "--yes", help="Skip the paid-profile cost confirmation."),
 ) -> None:
-    """Run the check layer against a task's variant or a candidate diff."""
+    """Run the check layer against a task's variant, a candidate diff, or an
+    arbitrary local repo and patch (--diff)."""
     import json
     import os
     import shutil
@@ -924,16 +964,68 @@ def verify(
     from skeptic.checks.evidence import Verdict
     from skeptic.checks.t1_outcomes import compute_fix_verified
     from skeptic.collector import collect_pair, observe_mutation, observe_probe
-    from skeptic.image import repo_image_tag
+    from skeptic.diffmode import (
+        assert_supported_backend,
+        assert_working_clone,
+        infer_environment,
+        read_diff,
+        resolve_base,
+        synthesize_spec,
+    )
+    from skeptic.image import repo_image_tag, tag_slug
     from skeptic.mutation import FULL_SUITE, generate_mutants, sample_mutants, select_tests
     from skeptic.orchestrator import StageCache, run_stage
     from skeptic.render import render_verdict
     from skeptic.spec import find_task
     from skeptic.trace import TraceWriter, config_hash
-    from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
+    from skeptic.workspace import (
+        apply_audited_diff,
+        apply_candidate,
+        apply_patch,
+        clone_pinned,
+        materialize,
+    )
 
     try:
-        if (variant is None) == (candidate_diff is None):
+        if diff is not None and task is not None:
+            typer.echo(
+                f"--diff and --task are mutually exclusive (task={task!r}, "
+                f"diff={diff}). --task audits a corpus task, whose yaml "
+                f"carries the seed, the environment and the allowed paths; "
+                f"--diff audits an arbitrary local repo with no spec at all "
+                f"and synthesizes those from the repo itself. The two read "
+                f"different worlds and Skeptic will not pick one silently. "
+                f"Next: drop whichever flag you did not mean."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        if diff is None and task is None:
+            typer.echo(
+                "skeptic verify needs a subject: --task <id> audits a corpus "
+                "task's variant or candidate diff, and --diff <patch> --repo "
+                "<path> audits a patch against a local repo with no task "
+                "spec. Next: pass one of the two."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        if diff is not None and repo is None:
+            typer.echo(
+                f"--diff {diff} needs --repo: the patch is applied to a tree "
+                f"materialized from a working clone at --base, and Skeptic "
+                f"reads that clone for the build backend, the test paths and "
+                f"the source layout the audit runs with. Next: re-run with "
+                f"`--repo <path to the checkout the diff came from>`."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        if diff is not None and (variant is not None or candidate_diff is not None):
+            named = "--variant" if variant is not None else "--candidate-diff"
+            typer.echo(
+                f"--diff and {named} are mutually exclusive. {named} names a "
+                f"tree that only exists inside a corpus task (a variant from "
+                f"evaluation.variants, or a diff over that task's seeded "
+                f"tree), and a --diff audit has no task and no seed. Next: "
+                f"drop {named}, or run the corpus task with --task instead."
+            )
+            raise typer.Exit(EXIT_INFRA)
+        if diff is None and (variant is None) == (candidate_diff is None):
             typer.echo(
                 f"Exactly one of --variant or --candidate-diff is required "
                 f"(variant={variant!r}, candidate_diff={candidate_diff!r}). "
@@ -953,6 +1045,18 @@ def verify(
                 f"`--profile paid`."
             )
             raise typer.Exit(EXIT_INFRA)
+        if diff is not None and profile == "paid":
+            typer.echo(
+                "--diff runs the deterministic profile only. M6 ships the "
+                "diff lane keyless and free (spec decision 2), and the paid "
+                "checks' behavior in diff posture is unmeasured: their "
+                "prompts were calibrated on corpus tasks that carry a "
+                "problem statement, a seed and allowed paths, none of which "
+                "a diff audit has. Skeptic will not spend API money on a "
+                "lane it has no numbers for. Next: re-run without "
+                "`--profile paid`."
+            )
+            raise typer.Exit(EXIT_INFRA)
         if runner != "docker":
             typer.echo(
                 f"Unknown runner {runner!r}: skeptic verify runs in docker "
@@ -963,66 +1067,114 @@ def verify(
             )
             raise typer.Exit(EXIT_INFRA)
 
-        # spec is loaded before the paid preflight below (build's own
-        # ordering, cli.py:171-211): the cost-confirmation line names
-        # spec.task_id, and the key/pricing/confirm sequence has to finish,
-        # or exit, before `_docker_diagnosis()` and any image work either
-        # way.
-        spec = find_task(task, tasks_dir)
-
-        # Variant validation also moves ahead of the paid preflight (review
-        # round 1, minor 2): it only needs `spec`, already loaded above, and
-        # a typo'd --variant should never reach the spend confirm. The
-        # candidate-diff path gets the same treatment: a typo'd path fails
-        # here too, not after a spend confirm.
+        workdir = workdir.resolve()
         variant_spec: VariantSpec | None = None
-        if variant is not None:
-            known = sorted(v.id for v in spec.evaluation.variants)
-            if variant not in known:
-                typer.echo(
-                    f"No variant named {variant!r} in {spec.task_id}'s "
-                    f"evaluation.variants (known: {known or 'none'}). Skeptic "
-                    f"resolves --variant to one of the ids listed there. Next: "
-                    f"pick one of the known ids, or add a new entry to "
-                    f"evaluation.variants in the task spec."
-                )
-                raise typer.Exit(EXIT_INFRA)
-            variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
-            identity = variant_spec.id
-            surface_flag = f"--variant {identity}"
+        if diff is not None:
+            # Everything a corpus yaml would have carried is synthesized
+            # from the repo itself, and all of it happens ahead of the
+            # docker check: a ref that does not resolve, an unreadable
+            # patch, an unsupported build backend or an unfindable test
+            # directory costs a second here rather than an image build.
+            assert_working_clone(repo)
+            base_sha = resolve_base(repo, base)
+            diff_sha = hashlib.sha256(read_diff(diff)).hexdigest()
+            repo_path = repo.resolve()
+            # The diff lane has no task id to hang a directory off, so its
+            # runs live under `workdir/diff/` and share one baseline cache
+            # across runs. There is no clone cache here: `do_verify` reads
+            # the caller's clone directly. The run dir is named this early
+            # because inference materializes into it.
+            task_root = workdir / "diff"
+            run_slug = f"{tag_slug(repo_path.name)}-{base_sha[:12]}-{diff_sha[:12]}"
+            verify_dir = task_root / run_slug
+            # Inference reads the base commit as files, never the caller's
+            # working tree: that clone may be dirty or checked out at
+            # another commit entirely, and the audit is pinned to --base.
+            # The export is deleted as soon as the environment is read, so
+            # no unjudged copy of the base sits beside the trees VERIFY
+            # materializes for judgment (`collect_pair` rmtrees its own
+            # image context for the same reason).
+            inspect_tree = verify_dir / "base-inspect"
+            if inspect_tree.exists():
+                shutil.rmtree(inspect_tree)
+            materialize(repo_path, base_sha, inspect_tree)
+            backend = assert_supported_backend(inspect_tree)
+            environment, banner = infer_environment(
+                inspect_tree, install, test_cmd, src_dir, test_dir)
+            shutil.rmtree(inspect_tree)
+            spec = synthesize_spec(repo_path, base_sha, environment, run_slug)
+            candidate_diff = diff
+            identity = f"diff:{diff_sha[:8]}"
+            surface_flag = f"--diff {diff}"
+            # Plan §5.7: a wrong src/test inference silently inverts patch
+            # coverage, so the run states what it assumed before it assumes
+            # it, and it states it before the first container starts.
+            typer.echo(f"diff audit · {repo_path} · base {base_sha[:12]} · "
+                       f"diff {diff_sha[:12]}")
+            for line in (*banner, f"  backend: {backend}"):
+                typer.echo(line)
+            typer.echo("  pass --src-dir or --test-dir to correct either list.")
         else:
-            if not candidate_diff.is_file():
-                typer.echo(
-                    f"No candidate diff at {candidate_diff}: --candidate-diff "
-                    f"needs a readable diff file to apply over {spec.task_id}'s "
-                    f"seeded tree (Eval B's catch-rate surface, the same shape "
-                    f"build-arm's classifier applies via apply_candidate). "
-                    f"Next: check the path, or point --candidate-diff at a "
-                    f"build attempt's candidate.diff."
-                )
-                raise typer.Exit(EXIT_INFRA)
-            try:
-                diff_bytes = candidate_diff.read_bytes()
-            except OSError as exc:
-                typer.echo(
-                    f"Could not read candidate diff at {candidate_diff}: {exc}. "
-                    f"--candidate-diff needs a readable diff file to apply over "
-                    f"{spec.task_id}'s seeded tree. Next: check the path and "
-                    f"permissions."
-                )
-                raise typer.Exit(EXIT_INFRA) from exc
-            # The content hash, not just the stem, is part of the identity
-            # (review finding 2): build-arm writes `candidate.diff` for every
-            # attempt of a task, so the stem alone would give every attempt
-            # the same identity, `candidate:candidate`: one verify dir
-            # (artifacts overwritten across attempts), one run_id (trace and
-            # verdict rows indistinguishable), and one rotation slot (an
-            # older attempt's trace silently gone the moment a newer one
-            # runs). The first 8 hex digits are enough to tell attempts
-            # apart in a path/label; the cache key below still keys on the
-            # diff's full sha256.
-            identity = f"candidate:{candidate_diff.stem}@{hashlib.sha256(diff_bytes).hexdigest()[:8]}"
-            surface_flag = f"--candidate-diff {candidate_diff}"
+            # spec is loaded before the paid preflight below (build's own
+            # ordering, cli.py:171-211): the cost-confirmation line names
+            # spec.task_id, and the key/pricing/confirm sequence has to
+            # finish, or exit, before `_docker_diagnosis()` and any image
+            # work either way.
+            spec = find_task(task, tasks_dir)
+
+            # Variant validation also moves ahead of the paid preflight
+            # (review round 1, minor 2): it only needs `spec`, already
+            # loaded above, and a typo'd --variant should never reach the
+            # spend confirm. The candidate-diff path gets the same
+            # treatment: a typo'd path fails here too, not after a spend
+            # confirm.
+            if variant is not None:
+                known = sorted(v.id for v in spec.evaluation.variants)
+                if variant not in known:
+                    typer.echo(
+                        f"No variant named {variant!r} in {spec.task_id}'s "
+                        f"evaluation.variants (known: {known or 'none'}). Skeptic "
+                        f"resolves --variant to one of the ids listed there. Next: "
+                        f"pick one of the known ids, or add a new entry to "
+                        f"evaluation.variants in the task spec."
+                    )
+                    raise typer.Exit(EXIT_INFRA)
+                variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
+                identity = variant_spec.id
+                surface_flag = f"--variant {identity}"
+            else:
+                if not candidate_diff.is_file():
+                    typer.echo(
+                        f"No candidate diff at {candidate_diff}: --candidate-diff "
+                        f"needs a readable diff file to apply over {spec.task_id}'s "
+                        f"seeded tree (Eval B's catch-rate surface, the same shape "
+                        f"build-arm's classifier applies via apply_candidate). "
+                        f"Next: check the path, or point --candidate-diff at a "
+                        f"build attempt's candidate.diff."
+                    )
+                    raise typer.Exit(EXIT_INFRA)
+                try:
+                    diff_bytes = candidate_diff.read_bytes()
+                except OSError as exc:
+                    typer.echo(
+                        f"Could not read candidate diff at {candidate_diff}: {exc}. "
+                        f"--candidate-diff needs a readable diff file to apply over "
+                        f"{spec.task_id}'s seeded tree. Next: check the path and "
+                        f"permissions."
+                    )
+                    raise typer.Exit(EXIT_INFRA) from exc
+                # The content hash, not just the stem, is part of the identity
+                # (review finding 2): build-arm writes `candidate.diff` for every
+                # attempt of a task, so the stem alone would give every attempt
+                # the same identity, `candidate:candidate`: one verify dir
+                # (artifacts overwritten across attempts), one run_id (trace and
+                # verdict rows indistinguishable), and one rotation slot (an
+                # older attempt's trace silently gone the moment a newer one
+                # runs). The first 8 hex digits are enough to tell attempts
+                # apart in a path/label; the cache key below still keys on the
+                # diff's full sha256.
+                identity = f"candidate:{candidate_diff.stem}@{hashlib.sha256(diff_bytes).hexdigest()[:8]}"
+                surface_flag = f"--candidate-diff {candidate_diff}"
 
         if profile == "paid":
             # Key, then pricing row, then the cost confirmation: all three
@@ -1087,8 +1239,9 @@ def verify(
             ))
             raise typer.Exit(EXIT_INFRA)
 
-        workdir = workdir.resolve()
-        verify_dir = workdir / spec.task_id / "verify" / _verify_path_identity(identity)
+        if diff is None:
+            task_root = workdir / spec.task_id
+            verify_dir = task_root / "verify" / _verify_path_identity(identity)
         # See build()'s own comment: rotate this verify dir's own trace before
         # touching it, so a second direct `skeptic verify` of the same
         # task+variant (or task+candidate-diff) starts a clean trace.jsonl
@@ -1103,21 +1256,41 @@ def verify(
             task_id=spec.task_id)
         trace.event(stage="LOAD", actor="orchestrator", event="spec_loaded")
 
-        cache_key = _verify_cache_key(spec, variant_spec, profile, candidate_diff=candidate_diff)
+        cache_key = _verify_cache_key(spec, variant_spec, profile,
+                                      candidate_diff=candidate_diff,
+                                      identity=identity if diff is not None else None)
 
         def do_verify() -> dict:
-            repo_dir = clone_pinned(spec.repo.url, spec.repo.commit,
-                                    workdir / spec.task_id / "repo-cache")
+            # The diff lane reads the caller's own clone directly. Its base
+            # commit may sit on no branch at all (a PR head, a detached
+            # HEAD), and `clone_pinned`'s recovery fetch only updates
+            # refs/heads/*, so a second audit at such a commit would be
+            # refused by a message about fixing repo.commit in a task spec
+            # that does not exist. Every read of this path is `git archive
+            # <commit>` (`materialize`), which ignores the working tree and
+            # writes nothing, and `assert_no_git` still guards the export.
+            repo_dir = (Path(spec.repo.url) if diff is not None
+                        else clone_pinned(spec.repo.url, spec.repo.commit,
+                                          task_root / "repo-cache"))
             seeded = verify_dir / "seeded"
             variant_tree = verify_dir / "variant-tree"
             for stale in (seeded, variant_tree):
                 if stale.exists():
                     shutil.rmtree(stale)
             materialize(repo_dir, spec.repo.commit, seeded)
-            apply_patch(seeded, Path(spec.seed.bug_patch))
+            # A --diff spec seeds nothing: `seeded` here is the pristine
+            # tree at the audited base commit, which is the baseline the
+            # candidate is compared against.
+            if spec.seed.bug_patch is not None:
+                apply_patch(seeded, Path(spec.seed.bug_patch))
             snapshot(seeded, variant_tree)
             if variant_spec is not None:
                 apply_patch(variant_tree, Path(variant_spec.patch))
+            elif diff is not None:
+                # The audited patch is the caller's own, so a failure here is
+                # a patch taken against another commit, never a harness bug:
+                # `apply_candidate`'s advice is wrong for this lane.
+                apply_audited_diff(variant_tree, diff, spec.repo.url, spec.repo.commit)
             else:
                 apply_candidate(variant_tree, candidate_diff)
 
@@ -1127,7 +1300,7 @@ def verify(
 
             pair = collect_pair(
                 spec, repo_dir, report, verify_dir / "collect",
-                baseline_cache=workdir / spec.task_id / "baseline-cache")
+                baseline_cache=task_root / "baseline-cache")
 
             # Mutation enrichment: generate -> sample -> select per mutant ->
             # execute, then fold the report onto the candidate side. Isolated
@@ -1448,7 +1621,7 @@ def eval_command(
                 evalkit.rotate_trace(verify_dir)
                 try:
                     verify(task=spec.task_id, variant=variant_spec.id,
-                           candidate_diff=None,
+                           candidate_diff=None, **_TASK_MODE_DEFAULTS,
                            profile=profile, tasks_dir=tasks_dir,
                            workdir=workdir, runner="docker", yes=True)
                 except typer.Exit as exc:

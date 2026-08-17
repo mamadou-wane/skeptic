@@ -31,10 +31,14 @@ def test_unknown_field_rejected(tmp_path):
 
 
 def test_missing_required_field_names_it(tmp_path):
-    text = (FIXTURES / "valid-task.yaml").read_text().replace("  bug_patch: patches/click-0001-seed.diff\n", "")
+    # `test_cmd` rather than `bug_patch`: the seed patch became optional when
+    # `verify --diff` landed (a diff audit has no bug to inject), and this
+    # test is about the validator naming whatever is genuinely missing.
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        '  test_cmd: "python -m pytest -q"\n', "")
     p = tmp_path / "bad.yaml"
     p.write_text(text)
-    with pytest.raises(SkepticInfraError, match="bug_patch"):
+    with pytest.raises(SkepticInfraError, match="test_cmd"):
         load_task(p)
 
 
@@ -334,3 +338,56 @@ def test_acceptance_tests_stub_is_gone():
     bad["evaluation"]["acceptance_tests"] = None
     with pytest.raises(ValidationError):
         TaskSpec.model_validate(bad)
+
+
+def test_seed_without_a_bug_patch_validates_when_there_are_no_variants():
+    """`verify --diff` synthesizes a spec whose baseline is the pristine tree
+    at the audited base commit, so there is no bug to inject and no patch to
+    name. `git apply` exits 128 on an empty patch, so a placeholder file
+    could not have stood in for the absent one."""
+    spec = TaskSpec.model_validate(_task_dict(
+        seed={"bug_patch": None, "failing_tests": [], "notes_private": ""},
+        evaluation={"variants": [],
+                    "expected": {"clean_verdict": "PASS",
+                                 "hacked_verdict_any_of": ["SUSPECT", "FAIL"]}}))
+    assert spec.seed.bug_patch is None
+    assert spec.seed.failing_tests == []
+
+
+def test_seed_without_a_bug_patch_rejected_when_variants_exist():
+    """The other direction: a corpus task's variant patches apply on top of
+    the seeded tree, and `seed --check` builds that tree from bug_patch, so
+    a yaml that omits it has to fail at load. Without this rule the field's
+    optionality reaches `Path(None)` inside seedcheck as a bare TypeError."""
+    with pytest.raises(ValidationError, match="bug_patch"):
+        TaskSpec.model_validate(_task_dict(
+            seed={"bug_patch": None, "failing_tests": [], "notes_private": ""}))
+
+
+def test_every_corpus_task_declares_its_seed_patch():
+    """The rule above, held against the real corpus rather than a fixture."""
+    from skeptic.spec import list_tasks
+
+    for spec in list_tasks(Path(__file__).parent.parent / "tasks"):
+        assert spec.seed.bug_patch, spec.task_id
+
+
+def test_evaluation_without_variants_validates():
+    """A synthesized diff-audit spec declares no variants: there is no corpus
+    task behind it, so there is no gold patch to require."""
+    spec = TaskSpec.model_validate(_task_dict(evaluation={
+        "variants": [],
+        "expected": {"clean_verdict": "PASS",
+                     "hacked_verdict_any_of": ["SUSPECT", "FAIL"]}}))
+    assert spec.evaluation.variants == []
+
+
+def test_variants_without_a_clean_one_still_rejected():
+    """Regression on the escape above: relaxing the empty case must not
+    relax a real corpus task that lists only hacks."""
+    with pytest.raises(ValidationError, match="clean"):
+        TaskSpec.model_validate(_task_dict(evaluation={
+            "variants": [{"id": "h1", "patch": "p/h1.diff", "label": "hacked",
+                          "hack_category": "H1"}],
+            "expected": {"clean_verdict": "PASS",
+                         "hacked_verdict_any_of": ["SUSPECT", "FAIL"]}}))

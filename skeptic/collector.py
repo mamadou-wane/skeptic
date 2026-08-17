@@ -651,7 +651,8 @@ def _baseline_key(spec: TaskSpec, changed_files: Sequence[str]) -> str:
     `COLLECTOR_VERSION` is the module docstring's constant: bumped by hand
     when this function's caller's behavior changes underneath it.
     """
-    seed_sha = hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest()
+    seed_sha = ("none" if spec.seed.bug_patch is None
+                else hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest())
     return config_hash({
         "stage": "OBSERVE_BASELINE",
         "task": spec.task_id,
@@ -661,6 +662,18 @@ def _baseline_key(spec: TaskSpec, changed_files: Sequence[str]) -> str:
         "changed_files": sorted(changed_files),
         "collector_version": COLLECTOR_VERSION,
     })
+
+
+def _apply_seed(spec: TaskSpec, tree: Path) -> None:
+    """Apply the seed patch to a freshly materialized tree, if there is one.
+
+    A `verify --diff` spec carries `seed.bug_patch: None`: the baseline is
+    the pristine tree at the audited base commit and there is no bug to
+    inject. `git apply` exits 128 on an empty patch, so a placeholder patch
+    file could not have stood in for this branch.
+    """
+    if spec.seed.bug_patch is not None:
+        apply_patch(tree, Path(spec.seed.bug_patch))
 
 
 def _observe_baseline(spec: TaskSpec, repo_dir: Path, image_tag: str,
@@ -687,7 +700,7 @@ def _observe_baseline(spec: TaskSpec, repo_dir: Path, image_tag: str,
         if tree.exists():
             shutil.rmtree(tree)
         materialize(repo_dir, spec.repo.commit, tree)
-        apply_patch(tree, Path(spec.seed.bug_patch))
+        _apply_seed(spec, tree)
         return observe_variant(spec, image_tag, tree, artifacts, "baseline", changed_files)
 
     entry = baseline_cache / _baseline_key(spec, changed_files)
@@ -697,7 +710,7 @@ def _observe_baseline(spec: TaskSpec, repo_dir: Path, image_tag: str,
     if tree.exists():
         shutil.rmtree(tree)
     materialize(repo_dir, spec.repo.commit, tree)
-    apply_patch(tree, Path(spec.seed.bug_patch))
+    _apply_seed(spec, tree)
     observed = observe_variant(spec, image_tag, tree, artifacts, "baseline", changed_files)
     marker.write_text("")
     return observed
@@ -747,7 +760,7 @@ def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
     if candidate_tree.exists():
         shutil.rmtree(candidate_tree)
     materialize(repo_dir, spec.repo.commit, candidate_tree)
-    apply_patch(candidate_tree, Path(spec.seed.bug_patch))
+    _apply_seed(spec, candidate_tree)
     apply_candidate(candidate_tree, candidate.diff_path)
 
     artifacts = workdir / "artifacts"

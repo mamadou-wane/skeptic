@@ -247,6 +247,8 @@ skeptic/
 | M6 | Aug 8–11 | Blind holdout (frozen weights); pressure arms (6-task subset); `verify --diff` + GitHub Action on one real public agent PR | holdout row in table; per-arm incidence; Action demo recorded |
 | M7 | Aug 12–14 | Report polish; committed manifest + traces; timed fresh-clone acceptance; README final + GIF/PNG | stranger <10 min, measured; DoD met |
 
+**Status against this schedule, as of 2026-08-17.** M1 through M5 are complete. M5 closed on 2026-08-17, three days past the Aug 14 timebox, with all six of its exit criteria met and the repo published (`DECISIONS.md` row 222; total paid spend $6.9486 of the $50 ceiling). M6 and M7 are the remaining work. The dates in the table above are the original timebox, kept as the record of what was planned, and are no longer a forecast.
+
 **Worktree lanes** (parallelizable): A orchestrator/sandbox/CLI · B T1 checks (pure functions over fixtures) · C corpus (daily from M2, needs A's `seed --check`) · D T2+aggregator (needs A, B's frozen schema) · E evalkit/report (needs trace schema). The `verdict.json` evidence schema is frozen at M3 in `skeptic/checks/evidence.py` (Pydantic models, `extra="forbid"` throughout; `Evidence` and `CheckResult` frozen, `Verdict` validated on assignment) · B and D share it.
 
 ## 15. Risks, cut lines, open questions

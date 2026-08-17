@@ -14,6 +14,10 @@ from skeptic.checks.evidence import MANDATORY_CHECKS, CheckResult
 from skeptic.cli import _verify_cache_key, app
 from skeptic.errors import SkepticInfraError
 from skeptic.orchestrator import StageCache
+from skeptic.sandbox import DockerDiagnosis
+
+_DIAG_OK = DockerDiagnosis("ok", "")
+_DIAG_DOWN = DockerDiagnosis("unreachable", "test")
 from skeptic.spec import find_task
 from skeptic.trace import read_trace
 from tests.helpers import make_observed_pair, make_pure_pair, make_task_spec
@@ -198,7 +202,7 @@ def test_verify_isolates_a_dead_enrichment_when_sibling_evidence_is_hard(
     """Fix 1, cases (a) and (b): either exception class must not erase the
     hard evidence a sibling T1 check found for real. `t2_mutation.run`'s own
     INFRA-on-`None` branch is what lands `t2_mutation` in `checks_infra`."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _h1_shaped_pair()
     _fake_heavy_stages_dead_enrichment(monkeypatch, pair, enrichment_error)
 
@@ -221,7 +225,7 @@ def test_verify_dead_enrichment_on_a_would_be_pass_is_infra_error(tmp_path, monk
     """Fix 1, case (c): a candidate that would otherwise PASS reports
     INFRA_ERROR, naming `t2_mutation`, once enrichment dies before it can
     set `candidate.mutation`."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_dead_enrichment(
         monkeypatch, pair, SkepticInfraError("daemon down mid-batch"))
@@ -291,7 +295,7 @@ def test_verify_isolates_a_dead_probe_when_sibling_evidence_is_hard(
     evidence a sibling T1 check found for real, nor take the mutation lane's
     own (HEALTHY, empty) evidence down with it. `t2_probe.run`'s own
     INFRA-on-`None` branch is what lands `t2_probe` in `checks_infra`."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _h1_shaped_pair()
     _fake_heavy_stages_dead_probe(monkeypatch, pair, enrichment_error)
 
@@ -323,7 +327,7 @@ def test_verify_dead_probe_on_a_would_be_pass_is_infra_error(tmp_path, monkeypat
     otherwise PASS reports INFRA_ERROR, naming `t2_probe`, once the probe
     enrichment dies before it can set `candidate.probe`, with the mutation
     lane's own HEALTHY empty batch never surfacing in `checks_infra`."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_dead_probe(
         monkeypatch, pair, SkepticInfraError("daemon down mid-batch"))
@@ -346,7 +350,7 @@ def test_verify_dead_probe_on_a_would_be_pass_is_infra_error(tmp_path, monkeypat
 
 def test_verify_refuses_an_unknown_profile_before_any_work(tmp_path, monkeypatch):
     called = []
-    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "no-such-task",
                                  "--variant", "gold", "--profile", "stochastic",
                                  "--workdir", str(tmp_path)])
@@ -357,7 +361,7 @@ def test_verify_refuses_an_unknown_profile_before_any_work(tmp_path, monkeypatch
 
 def test_verify_refuses_the_venv_runner_with_the_wiring_message(tmp_path, monkeypatch):
     called = []
-    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "no-such-task",
                                  "--variant", "gold", "--runner", "venv",
                                  "--workdir", str(tmp_path)])
@@ -367,7 +371,7 @@ def test_verify_refuses_the_venv_runner_with_the_wiring_message(tmp_path, monkey
 
 
 def test_verify_names_known_variants_on_an_unknown_variant_id(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "no-such-variant",
                                  "--workdir", str(tmp_path)])
@@ -377,7 +381,7 @@ def test_verify_names_known_variants_on_an_unknown_variant_id(tmp_path, monkeypa
 
 
 def test_verify_requires_docker_daemon(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "_docker_available", lambda: False)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_DOWN)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--workdir", str(tmp_path)])
     assert result.exit_code == 3
@@ -391,7 +395,7 @@ def test_verify_requires_docker_daemon(tmp_path, monkeypatch):
 
 def test_verify_rejects_neither_variant_nor_candidate_diff(tmp_path, monkeypatch):
     called = []
-    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "no-such-task",
                                  "--workdir", str(tmp_path)])
     assert result.exit_code == 3
@@ -402,7 +406,7 @@ def test_verify_rejects_neither_variant_nor_candidate_diff(tmp_path, monkeypatch
 
 def test_verify_rejects_both_variant_and_candidate_diff(tmp_path, monkeypatch):
     called = []
-    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
     diff_path = tmp_path / "candidate.diff"
     diff_path.write_text("--- a/x\n+++ b/x\n")
     result = runner.invoke(app, ["verify", "--task", "no-such-task",
@@ -415,7 +419,7 @@ def test_verify_rejects_both_variant_and_candidate_diff(tmp_path, monkeypatch):
 
 
 def test_verify_candidate_diff_missing_path_is_infra_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     missing = tmp_path / "nope.diff"
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--candidate-diff", str(missing),
@@ -440,7 +444,7 @@ def test_verify_candidate_diff_unreadable_is_infra_error(tmp_path, monkeypatch, 
     would too; that path never goes through typer's argument conversion, so
     a permission problem there would otherwise traceback straight out of
     `read_bytes()` uncaught."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     unreadable = tmp_path / "no-read.diff"
     unreadable.write_text("--- a/x\n+++ b/x\n")
     unreadable.chmod(0o000)
@@ -470,7 +474,7 @@ def test_verify_exit_codes_follow_the_verdict(
     # A fully-faked verdict, pre-populated straight into the stage cache: no
     # do_verify call happens at all, matching test_cli_build's cache-hit
     # style (test_build_writes_a_baseline_suite_trace_event_on_a_cache_hit).
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     workdir = tmp_path.resolve()
     spec = find_task("click-0001", Path("tasks"))
     variant_spec = spec.evaluation.variants[0]
@@ -496,7 +500,7 @@ def test_verify_exit_codes_follow_the_verdict(
 
 
 def test_verify_writes_verdict_json_and_prints_the_banner(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     spec = find_task("click-0001", Path("tasks"))
     pair = _fake_pair(spec)
     calls: list[int] = []
@@ -522,7 +526,7 @@ def test_verify_writes_verdict_json_and_prints_the_banner(tmp_path, monkeypatch)
 
 
 def test_verify_cache_hit_skips_collection_and_replays_the_banner(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     spec = find_task("click-0001", Path("tasks"))
     pair = _fake_pair(spec)
     calls: list[int] = []
@@ -566,7 +570,7 @@ def test_verify_rotates_its_own_trace_before_a_second_direct_run(tmp_path, monke
     # disjoint (stage_start/mutation_batch/probe_batch/stage_end only on the
     # first; stage_cached only on the second) and make a clean rotation
     # probe.
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     spec = find_task("click-0001", Path("tasks"))
     pair = _fake_pair(spec)
     calls: list[int] = []
@@ -607,7 +611,7 @@ def test_mutation_batch_trace_event_carries_the_voided_count(tmp_path, monkeypat
     from skeptic import mutation as mutation_mod
     from skeptic.checks.observations import CalibrationVoid, MutationReport
 
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     spec = find_task("click-0001", Path("tasks"))
     pair = _fake_pair(spec)
     calls: list[int] = []
@@ -749,7 +753,7 @@ def test_verify_cache_key_changes_with_the_remaining_key_inputs(tmp_path, flip):
 def test_unknown_profile_names_both_lanes(tmp_path, monkeypatch):
     """The explain-and-exit contract, restated: an unknown profile's message
     now names both lanes, not just `deterministic`."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--profile", "stochastic",
                                  "--workdir", str(tmp_path)])
@@ -764,7 +768,7 @@ def test_verify_profile_demo_is_still_unreachable(tmp_path, monkeypatch):
     `run_verify_layer(pair, profile="demo")` directly, and `--profile demo`
     gets the same rejection as any other unrecognized name, still naming
     only the two CLI-visible lanes."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--profile", "demo",
                                  "--workdir", str(tmp_path)])
@@ -776,11 +780,11 @@ def test_verify_profile_demo_is_still_unreachable(tmp_path, monkeypatch):
 
 def test_paid_requires_api_key_before_any_image_work(tmp_path, monkeypatch):
     """Mirrors `test_build_requires_api_key_before_docker_work`: the key
-    check fails in well under a second, before `_docker_available()` (and
+    check fails in well under a second, before `_docker_diagnosis()` (and
     therefore before any image work) ever runs."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     called = []
-    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--profile", "paid",
                                  "--workdir", str(tmp_path)])
@@ -795,7 +799,7 @@ def test_paid_requires_a_pricing_row(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.setattr(cli, "SKEPTIC_MODEL", "no-such-model")
     called = []
-    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--profile", "paid",
                                  "--workdir", str(tmp_path)])
@@ -807,14 +811,14 @@ def test_paid_requires_a_pricing_row(tmp_path, monkeypatch):
 def test_paid_confirm_declined_exits_infra_without_spend(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     called = []
-    monkeypatch.setattr(cli, "_docker_available", lambda: called.append("docker") or True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--profile", "paid",
                                  "--workdir", str(tmp_path)], input="n\n")
     assert result.exit_code == 3
     assert "Declined" in result.output
     assert "--yes" in result.output
-    assert called == []          # declined before _docker_available(): no image work
+    assert called == []          # declined before _docker_diagnosis(): no image work
 
 
 def test_paid_yes_skips_the_confirm(tmp_path, monkeypatch):
@@ -822,7 +826,7 @@ def test_paid_yes_skips_the_confirm(tmp_path, monkeypatch):
     (rather than the confirm's own stdin prompt) is what ends the run, and
     the confirm's own "Proceed" text never appears."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: False)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_DOWN)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--profile", "paid", "--yes",
                                  "--workdir", str(tmp_path)])
@@ -835,7 +839,7 @@ def test_deterministic_never_prompts(tmp_path, monkeypatch):
     """The paid preflight is skipped outright under the default profile: no
     API key required, no cost line, docker unavailable is reached directly."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(cli, "_docker_available", lambda: False)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_DOWN)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant", "gold", "--workdir", str(tmp_path)])
     assert result.exit_code == 3
@@ -892,7 +896,7 @@ def test_verify_candidate_diff_drives_the_real_path_and_stamps_candidate_identit
     profile: task 2b builds only the injection, not a paid-profile
     combination, and a would-be-PASS pair keeps the assertion about a genuine
     verdict rather than an incidental one."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
 
@@ -945,7 +949,7 @@ def test_verify_candidate_diff_cache_replays_same_bytes_and_misses_on_different_
     the first one's dir is still the right one to read the trace from."""
     from skeptic import collector
 
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
     calls: list[int] = []
@@ -1034,7 +1038,7 @@ def _fake_advtests_and_judge(monkeypatch):
 
 def test_paid_runs_enrichments_and_stamps_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
     _fake_advtests_and_judge(monkeypatch)
@@ -1094,7 +1098,7 @@ def test_verify_sources_include_one_hop(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli, "generate_candidates", fake_generate)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
 
     workdir = tmp_path.resolve()
     result = runner.invoke(app, ["verify", "--task", "click-0001",
@@ -1146,7 +1150,7 @@ def test_testgen_prompt_never_sees_a_changed_test_file(monkeypatch, tmp_path):
         return dest
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     pair = pair.model_copy(update={
         "candidate_diff": dataclasses.replace(
@@ -1204,7 +1208,7 @@ def test_one_hop_sources_ignores_a_held_out_test_files_own_imports(monkeypatch, 
         return dest
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     pair = pair.model_copy(update={
         "candidate_diff": dataclasses.replace(
@@ -1234,7 +1238,7 @@ def test_paid_judge_io_artifact_persists_request_and_response(tmp_path, monkeypa
     (DECISIONS row 143): raw response text and stop_reason persisted so a
     1-block gold-prime response is inspectable after the fact."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
     _, _, judge_io, testgen_io = _fake_advtests_and_judge(monkeypatch)
@@ -1272,7 +1276,7 @@ def test_advtests_io_persists_when_the_ladder_dies(tmp_path, monkeypatch):
     checks the artifact survives.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
     _fake_advtests_and_judge(monkeypatch)
@@ -1323,7 +1327,7 @@ def test_judge_reads_a_bad_byte_in_the_candidate_diff_through_read_source(
     """
     from skeptic.checks.observations import JudgeReport
 
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     spec = find_task("click-0001", Path("tasks"))
     pair = _fake_pair(spec)
     pair.candidate_diff.diff_path.write_bytes(
@@ -1363,7 +1367,7 @@ def test_deterministic_verdict_carries_two_not_applicable_rows(tmp_path, monkeyp
     synthetic NA artifacts. `run_verify_layer` is left real here (unlike
     `_fake_heavy_stages`'s canned `LayerOutcome`), so `aggregate.
     PAID_ONLY_CHECKS`'s own synthesis is what this test observes."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
 
@@ -1391,7 +1395,7 @@ def test_enrichment_failure_surfaces_as_check_infra_not_crash(tmp_path, monkeypa
     the independently-healthy judge check down with it (DECISIONS row 116's
     isolation rule, extended to the two paid checks)."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
     _fake_advtests_and_judge(monkeypatch)
@@ -1427,7 +1431,7 @@ def test_client_construction_failure_infra_lists_both_paid_checks(tmp_path, monk
     import anthropic
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
 
@@ -1596,3 +1600,16 @@ def test_verify_candidate_diff_minirepo_gold_passes_end_to_end(tmp_path, minirep
     assert saved["verdict"] == "PASS"
     assert saved["task_id"] == spec.task_id
     assert saved["variant"] == identity
+
+
+def test_verify_docker_refusal_surfaces_stderr_detail(tmp_path, monkeypatch):
+    """An unclassified docker failure must show the user the stderr line the
+    ladder could not classify, or the refusal is a dead end."""
+    monkeypatch.setattr(cli, "_docker_diagnosis",
+                        lambda: DockerDiagnosis("unclassified", "boom weird"))
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant", "gold",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "boom weird" in result.output
+    assert "Next:" in result.output

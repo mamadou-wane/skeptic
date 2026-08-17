@@ -8,6 +8,9 @@ from typer.testing import CliRunner
 
 from skeptic.cli import _build_cache_key, _build_dir, _run_attempt_acceptance, app
 from skeptic.errors import SkepticInfraError
+from skeptic.sandbox import DockerDiagnosis
+
+_DIAG_OK = DockerDiagnosis("ok", "")
 from skeptic.seedcheck import SuiteResult
 from skeptic.spec import AcceptanceSuiteSpec
 from tests.helpers import make_task_spec
@@ -459,7 +462,7 @@ def test_build_arm_replay_after_two_direct_builds_snapshots_one_runs_prev_trace(
     from skeptic.trace import config_hash, read_trace
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     monkeypatch.setattr(workspace, "clone_pinned",
                         lambda url, commit, cache: cache)
     monkeypatch.setattr(workspace, "materialize",

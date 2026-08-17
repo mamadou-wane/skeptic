@@ -1,7 +1,11 @@
 import hashlib
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
+
+if TYPE_CHECKING:
+    from skeptic.sandbox import DockerDiagnosis
 
 import skeptic
 from skeptic.builder import PRICING, _price
@@ -49,6 +53,16 @@ def demo() -> None:
     except SkepticInfraError as exc:
         typer.echo(f"INFRA ERROR: {exc}")
         raise typer.Exit(EXIT_INFRA) from exc
+
+
+@app.command()
+def doctor() -> None:
+    """Preflight Docker, API key, Python, disk and arch, with the exact next
+    command per failure."""
+    from skeptic.doctor import run_doctor
+
+    if run_doctor(typer.echo):
+        raise typer.Exit(EXIT_INFRA)
 
 
 @app.command()
@@ -189,9 +203,9 @@ def seed(
         raise typer.Exit(EXIT_INFRA) from exc
 
 
-def _docker_available() -> bool:
-    from skeptic.sandbox import docker_available
-    return docker_available()
+def _docker_diagnosis() -> "DockerDiagnosis":
+    from skeptic.sandbox import docker_diagnosis
+    return docker_diagnosis()
 
 
 def _baseline_payload(
@@ -314,12 +328,14 @@ def build(
                 f"skeptic/builder.py."
             )
             raise typer.Exit(EXIT_INFRA)
-        if not _docker_available():
-            typer.echo(
-                "Docker daemon unavailable. BUILD runs the Builder's tools in "
-                "a hardened container; there is no reduced-isolation fallback "
-                "for BUILD. Next: start Docker Desktop, then re-run."
-            )
+        diag = _docker_diagnosis()
+        if diag.state != "ok":
+            from skeptic.doctor import docker_failure_message
+            typer.echo(docker_failure_message(
+                diag,
+                "BUILD runs the Builder's tools in a hardened container; "
+                "there is no reduced-isolation fallback for BUILD.",
+            ))
             raise typer.Exit(EXIT_INFRA)
         ceiling = spec.constraints.cost_ceiling_usd
         typer.echo(f"Builder run: task={spec.task_id} model={model} "
@@ -950,7 +966,7 @@ def verify(
         # spec is loaded before the paid preflight below (build's own
         # ordering, cli.py:171-211): the cost-confirmation line names
         # spec.task_id, and the key/pricing/confirm sequence has to finish,
-        # or exit, before `_docker_available()` and any image work either
+        # or exit, before `_docker_diagnosis()` and any image work either
         # way.
         spec = find_task(task, tasks_dir)
 
@@ -1061,13 +1077,14 @@ def verify(
                 )
                 raise typer.Exit(EXIT_INFRA)
 
-        if not _docker_available():
-            typer.echo(
-                "Docker daemon unavailable. VERIFY observes both trees "
-                "inside throwaway containers; there is no reduced-isolation "
-                "fallback for VERIFY. Next: start Docker Desktop, then "
-                "re-run."
-            )
+        diag = _docker_diagnosis()
+        if diag.state != "ok":
+            from skeptic.doctor import docker_failure_message
+            typer.echo(docker_failure_message(
+                diag,
+                "VERIFY observes both trees inside throwaway containers; "
+                "there is no reduced-isolation fallback for VERIFY.",
+            ))
             raise typer.Exit(EXIT_INFRA)
 
         workdir = workdir.resolve()

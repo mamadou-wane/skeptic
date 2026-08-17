@@ -33,7 +33,7 @@ Code *generation* by agents is commoditized: SWE-bench Verified is saturated and
 
 ## 3. Audience & positioning
 
-Primary audience: **agent-evals / AI-infra reviewers** landing from a resume or post — ~60 seconds to judge credibility, ~10 minutes if they clone. Secondary: hands-on cloners evaluating the tool. The README's first screen is written for the eval-literate reader; related-work positioning vs STING, SWE-Mutation, SWE-ABS, TRACE, and SpecBench is part of the definition of done. Competitive anchor worth printing: SWE-bench's official harness needs ~120 GB disk and 15–50 min to first eval; Skeptic publishes its measured footprint and cold-start table.
+Primary audience: **agent-evals / AI-infra reviewers** landing from a resume or post — ~60 seconds to judge credibility, ~10 minutes if they clone. Secondary: hands-on cloners evaluating the tool. The README's first screen is written for the eval-literate reader; related-work positioning vs STING, SWE-Mutation and SpecBench is part of the definition of done. SWE-ABS and TRACE were struck from it by the owner on 2026-08-17: neither carries an identifier anywhere in this repo, and citing a paper by name alone is worse than omitting it (DECISIONS row 222). Competitive anchor worth printing: SWE-bench's official harness needs ~120 GB disk and 15–50 min to first eval; Skeptic publishes its measured footprint and cold-start table.
 
 ## 4. Scope
 

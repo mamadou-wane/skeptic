@@ -36,7 +36,7 @@ Read the baselines before you read our row. A suite-green-only check catches 6
 of 29, and that gap is the argument for the whole project. But judge-alone, one
 Haiku call over the diff text with no repository access, catches 29 of 29 and
 clears the same pre-registered bar Skeptic does. It also names the correct hack
-category on 28 of 29 hacks against Skeptic's top-1 21/29. Skeptic is no more
+category on 28 of 29 hacks against Skeptic's in-harness top-1 21/29. Skeptic is no more
 sensitive than an LLM judge on this corpus and does not claim to be. It holds 0
 false positives against the judge's 1, 12 deterministic hard-rule FAILs against
 its 0, and a per-rule evidence trail you can audit. It wins on precision and
@@ -113,7 +113,7 @@ rules say so by name.
 | lane | needs | measured | cost |
 |---|---|---|---|
 | `demo` | nothing | 0.9 s | $0.00 |
-| deterministic `verify` | Docker | 35 s to 167 s per task; all 12 tasks self-validate (7 invariants plus both clean verdicts each) in 816 s | $0.00, zero API calls |
+| deterministic `verify` | Docker | 91 s to 167 s per task on a cold cache, 35 s to 50 s when the VERIFY stage replays; all 12 tasks self-validate (7 invariants plus both clean verdicts each) in 816 s, 472 s of it fresh and 344 s replayed | $0.00, zero API calls |
 | paid `verify --profile paid` | Docker + API key | median 88 s per verdict, 86 min for 53 | $0.0555 per verdict |
 | `build-arm` end to end | Docker + API key | mean 5.96 Builder iterations | $0.11 per resolve |
 
@@ -121,7 +121,8 @@ The default profile makes zero API calls. Two checks, `t2_advtests` and
 `t2_judge`, are the only paid ones, and the paid profile is opt-in per command.
 
 Full-run cost actuals: Eval A $2.9420 for 53 verdicts, Eval B $2.7171 for 24
-attempts. Total project spend to date $6.9486. Builder cost accounting needs
+attempts. Total M5 paid spend $6.9486, on top of about twelve cents of M4-era
+paid runs recorded in the ledger. Builder cost accounting needs
 both terms: across the arm, billed uncached tokens come to $0.5454 while
 cache-tier tokens come to $2.1717, so four fifths of the cost sits in the cache
 tier and quoting the uncached figure alone understates it by 5x.
@@ -183,8 +184,10 @@ Attribution numbers carry a labelling artifact. Six of the eight top-1 misses
 are check-precedence: `t1_scope` outranks the check that named the mechanism,
 so the first evidence row reads `scope`. The other two read H6 off
 `advtest_divergence`, which labels every row it emits H6 by an explicit earlier
-decision. All eight were detected. The gap between top-1 21/29 and anywhere
-28/29 is entirely this.
+decision. All eight were detected. The gap between in-harness top-1 21/29 and anywhere
+28/29 is entirely this. Both figures are in-harness, where a BUILD runs ahead
+of the checks; the `verify --diff` posture that removes `t1_scope` from
+contention is M6.
 
 Adversarial-test yield was thin against real repos before this corpus: three of
 four early real-task runs generated zero trusted candidates, which left H5 and
@@ -201,8 +204,10 @@ drives the real CLI path landed as wave B's first commit (`DECISIONS.md` row
 149). The original by-construction claim was wrong in an instructive way: it
 bounded the resolver, and the leak was in the caller.
 
-Two provenance defects are open and recorded rather than patched. The Eval A
-manifest names a stale image for one of twelve tasks, and every Eval B
+Two provenance defects are open and recorded rather than patched. Every
+committed manifest, four of them, names a stale image for one of twelve tasks
+and a mutable local tag for ten more, because `_image_id` prefers a build
+result written 2026-07-26 over its own deterministic fallback. And every Eval B
 `result.json` writes an absolute host path. Both are recorded in `DECISIONS.md`
 rows 218 and 220 with code fixes queued, because editing a generated artifact
 so that it reads correctly is exactly the defect class this harness exists to
@@ -241,6 +246,13 @@ above, which needs neither Docker nor a network and returns in under a second.
 | `DECISIONS.md` | Decision provenance, including recorded dissents |
 
 Python 3.12. `pip install -e ".[dev]" && pytest`.
+
+Skeptic is MIT licensed (`LICENSE`). The 65 diffs under `patches/` and the
+suites under `acceptance/` contain fragments of two upstream projects,
+redistributed for the sole purpose of seeding and verifying bugs against pinned
+commits: pallets/click at `5aa8ac43527f`, BSD-3-Clause, copyright 2014 Pallets;
+and Textualize/rich at `9d8f9a372cc5`, MIT, copyright 2020 Will McGugan. Both
+retain their own copyright and license, and nothing here relicenses them.
 
 Every pytest session with the Docker daemon up builds one small minirepo image,
 and the test fixture mints a fresh commit per session, so each run leaves another

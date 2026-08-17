@@ -1,0 +1,59 @@
+{
+  "arm_name": "base",
+  "attempts": 2,
+  "builder_prompt_hash": "b13a3e94a723",
+  "green_rule": "differential-1",
+  "model": "claude-opus-5",
+  "schema_version": 1,
+  "tasks": {
+    "click-0001": {
+      "image_id": "sha256:88c0efafbaa05a23d05bfc12f573793c07592c1ae1b175b91392b34491e245f1",
+      "seed": "36d5e15286d6098a6e9d7c3d71f8c3f847a53ba5b98624f4752e1bf37df3a4e1"
+    },
+    "click-0002": {
+      "image_id": "skeptic-repo-click:5aa8ac43527f-1ba53db3",
+      "seed": "a33fb802e843bbe2aecb6b6e2bdab46168088545e7b0597ccfa045f7e94dfc43"
+    },
+    "click-0003": {
+      "image_id": "skeptic-repo-click:5aa8ac43527f-1ba53db3",
+      "seed": "5588d83ad4f8b92a7e77892f30edcad8f98da9c06ebf527c08a4c9140b3fd2bb"
+    },
+    "click-0004": {
+      "image_id": "skeptic-repo-click:5aa8ac43527f-1ba53db3",
+      "seed": "fb4e69505cb0e45e5c3f7ceddc7f2c64ccfe691a4875c085a9f8df392dfe773e"
+    },
+    "click-0005": {
+      "image_id": "skeptic-repo-click:5aa8ac43527f-1ba53db3",
+      "seed": "605e9b6416793f92c986bf0c2dedbd04f53bb67b620c4f3cf96fac608f8f0a2d"
+    },
+    "click-0006": {
+      "image_id": "skeptic-repo-click:5aa8ac43527f-1ba53db3",
+      "seed": "6f2708777e741907b5d1a868da18e55f7e3d25c57e3ca8e76e11a51b5dff5949"
+    },
+    "rich-0001": {
+      "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+      "seed": "ab956d960e118a85e8ef912a5f1b99aa9e5702aaa5e7d27d17245c4166b60965"
+    },
+    "rich-0002": {
+      "image_id": "skeptic-repo-rich:9d8f9a372cc5-1ed41059",
+      "seed": "3b37be7d58cc2a54a99ffe4b3dc5db481d985fcea1547d3e90e5687c5c2dd032"
+    },
+    "rich-0003": {
+      "image_id": "skeptic-repo-rich:9d8f9a372cc5-1ed41059",
+      "seed": "cbe9ef75a4148b69fb3cd959c00d2214c71fb7f0299dafe83b517f4284509287"
+    },
+    "rich-0004": {
+      "image_id": "skeptic-repo-rich:9d8f9a372cc5-1ed41059",
+      "seed": "e2eaeb764d613c02a0de37c038941d83f80b91f9440b8d63aa514113d62415df"
+    },
+    "rich-0005": {
+      "image_id": "skeptic-repo-rich:9d8f9a372cc5-1ed41059",
+      "seed": "f76280cd2d2072425c243b234adb91e28be9b3d445b2f4b90d50b009d0305e40"
+    },
+    "rich-0006": {
+      "image_id": "skeptic-repo-rich:9d8f9a372cc5-1ed41059",
+      "seed": "f68c83b43f819f0b7bab81b6140219598287e737568c195d185541476064b06f"
+    }
+  },
+  "verifier_revision": "d3fecb2cbcdb"
+}

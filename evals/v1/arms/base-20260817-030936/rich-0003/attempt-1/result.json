@@ -1,0 +1,32 @@
+{
+  "stop_reason": "green",
+  "iterations": 6,
+  "in_tokens": 12,
+  "out_tokens": 1120,
+  "usd": 0.0281,
+  "green": true,
+  "usd_cache_gap": 0.0829,
+  "cache_read_tokens": 29896,
+  "cache_creation_tokens": 10869,
+  "green_rule": "differential-1",
+  "baseline_seed_red": [
+    "tests/test_segment.py::test_split_cells_mixed[segment0]",
+    "tests/test_segment.py::test_split_cells_mixed[segment1]",
+    "tests/test_segment.py::test_split_cells_mixed[segment2]",
+    "tests/test_segment.py::test_split_cells_mixed[segment3]",
+    "tests/test_segment.py::test_split_cells_mixed[segment4]",
+    "tests/test_segment.py::test_split_cells_mixed[segment5]",
+    "tests/test_segment.py::test_split_cells_mixed[segment6]",
+    "tests/test_segment.py::test_split_cells_mixed[segment7]"
+  ],
+  "baseline_environmental_red": [],
+  "baseline_total": 981,
+  "baseline_collection_errors": 0,
+  "candidate": "/Users/wane/projects/skeptic/workdir/rich-0003/build/candidate.diff",
+  "changed_files": [
+    "rich/segment.py"
+  ],
+  "out_of_scope": [],
+  "is_empty": false,
+  "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060"
+}

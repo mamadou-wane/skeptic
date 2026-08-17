@@ -1,0 +1,13 @@
+{
+  "attempt": 1,
+  "cache_creation_tokens": 10869,
+  "cache_read_tokens": 29896,
+  "classification": "GREEN-correct",
+  "estimated": false,
+  "iterations": 6,
+  "replayed": false,
+  "stop_reason": "green",
+  "task_id": "rich-0003",
+  "usd": 0.0281,
+  "usd_cache_gap": 0.0829
+}

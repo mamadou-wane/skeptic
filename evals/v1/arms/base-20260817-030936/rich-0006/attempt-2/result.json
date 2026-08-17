@@ -1,0 +1,30 @@
+{
+  "stop_reason": "green",
+  "iterations": 4,
+  "in_tokens": 8,
+  "out_tokens": 443,
+  "usd": 0.0111,
+  "green": true,
+  "usd_cache_gap": 0.0344,
+  "cache_read_tokens": 11725,
+  "cache_creation_tokens": 4573,
+  "green_rule": "differential-1",
+  "baseline_seed_red": [
+    "tests/test_bar.py::test_render",
+    "tests/test_progress.py::test_columns",
+    "tests/test_progress.py::test_expand_bar",
+    "tests/test_progress.py::test_progress_track",
+    "tests/test_progress.py::test_render",
+    "tests/test_progress.py::test_track"
+  ],
+  "baseline_environmental_red": [],
+  "baseline_total": 981,
+  "baseline_collection_errors": 0,
+  "candidate": "/Users/wane/projects/skeptic/workdir/rich-0006/build/attempt-2/candidate.diff",
+  "changed_files": [
+    "rich/progress_bar.py"
+  ],
+  "out_of_scope": [],
+  "is_empty": false,
+  "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060"
+}

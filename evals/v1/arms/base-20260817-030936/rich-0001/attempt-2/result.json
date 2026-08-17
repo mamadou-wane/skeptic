@@ -1,0 +1,28 @@
+{
+  "baseline_collection_errors": 0,
+  "baseline_environmental_red": [],
+  "baseline_seed_red": [
+    "tests/test_rule.py::test_rule",
+    "tests/test_rule.py::test_rule_center_aligned_title_not_enough_space_for_rule",
+    "tests/test_rule.py::test_rule_just_enough_width_available_for_title[center-\\u2500 \\u2026 \\u2500\\n]",
+    "tests/test_rule.py::test_rule_not_enough_space_for_title_text[center-\\u2500\\u2500\\u2500\\n]"
+  ],
+  "baseline_total": 981,
+  "cache_creation_tokens": 4820,
+  "cache_read_tokens": 18636,
+  "candidate": "/Users/wane/projects/skeptic/workdir/rich-0001/build/attempt-2/candidate.diff",
+  "changed_files": [
+    "rich/rule.py"
+  ],
+  "green": true,
+  "green_rule": "differential-1",
+  "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+  "in_tokens": 10,
+  "is_empty": false,
+  "iterations": 5,
+  "out_of_scope": [],
+  "out_tokens": 570,
+  "stop_reason": "green",
+  "usd": 0.0143,
+  "usd_cache_gap": 0.0394
+}

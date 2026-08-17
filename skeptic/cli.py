@@ -417,11 +417,15 @@ def build(
                 "baseline_environmental_red": environmental_red,
                 "baseline_total": len(baseline_suite.outcomes),
                 "baseline_collection_errors": baseline_suite.collection_errors,
-                "candidate": str(report.diff_path),
+                "candidate": _candidate_rel(report.diff_path, workdir),
                 "changed_files": report.changed_files,
                 "out_of_scope": report.out_of_scope,
                 "is_empty": report.is_empty,
                 "image_id": image.image_id,
+                # the tag is what makes the digest checkable later:
+                # `evalkit._image_id` trusts a recorded digest only
+                # while its tag still matches the spec's computed one
+                "image_tag": image.tag,
             }
 
         cache = StageCache(build_dir / "cache")
@@ -463,6 +467,27 @@ def build(
     except SkepticInfraError as exc:
         typer.echo(f"INFRA ERROR: {exc}")
         raise typer.Exit(EXIT_INFRA) from exc
+
+
+def _candidate_rel(diff_path: Path, workdir: Path) -> str:
+    """The candidate diff's path as stored in a BUILD result, relative to the
+    workdir root. Absolute here meant every committed `result.json` carried a
+    host path: a username leak in a public repo, and a field no cloner can
+    resolve (M5 final gate, DECISIONS row 222). A path outside the workdir has
+    no relative form and is stored as it is."""
+    try:
+        return str(diff_path.relative_to(workdir))
+    except ValueError:
+        return str(diff_path)
+
+
+def _candidate_abs(stored: str, workdir: Path) -> Path:
+    """Resolve what `_candidate_rel` stored. Absolute values are BUILD results
+    cached before this change, and `workdir/` still holds them: reading them
+    as relative would join them onto the workdir root and send every replay
+    into `SkepticInfraError`, so they are used as they are."""
+    path = Path(stored)
+    return path if path.is_absolute() else workdir / path
 
 
 def _acceptance_venv_dir(workdir: Path, task_id: str) -> Path:
@@ -541,7 +566,7 @@ def _run_attempt_acceptance(
         repo = clone_pinned(spec.repo.url, spec.repo.commit, task_workdir / "repo-cache")
         materialize(repo, spec.repo.commit, tree)
         apply_patch(tree, Path(spec.seed.bug_patch))
-        apply_candidate(tree, Path(result["candidate"]))
+        apply_candidate(tree, _candidate_abs(result["candidate"], workdir))
 
         def runner_factory(workspace: Path) -> VenvRunner:
             venv_runner = VenvRunner(workspace=workspace, venv_dir=venv_dir)

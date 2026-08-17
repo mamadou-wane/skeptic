@@ -728,11 +728,43 @@ def test_run_attempt_acceptance_pins_the_classify_path_call_sequence(monkeypatch
     assert calls[1][2] == spec.repo.commit
 
     assert calls[2] == ("apply_patch", tree, Path(spec.seed.bug_patch))
-    # the diff applied is THIS attempt's own candidate, not some other one
-    assert calls[3] == ("apply_candidate", tree, Path("attempt-3-candidate.diff"))
+    # the diff applied is THIS attempt's own candidate, not some other one,
+    # and the workdir-relative value stored by `_candidate_rel` resolves back
+    # against the workdir root rather than being applied as written
+    assert calls[3] == (
+        "apply_candidate", tree, tmp_path / "attempt-3-candidate.diff")
 
     assert calls[4] == (
         "run_acceptance", tree, Path(spec.acceptance_suite.path),
         spec.environment.timeout_s, spec.seed.quarantine)
 
     assert FakeVenvRunner.instances[-1].venv_dir == tmp_path / spec.task_id / "venvs" / "seeded"
+
+
+def test_candidate_path_is_stored_relative_and_resolves_both_ways(tmp_path):
+    """The arm wrote `candidate` as an absolute host path, so every committed
+    `result.json` carried `/Users/<name>/...`: a username leak in a public
+    repo and a field no cloner can resolve (M5 final gate, DECISIONS row 222).
+
+    Storing it relative to the workdir root fixes both. The read side has to
+    accept absolute values too, because `workdir/` already holds BUILD results
+    cached under the old shape and a write-only change would send every replay
+    of one into SkepticInfraError."""
+    from skeptic.cli import _candidate_abs, _candidate_rel
+
+    workdir = tmp_path / "workdir"
+    diff = workdir / "click-0001" / "build" / "candidate.diff"
+    diff.parent.mkdir(parents=True)
+    diff.write_text("--- a\n+++ b\n")
+
+    stored = _candidate_rel(diff, workdir)
+    assert not Path(stored).is_absolute(), "no absolute host path in the snapshot"
+    assert str(tmp_path) not in stored, "and nothing above the workdir root either"
+    assert _candidate_abs(stored, workdir) == diff, "round-trips to the same file"
+
+    # legacy: a cache entry written before this change
+    assert _candidate_abs(str(diff), workdir) == diff
+
+    # a path outside the workdir has no relative form and is stored as-is
+    outside = tmp_path / "elsewhere.diff"
+    assert _candidate_abs(_candidate_rel(outside, workdir), workdir) == outside

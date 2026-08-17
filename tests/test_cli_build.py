@@ -5,6 +5,10 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from skeptic.cli import _build_cache_key, app
+from skeptic.sandbox import DockerDiagnosis
+
+_DIAG_OK = DockerDiagnosis("ok", "")
+_DIAG_DOWN = DockerDiagnosis("unreachable", "test")
 from tests.helpers import make_task_spec
 
 runner = CliRunner()
@@ -20,8 +24,8 @@ def test_build_refuses_venv_runner(tmp_path):
 def test_build_requires_api_key_before_docker_work(tmp_path, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     called = []
-    monkeypatch.setattr("skeptic.cli._docker_available",
-                        lambda: called.append("docker") or True)
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis",
+                        lambda: called.append("docker") or _DIAG_OK)
     result = runner.invoke(app, ["build", "--task", "click-0001",
                                  "--workdir", str(tmp_path)])
     assert result.exit_code == 3
@@ -32,8 +36,8 @@ def test_build_requires_api_key_before_docker_work(tmp_path, monkeypatch):
 def test_build_refuses_unpriced_model_before_docker_work(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     called = []
-    monkeypatch.setattr("skeptic.cli._docker_available",
-                        lambda: called.append("docker") or True)
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis",
+                        lambda: called.append("docker") or _DIAG_OK)
     result = runner.invoke(app, ["build", "--task", "click-0001",
                                  "--model", "no-such-model",
                                  "--workdir", str(tmp_path)])
@@ -44,7 +48,7 @@ def test_build_refuses_unpriced_model_before_docker_work(tmp_path, monkeypatch):
 
 def test_build_requires_docker_daemon(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr("skeptic.cli._docker_available", lambda: False)
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis", lambda: _DIAG_DOWN)
     result = runner.invoke(app, ["build", "--task", "click-0001",
                                  "--workdir", str(tmp_path)])
     assert result.exit_code == 3
@@ -53,7 +57,7 @@ def test_build_requires_docker_daemon(tmp_path, monkeypatch):
 
 def test_build_prints_cost_and_aborts_without_confirmation(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr("skeptic.cli._docker_available", lambda: True)
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis", lambda: _DIAG_OK)
     result = runner.invoke(app, ["build", "--task", "click-0001",
                                  "--workdir", str(tmp_path)], input="n\n")
     # 2026-07-26 review finding 2: a decline must exit EXIT_INFRA (3), not
@@ -147,7 +151,7 @@ def test_attempt_two_gets_its_own_build_dir(monkeypatch, tmp_path):
     from skeptic import workspace
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr("skeptic.cli._docker_available", lambda: True)
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis", lambda: _DIAG_OK)
 
     def _stop(*args, **kwargs):
         raise RuntimeError("stop-after-mkdir")
@@ -162,7 +166,7 @@ def test_attempt_one_keeps_todays_build_dir_path(monkeypatch, tmp_path):
     from skeptic import workspace
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr("skeptic.cli._docker_available", lambda: True)
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis", lambda: _DIAG_OK)
 
     def _stop(*args, **kwargs):
         raise RuntimeError("stop-after-mkdir")
@@ -193,7 +197,7 @@ def test_build_writes_a_baseline_suite_trace_event_on_a_cache_hit(tmp_path, monk
     from skeptic.trace import config_hash, read_trace
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     monkeypatch.setattr(workspace, "clone_pinned",
                         lambda url, commit, cache: cache)
     monkeypatch.setattr(workspace, "materialize",
@@ -250,7 +254,7 @@ def test_build_rotates_its_own_trace_before_a_second_direct_run(tmp_path, monkey
     from skeptic.trace import config_hash, read_trace
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    monkeypatch.setattr(cli, "_docker_available", lambda: True)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     monkeypatch.setattr(workspace, "clone_pinned",
                         lambda url, commit, cache: cache)
     monkeypatch.setattr(workspace, "materialize",
@@ -295,3 +299,17 @@ def test_build_rotates_its_own_trace_before_a_second_direct_run(tmp_path, monkey
     assert [e["event"] for e in prev_events] == ["llm_call"], (
         "trace.prev.jsonl must hold exactly the first run's event, not a "
         "mix of the first and second")
+
+
+def test_build_docker_refusal_names_state_and_next(tmp_path, monkeypatch):
+    """The reroute's point (M6 spec, PR 2): the refusal names the actual
+    Docker state and a platform-aware next command, where the old copy said
+    "start Docker Desktop" unconditionally."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis",
+                        lambda: DockerDiagnosis("cli-absent", ""))
+    result = runner.invoke(app, ["build", "--task", "click-0001",
+                                 "--workdir", str(tmp_path), "--yes"])
+    assert result.exit_code == 3
+    assert "The docker CLI is not on PATH." in result.output
+    assert "Next: install" in result.output

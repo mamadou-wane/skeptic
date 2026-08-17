@@ -3,6 +3,9 @@ from typer.testing import CliRunner
 
 from skeptic import cli
 from skeptic.cli import app
+from skeptic.sandbox import DockerDiagnosis
+
+_DIAG_DOWN = DockerDiagnosis("unreachable", "test")
 from tests.helpers import write_fake_run
 
 runner = CliRunner()
@@ -149,7 +152,7 @@ def test_eval_drives_the_real_verify_and_the_guard_does_not_misfire(monkeypatch,
     `--variant`-only call reachable from `eval`, no matter what was passed.
     Docker unavailable is what should actually stop this run; the guard
     firing instead, with `--variant` correctly supplied, was the bug."""
-    monkeypatch.setattr(cli, "_docker_available", lambda: False)
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_DOWN)
     result = runner.invoke(app, ["eval", "--tasks", "click-0001",
                                  "--profile", "deterministic",
                                  "--workdir", str(tmp_path),

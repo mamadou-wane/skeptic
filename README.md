@@ -282,6 +282,7 @@ deterministic check layer 2026-07-27, the aggregator and CLI 2026-08-01, the
 paid checks 2026-08-02. M5's publishable core is the twelve-task corpus, Eval
 A, the weight freeze, and Eval B's base arm, all above.
 
-Next: M6 brings the blind holdout, the three pressure arms, `verify --diff`
-against arbitrary diffs, and `skeptic doctor`. M7 brings the timed fresh-clone
-footprint table.
+M6 opened 2026-08-17 with `skeptic doctor` (preflight for Docker, the API
+key, Python, disk and arch, with the exact next command per failure). Still
+ahead in M6: the blind holdout, the three pressure arms, and `verify --diff`
+against arbitrary diffs. M7 brings the timed fresh-clone footprint table.

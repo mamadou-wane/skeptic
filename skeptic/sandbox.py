@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import subprocess
@@ -44,13 +45,63 @@ def _run(cmd: list[str], cwd: Path, timeout_s: int, env: dict[str, str] | None) 
 
 
 def docker_available() -> bool:
+    return docker_diagnosis().state == "ok"
+
+
+@dataclass(frozen=True)
+class DockerDiagnosis:
+    state: Literal["ok", "cli-absent", "permission", "unreachable", "timeout",
+                   "unclassified"]
+    detail: str
+
+
+_CONNECT_MARKERS = ("cannot connect", "failed to connect", "error during connect",
+                    "dial unix", "dial tcp")
+_SOCKET_MARKERS = ("connect", "socket", "docker daemon", "dial")
+
+
+def _cap(line: str) -> str:
+    return line if len(line) <= 200 else "..." + line[-197:]
+
+
+def docker_diagnosis() -> DockerDiagnosis:
+    """docker_available() collapses every failure into one False and discards
+    stderr; this sibling keeps both so doctor and the build/verify refusals
+    can name the state. Classification is per line, WARNING lines skipped
+    (a cli-plugin warning also says "permission denied"), over stderr when it
+    has non-warning content and stdout otherwise (some docker builds report
+    the daemon error under stdout's "Server:" heading). On a line, permission
+    classifies before the connect family and only when tied to the daemon
+    socket, because a genuine socket-permission failure carries a connect
+    prefix.
+    """
     try:
         proc = subprocess.run(
             ["docker", "info"], capture_output=True, text=True, timeout=10, check=False
         )
-        return proc.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
+    except FileNotFoundError:
+        return DockerDiagnosis("cli-absent", "")
+    except subprocess.TimeoutExpired:
+        return DockerDiagnosis("timeout", "")
+    except OSError as exc:
+        state = "permission" if exc.errno == errno.EACCES else "unclassified"
+        return DockerDiagnosis(state, _cap(str(exc)))
+    if proc.returncode == 0:
+        return DockerDiagnosis("ok", "")
+
+    def lines_of(stream: str | None) -> list[str]:
+        return [ln.strip() for ln in (stream or "").splitlines()
+                if ln.strip() and not ln.strip().upper().startswith("WARNING")]
+
+    lines = lines_of(proc.stderr) or lines_of(proc.stdout)
+    for line in lines:
+        low = line.lower()
+        if "permission denied" in low and any(m in low for m in _SOCKET_MARKERS):
+            return DockerDiagnosis("permission", _cap(line))
+        if any(m in low for m in _CONNECT_MARKERS):
+            return DockerDiagnosis("unreachable", _cap(line))
+    detail = lines[-1] if lines else f"{proc.stderr}{proc.stdout}".strip()[:200]
+    return DockerDiagnosis("unclassified", _cap(detail))
 
 
 def overlay_install_cmd(venv_dir: str) -> str:

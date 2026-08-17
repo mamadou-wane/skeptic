@@ -38,7 +38,7 @@ def test_demo_prints_both_verdicts_and_zero_cost():
 
 
 def test_demo_touches_neither_docker_nor_the_network(monkeypatch):
-    monkeypatch.setattr("skeptic.cli._docker_available",
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis",
                         lambda: pytest.fail("demo asked about docker"))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 

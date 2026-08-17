@@ -939,10 +939,10 @@ def verify(
         DEFAULT_TEST_CMD, "--test-cmd", help="Suite command. Diff mode only."),
     src_dir: list[str] = typer.Option(  # noqa: B008
         [], "--src-dir", help="Source directory, repeatable. Overrides what "
-        "diff mode infers from the repo layout."),
+        "is inferred from the repo layout. Diff mode only."),
     test_dir: list[str] = typer.Option(  # noqa: B008
         [], "--test-dir", help="Test directory, repeatable. Overrides what "
-        "diff mode infers from testpaths or the repo layout."),
+        "is inferred from testpaths or the repo layout. Diff mode only."),
     profile: str = typer.Option("deterministic", "--profile"),
     tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
     workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
@@ -978,7 +978,13 @@ def verify(
     from skeptic.render import render_verdict
     from skeptic.spec import find_task
     from skeptic.trace import TraceWriter, config_hash
-    from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
+    from skeptic.workspace import (
+        apply_audited_diff,
+        apply_candidate,
+        apply_patch,
+        clone_pinned,
+        materialize,
+    )
 
     try:
         if diff is not None and task is not None:
@@ -1074,9 +1080,10 @@ def verify(
             diff_sha = hashlib.sha256(read_diff(diff)).hexdigest()
             repo_path = repo.resolve()
             # The diff lane has no task id to hang a directory off, so its
-            # runs live under `workdir/diff/` and share one clone cache and
-            # one baseline cache across runs. The run dir is named this
-            # early because inference materializes into it.
+            # runs live under `workdir/diff/` and share one baseline cache
+            # across runs. There is no clone cache here: `do_verify` reads
+            # the caller's clone directly. The run dir is named this early
+            # because inference materializes into it.
             task_root = workdir / "diff"
             run_slug = f"{tag_slug(repo_path.name)}-{base_sha[:12]}-{diff_sha[:12]}"
             verify_dir = task_root / run_slug
@@ -1254,8 +1261,17 @@ def verify(
                                       identity=identity if diff is not None else None)
 
         def do_verify() -> dict:
-            repo_dir = clone_pinned(spec.repo.url, spec.repo.commit,
-                                    task_root / "repo-cache")
+            # The diff lane reads the caller's own clone directly. Its base
+            # commit may sit on no branch at all (a PR head, a detached
+            # HEAD), and `clone_pinned`'s recovery fetch only updates
+            # refs/heads/*, so a second audit at such a commit would be
+            # refused by a message about fixing repo.commit in a task spec
+            # that does not exist. Every read of this path is `git archive
+            # <commit>` (`materialize`), which ignores the working tree and
+            # writes nothing, and `assert_no_git` still guards the export.
+            repo_dir = (Path(spec.repo.url) if diff is not None
+                        else clone_pinned(spec.repo.url, spec.repo.commit,
+                                          task_root / "repo-cache"))
             seeded = verify_dir / "seeded"
             variant_tree = verify_dir / "variant-tree"
             for stale in (seeded, variant_tree):
@@ -1270,6 +1286,11 @@ def verify(
             snapshot(seeded, variant_tree)
             if variant_spec is not None:
                 apply_patch(variant_tree, Path(variant_spec.patch))
+            elif diff is not None:
+                # The audited patch is the caller's own, so a failure here is
+                # a patch taken against another commit, never a harness bug:
+                # `apply_candidate`'s advice is wrong for this lane.
+                apply_audited_diff(variant_tree, diff, spec.repo.url, spec.repo.commit)
             else:
                 apply_candidate(variant_tree, candidate_diff)
 

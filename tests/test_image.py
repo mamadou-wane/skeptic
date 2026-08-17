@@ -115,16 +115,22 @@ def test_constraints_pin_coverage(tmp_path, minirepo_spec_and_repo):
     assert "coverage==" in ref.constraints_path.read_text()
 
 
-def test_tag_slug_lowercases_and_replaces_tag_hostile_characters():
+def test_tag_slug_emits_a_legal_tag_name_component():
     """`verify --diff` builds an image for whatever directory the caller
-    points at, and a docker tag's name component is [a-z0-9._-] only, so an
-    uppercase or space-carrying basename would make `docker build -t` fail
-    on a tag Skeptic built for itself."""
+    points at. The registry grammar is `[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*`,
+    so substitution alone is not enough: "My Repo!" would come out
+    "my-repo-", which `docker build -t` rejects on a tag Skeptic built for
+    itself. Separator runs collapse, leading and trailing separators go, and
+    a name with no alphanumeric character at all falls back to "repo"."""
     from skeptic.image import tag_slug
 
     assert tag_slug("MyRepo") == "myrepo"
-    assert tag_slug("my repo!") == "my-repo-"
+    assert tag_slug("my repo!") == "my-repo"
     assert tag_slug("keep.me_-1") == "keep.me_-1"
+    assert tag_slug(".hidden") == "hidden"
+    assert tag_slug("trailing-") == "trailing"
+    assert tag_slug("a  b") == "a-b"
+    assert tag_slug("!!!") == "repo"
 
 
 def test_corpus_image_tags_are_unchanged_by_slug_sanitization():

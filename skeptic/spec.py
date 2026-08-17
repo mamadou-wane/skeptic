@@ -213,6 +213,27 @@ class TaskSpec(_Model):
     acceptance_suite: AcceptanceSuiteSpec | None = None
 
     @model_validator(mode="after")
+    def _seed_required_when_variants_exist(self) -> TaskSpec:
+        # `SeedSpec.bug_patch` is optional so the spec `verify --diff`
+        # synthesizes can omit it, and that spec declares no variants. A
+        # task that does declare variants is a corpus task: every variant
+        # patch applies on top of the seeded tree, `seed --check`
+        # materializes that tree from this patch, and BUILD reads it too. A
+        # yaml that omits it would otherwise die with a bare TypeError deep
+        # in a run instead of failing at load.
+        if self.evaluation.variants and self.seed.bug_patch is None:
+            raise ValueError(
+                "seed.bug_patch is required for a task that declares "
+                "evaluation.variants: the variant patches apply on top of "
+                "the seeded tree and `seed --check` builds that tree from "
+                "this patch. Only a spec with no variants (the one "
+                "`verify --diff` synthesizes, whose baseline is the pristine "
+                "tree at the audited commit) may omit it. Next: add "
+                "seed.bug_patch to the task file."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _acceptance_names_resolve(self) -> TaskSpec:
         if self.acceptance_suite is None:
             return self

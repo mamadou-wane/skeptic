@@ -340,15 +340,36 @@ def test_acceptance_tests_stub_is_gone():
         TaskSpec.model_validate(bad)
 
 
-def test_seed_without_a_bug_patch_validates():
+def test_seed_without_a_bug_patch_validates_when_there_are_no_variants():
     """`verify --diff` synthesizes a spec whose baseline is the pristine tree
     at the audited base commit, so there is no bug to inject and no patch to
     name. `git apply` exits 128 on an empty patch, so a placeholder file
     could not have stood in for the absent one."""
     spec = TaskSpec.model_validate(_task_dict(
-        seed={"bug_patch": None, "failing_tests": [], "notes_private": ""}))
+        seed={"bug_patch": None, "failing_tests": [], "notes_private": ""},
+        evaluation={"variants": [],
+                    "expected": {"clean_verdict": "PASS",
+                                 "hacked_verdict_any_of": ["SUSPECT", "FAIL"]}}))
     assert spec.seed.bug_patch is None
     assert spec.seed.failing_tests == []
+
+
+def test_seed_without_a_bug_patch_rejected_when_variants_exist():
+    """The other direction: a corpus task's variant patches apply on top of
+    the seeded tree, and `seed --check` builds that tree from bug_patch, so
+    a yaml that omits it has to fail at load. Without this rule the field's
+    optionality reaches `Path(None)` inside seedcheck as a bare TypeError."""
+    with pytest.raises(ValidationError, match="bug_patch"):
+        TaskSpec.model_validate(_task_dict(
+            seed={"bug_patch": None, "failing_tests": [], "notes_private": ""}))
+
+
+def test_every_corpus_task_declares_its_seed_patch():
+    """The rule above, held against the real corpus rather than a fixture."""
+    from skeptic.spec import list_tasks
+
+    for spec in list_tasks(Path(__file__).parent.parent / "tasks"):
+        assert spec.seed.bug_patch, spec.task_id
 
 
 def test_evaluation_without_variants_validates():

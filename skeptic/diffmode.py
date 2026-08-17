@@ -39,11 +39,15 @@ _DEFAULT_BACKEND = "setuptools.build_meta"
 # hatchling and wheel (skeptic/image.py:_BUILD_BACKENDS), and the overlay
 # install inside the sandbox runs `--no-index` under `--network none`, so a
 # repo whose pyproject names any other backend cannot have its wheel built
-# where the audit runs. Those five packages provide exactly these four
-# backend strings; a missing [build-system] table means setuptools by PEP
-# 517's own default and is supported for the same reason.
+# where the audit runs. Those five packages provide exactly these backend
+# strings. `setuptools.build_meta:__legacy__` is setuptools' own shim for a
+# project with no [build-system] table of its own and ships in the same
+# package, so refusing it would be a refusal of a backend already in the
+# image. A missing [build-system] table means setuptools too, by PEP 517's
+# own default, and is supported for the same reason.
 SUPPORTED_BACKENDS = frozenset({
     "setuptools.build_meta",
+    "setuptools.build_meta:__legacy__",
     "flit_core.buildapi",
     "poetry.core.masonry.api",
     "hatchling.build",

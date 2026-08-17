@@ -334,7 +334,8 @@ def test_no_pyproject_at_all_is_setuptools(tmp_path):
 
 
 @pytest.mark.parametrize("backend", ["flit_core.buildapi", "poetry.core.masonry.api",
-                                     "hatchling.build"])
+                                     "hatchling.build",
+                                     "setuptools.build_meta:__legacy__"])
 def test_the_other_baked_backends_pass(tmp_path, backend):
     (tmp_path / "pyproject.toml").write_text(
         f'[build-system]\nbuild-backend = "{backend}"\n')
@@ -410,16 +411,74 @@ def test_backend_gate_refuses_before_docker(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_a_patch_that_does_not_apply_reads_as_a_diff_lane_refusal(tmp_path, monkeypatch):
+    """The mode's most likely first-run error: a patch taken against another
+    commit. It has to name the repo, the base and the regeneration command,
+    and it must never repeat `apply_candidate`'s advice about the tree BUILD
+    ran on, since the diff lane has no Builder. Docker is reported healthy
+    and still never used: `git apply` fails on the host, before the first
+    container."""
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: DockerDiagnosis("ok", ""))
+    repo = make_clone(tmp_path)
+    patch = author_diff(repo, {"minirepo.py": branchy_clamp(repo)}, tmp_path / "p.diff")
+    # Move the base out from under the patch: the line it edits is gone.
+    src = repo / "minirepo.py"
+    src.write_text(src.read_text().replace(_FLAT_CLAMP, "    return value"))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "clamp rewritten upstream")
+
+    result = runner.invoke(app, ["verify", "--diff", str(patch), "--repo", str(repo),
+                                 "--workdir", str(tmp_path / "workdir")])
+
+    assert result.exit_code == 3, result.output
+    assert "does not apply" in result.output
+    assert str(repo) in result.output
+    assert "git diff" in result.output and "--base" in result.output
+    assert "BUILD" not in result.output
+
+
+def test_diff_mode_never_clones_the_caller_repo(tmp_path, monkeypatch):
+    """A base commit that no branch reaches (a PR head, a detached HEAD) is
+    invisible to `clone_pinned`'s recovery fetch, which only updates
+    refs/heads/*, and its refusal talks about fixing repo.commit in a task
+    spec the diff lane does not have. So the diff lane reads the caller's
+    clone directly: `clone_pinned` never runs and no repo-cache is written.
+    The run is stopped one step later by the same non-applying patch as the
+    test above, which is the last host-side step before docker."""
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: DockerDiagnosis("ok", ""))
+
+    def boom(*args, **kwargs):
+        raise AssertionError("clone_pinned ran in diff mode")
+
+    monkeypatch.setattr("skeptic.workspace.clone_pinned", boom)
+    repo = make_clone(tmp_path)
+    patch = author_diff(repo, {"minirepo.py": branchy_clamp(repo)}, tmp_path / "p.diff")
+    src = repo / "minirepo.py"
+    src.write_text(src.read_text().replace(_FLAT_CLAMP, "    return value"))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "clamp rewritten upstream")
+    workdir = (tmp_path / "workdir").resolve()
+
+    result = runner.invoke(app, ["verify", "--diff", str(patch), "--repo", str(repo),
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 3, result.output
+    assert "does not apply" in result.output
+    assert not (workdir / "diff" / "repo-cache").exists()
+
+
 # ------------------------------------------------------------------ docker
 
 @pytest.mark.docker
 @pytest.mark.slow
 def test_verify_diff_audits_a_plain_clone_end_to_end(tmp_path):
     """The mode's whole claim: a local clone, a patch file, no task spec, a
-    real verdict. The assertion is that the process exited with the rendered
-    verdict's own code and never fell out to INFRA, not that the verdict is
-    PASS: the deterministic checks judge this diff on its merits and the run
-    is the measurement, not the fixture."""
+    clean verdict. The diff rewrites `clamp` into branches the fixture's own
+    `test_clamp_bounds` covers three ways, so every deterministic check has
+    something to measure and none of them has anything to report. PASS with
+    a zero score and no evidence is the only correct answer here, and it is
+    what separates this from a mode that always FAILs. Its twin below is the
+    same entry point returning FAIL on a diff that earns it."""
     repo = make_clone(tmp_path)
     patch = author_diff(repo, {"minirepo.py": branchy_clamp(repo)}, tmp_path / "p.diff")
     workdir = (tmp_path / "workdir").resolve()
@@ -427,17 +486,17 @@ def test_verify_diff_audits_a_plain_clone_end_to_end(tmp_path):
     result = runner.invoke(app, ["verify", "--diff", str(patch), "--repo", str(repo),
                                  "--workdir", str(workdir)])
 
-    assert result.exit_code != 3, result.output
-    verdicts = {"PASS": 0, "SUSPECT": 1, "FAIL": 2}
-    rendered = [name for name in verdicts if f"VERDICT {name}" in result.output]
-    assert len(rendered) == 1, result.output
-    assert result.exit_code == verdicts[rendered[0]], result.output
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output
 
     run_dirs = list((workdir / "diff").glob("minirepo-*"))
     assert len(run_dirs) == 1, run_dirs
     saved = json.loads(
         (run_dirs[0] / "collect" / "artifacts" / "verdict.json").read_text())
-    assert saved["verdict"] == rendered[0]
+    assert saved["verdict"] == "PASS"
+    assert saved["suspect_score"] == 0.0
+    assert saved["evidence"] == []
+    assert saved["checks_infra"] == []
     assert saved["task_id"] == run_dirs[0].name
     assert saved["variant"].startswith("diff:")
 

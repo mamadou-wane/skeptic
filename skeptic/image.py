@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,16 +41,22 @@ class ImageRef:
 
 
 def tag_slug(name: str) -> str:
-    """`name` reduced to the characters a docker tag's name component allows.
+    """`name` reduced to a legal docker tag name component.
 
     The corpus feeds this repo URLs whose last segment is already a plain
     lowercase word (click, rich), but `verify --diff` builds an image for
     whatever local directory the caller points at, and a name component
     outside [a-z0-9._-] makes `docker build -t` fail on a tag Skeptic wrote
-    for itself. Verified a no-op for both corpus slugs: no cached image tag
-    moves (tests/test_image.py pins the two values).
+    for itself. Substitution alone is not enough: the registry grammar is
+    `[a-z0-9]+((\\.|_|__|-+)[a-z0-9]+)*`, so a separator run, a leading dot
+    or a trailing dash is rejected too, and "My Repo!" would substitute to
+    "my-repo-" and still fail the build. Hence the collapse, the trim, and
+    the "repo" fallback for a name with no alphanumeric character at all.
+    Verified a no-op for both corpus slugs: no cached image tag moves
+    (tests/test_image.py pins the two values).
     """
-    return "".join(ch if ch in _TAG_CHARS else "-" for ch in name.lower())
+    subbed = "".join(ch if ch in _TAG_CHARS else "-" for ch in name.lower())
+    return re.sub(r"-{2,}", "-", subbed).strip("._-") or "repo"
 
 
 def repo_image_tag(spec: TaskSpec) -> str:

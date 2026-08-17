@@ -799,10 +799,11 @@ def test_apply_pressure_overrides_is_a_noop_with_nothing_overridden():
     ("token_budget", "token_budget", (200_000, 250_000)),
     ("cost_ceiling", "cost_ceiling_usd", (5.0, 8.0)),
 ])
-def test_pressure_override_lands_in_constraints_as_the_build_path_sees_it(knob, attr, values):
-    # unit-level per the brief: no docker, no API. run_build (builder.py:271
-    # /290/297) reads exactly spec.constraints, so asserting on the
-    # model_copy'd spec's own field is what the Builder loop would see.
+def test_pressure_override_lands_in_constraints_at_the_helper_level(knob, attr, values):
+    # Helper-level, not the real build path: this pins _apply_pressure_
+    # overrides' own return value. test_cli_build.py's
+    # test_build_looks_up_the_overridden_cache_key_not_the_base_one is the
+    # build-path-level counterpart, through a real StageCache lookup.
     spec = make_task_spec()
     overridden = _apply_pressure_overrides(spec, **{**_NO_OVERRIDES, knob: values[0]})
     assert getattr(overridden.constraints, attr) == values[0]
@@ -919,3 +920,47 @@ def test_build_rejects_an_unknown_statement_mode(tmp_path, monkeypatch):
     ])
     assert result.exit_code == 3
     assert "--statement-mode" in result.output
+
+
+def test_apply_pressure_overrides_raises_on_an_unknown_statement_mode():
+    # Both CLI guards reject an unknown mode before calling in, so this
+    # path is a caller bug, not a user error; the helper must not silently
+    # treat an unrecognized mode as full.
+    spec = make_task_spec()
+    with pytest.raises(ValueError, match="statement_mode"):
+        _apply_pressure_overrides(spec, **{**_NO_OVERRIDES, "statement_mode": "bogus"})
+
+
+# --- pressure-arm knob bounds (fix round 1, finding 2) -----------------------
+
+
+@pytest.mark.parametrize("flag,bad", [
+    ("--max-iterations", "0"),
+    ("--max-iterations", "-1"),
+    ("--token-budget", "0"),
+    ("--token-budget", "-1"),
+    ("--cost-ceiling", "0"),
+    ("--cost-ceiling", "-1"),
+])
+def test_build_arm_rejects_an_out_of_range_pressure_override(tmp_path, flag, bad):
+    result = runner.invoke(app, [
+        "build-arm", "--name", "base", "--tasks", "click-0001", "--attempts", "1",
+        "--workdir", str(tmp_path), flag, bad,
+    ])
+    assert result.exit_code == 3, result.output
+    assert flag in result.output
+    assert "Next:" in result.output
+
+
+def test_build_arm_accepts_a_positive_cost_ceiling_border_case(tmp_path, monkeypatch):
+    # cost_ceiling's bound is > 0 (unlike max_iterations/token_budget's
+    # >= 1): 0.01 must NOT be rejected, only <= 0 is out of range. Cleared
+    # past the bounds guard, the run keeps going to the next preflight
+    # check (no API key here), which is proof the bounds guard let it by.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = runner.invoke(app, [
+        "build-arm", "--name", "base", "--tasks", "click-0001", "--attempts", "1",
+        "--cost-ceiling", "0.01", "--workdir", str(tmp_path),
+    ])
+    assert "--cost-ceiling must be" not in result.output
+    assert "ANTHROPIC_API_KEY" in result.output

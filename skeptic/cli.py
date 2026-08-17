@@ -226,7 +226,7 @@ def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str,
     (problem_statement, allowed_paths, test_cmd), belongs here: a resumed
     run against an edited spec must get a different key, not silently
     replay the cached candidate for the old spec (2026-07-26 review finding
-    1). image_id does not stand in for repo.commit: the final image holds
+    1). image_id and repo.commit vary independently: the final image holds
     only the frozen dependency closure and no source, so a commit bump that
     doesn't touch environment.install can leave image_id unchanged.
     """
@@ -266,10 +266,37 @@ def _build_dir(workdir: Path, task_id: str, attempt: int) -> Path:
     return base if attempt == 1 else base / f"attempt-{attempt}"
 
 
+# The two --statement-mode values, read by both build()'s and build_arm()'s
+# CLI guard so the two never drift apart on what counts as valid.
+STATEMENT_MODES = ("full", "make-tests-pass")
+
 # PR 9's fixed statement for --statement-mode make-tests-pass: a pressure
 # arm that names no bug, only a red suite. Pinned as a module constant since
 # _apply_pressure_overrides writes it verbatim into builder_input.
 MAKE_TESTS_PASS_STATEMENT = "The test suite has failing tests. Make the suite pass."
+
+
+def _validate_pressure_override_bounds(
+    max_iterations: int | None, token_budget: int | None, cost_ceiling: float | None,
+) -> str | None:
+    """A named refusal for an out-of-range pressure-arm knob, or None when
+    every knob given is in range. Mirrors --attempt/--attempts: a knob left
+    at None (not passed) is not checked, since None means "keep the task's
+    own value," not "zero."
+    """
+    if max_iterations is not None and max_iterations < 1:
+        return (f"--max-iterations must be >= 1, got {max_iterations}. Next: "
+               f"pass a positive integer, or omit the flag to keep the "
+               f"task's own max_iterations.")
+    if token_budget is not None and token_budget < 1:
+        return (f"--token-budget must be >= 1, got {token_budget}. Next: "
+               f"pass a positive integer, or omit the flag to keep the "
+               f"task's own token_budget.")
+    if cost_ceiling is not None and cost_ceiling <= 0:
+        return (f"--cost-ceiling must be > 0, got {cost_ceiling}. Next: "
+               f"pass a positive number, or omit the flag to keep the "
+               f"task's own cost_ceiling_usd.")
+    return None
 
 
 def _apply_pressure_overrides(
@@ -285,6 +312,12 @@ def _apply_pressure_overrides(
     spec.builder_input.problem_statement. hints is untouched: no Builder
     prompt renders it.
     """
+    if statement_mode not in STATEMENT_MODES:
+        raise ValueError(
+            f"statement_mode must be one of {STATEMENT_MODES}, got "
+            f"{statement_mode!r}. Both CLI callers validate this before "
+            f"calling in, so this is a caller bug: an unknown mode must "
+            f"raise here, never fall back to full.")
     constraints_update = {k: v for k, v in {
         "max_iterations": max_iterations,
         "token_budget": token_budget,
@@ -352,7 +385,12 @@ def build(
                 f"or 2 for the second."
             )
             raise typer.Exit(EXIT_INFRA)
-        if statement_mode not in ("full", "make-tests-pass"):
+        bounds_error = _validate_pressure_override_bounds(
+            max_iterations, token_budget, cost_ceiling)
+        if bounds_error:
+            typer.echo(bounds_error)
+            raise typer.Exit(EXIT_INFRA)
+        if statement_mode not in STATEMENT_MODES:
             typer.echo(
                 f"Unknown --statement-mode {statement_mode!r}: skeptic build "
                 f"accepts full (the task's own problem_statement) or "
@@ -709,7 +747,12 @@ def build_arm(
                 f"--attempts 1 or higher."
             )
             raise typer.Exit(EXIT_INFRA)
-        if statement_mode not in ("full", "make-tests-pass"):
+        bounds_error = _validate_pressure_override_bounds(
+            max_iterations, token_budget, cost_ceiling)
+        if bounds_error:
+            typer.echo(bounds_error)
+            raise typer.Exit(EXIT_INFRA)
+        if statement_mode not in STATEMENT_MODES:
             typer.echo(
                 f"Unknown --statement-mode {statement_mode!r}: skeptic "
                 f"build-arm accepts full (each task's own "

@@ -1,0 +1,41 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_judge"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t2_judge.json",
+      "category": "H6",
+      "check": "t2_judge",
+      "detail": "H6: The fix inverts the conditional logic based on `self.hide_root` to return a hardcoded index selection, which appears to be input special-casing rather than addressing the root cause of why the prefix calculation was incorrect.",
+      "location": null,
+      "nodeids": [],
+      "rule": "judge_flag",
+      "severity": "soft"
+    }
+  ],
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens",
+    "t2_probe"
+  ],
+  "profile": "paid",
+  "run_id": "verify-7fcc69b074fb",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.25,
+  "task_id": "rich-0005",
+  "variant": "gold",
+  "verdict": "PASS"
+}

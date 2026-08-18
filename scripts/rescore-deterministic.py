@@ -10,17 +10,21 @@ dropping every evidence entry the two paid checks contributed, and
 rescoring what is left under the shipped `WEIGHTS` and `SUSPECT_THRESHOLD`
 (`skeptic.checks.aggregate`, both read by import).
 
-This is an approximation of the diff lane, not a replay of it. `verify
---diff` synthesizes an empty `allowed_paths`, which takes `t1_scope` out of
+This approximates the diff lane rather than replaying it. `verify --diff`
+synthesizes an empty `allowed_paths`, which takes `t1_scope` out of
 contention entirely (`skeptic.diffmode.synthesize_spec`'s own docstring),
 while the rows here still carry whatever `t1_scope` found in-harness. The
 README's CI patch audit section states that gap as a posture caveat next
 to the numbers this script prints.
 
 The two paid checks and the rule ids they emit are read off `t2_advtests`
-and `t2_judge` themselves and checked against `aggregate.PAID_ONLY_CHECKS`,
-so a third paid check or a renamed rule breaks this script loudly instead
-of silently under-dropping evidence.
+and `t2_judge` themselves and checked against
+`aggregate.EXCUSED_BY_PROFILE["deterministic"]`, the actual set `verify
+--diff` excuses at the deterministic profile (`aggregate.run_verify_layer`
+reads this same mapping to decide what to skip), rather than the
+`PAID_ONLY_CHECKS` constant that set happens to equal today. A third
+excused check or a renamed rule breaks this script loudly instead of
+silently under-dropping evidence.
 """
 from __future__ import annotations
 
@@ -29,7 +33,8 @@ from pathlib import Path
 
 from skeptic import evalkit
 from skeptic.checks import t2_advtests, t2_judge
-from skeptic.checks.aggregate import PAID_ONLY_CHECKS, SUSPECT_THRESHOLD, WEIGHTS
+from skeptic.checks.aggregate import EXCUSED_BY_PROFILE, SUSPECT_THRESHOLD, WEIGHTS
+from skeptic.errors import SkepticInfraError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUN_DIR = REPO_ROOT / "evals" / "v1" / "runs" / "eval-20260816-225027"
@@ -42,14 +47,20 @@ _PAID_CHECK_RULES: dict[str, tuple[str, ...]] = {
     t2_advtests.CHECK: (t2_advtests.RULE_DIVERGENCE, t2_advtests.RULE_ZERO),
     t2_judge.CHECK: (t2_judge.RULE,),
 }
-assert set(_PAID_CHECK_RULES) == PAID_ONLY_CHECKS, (
-    f"_PAID_CHECK_RULES covers {sorted(_PAID_CHECK_RULES)} but "
-    f"aggregate.PAID_ONLY_CHECKS is {sorted(PAID_ONLY_CHECKS)}: a paid check "
-    f"was added, removed, or renamed and this script's evidence drop no "
-    f"longer matches it."
-)
+_DETERMINISTIC_EXCUSED = EXCUSED_BY_PROFILE["deterministic"]
+# A plain `raise`, not `assert`: this has to hold under `python -O`, which
+# strips asserts, and a silently-passing mismatch here means the table below
+# quietly keeps evidence `verify --diff` never produces.
+if set(_PAID_CHECK_RULES) != _DETERMINISTIC_EXCUSED:
+    raise SkepticInfraError(
+        f"_PAID_CHECK_RULES covers {sorted(_PAID_CHECK_RULES)} but "
+        f"aggregate.EXCUSED_BY_PROFILE['deterministic'] is "
+        f"{sorted(_DETERMINISTIC_EXCUSED)}: a check the deterministic profile "
+        f"excuses was added, removed, or renamed, and this script's evidence "
+        f"drop no longer matches what `verify --diff` actually skips."
+    )
 PAID_RULES = frozenset(
-    rule for check in PAID_ONLY_CHECKS for rule in _PAID_CHECK_RULES[check]
+    rule for check in _DETERMINISTIC_EXCUSED for rule in _PAID_CHECK_RULES[check]
 )
 
 

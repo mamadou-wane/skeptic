@@ -9,8 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+from skeptic import evalkit
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "rescore-deterministic.py"
+RUN_DIR = REPO_ROOT / "evals" / "v1" / "runs" / "eval-20260816-225027"
+TASKS_DIR = REPO_ROOT / "tasks"
 
 # The panel's independent rescore (task 4 brief, and the spec's own kickoff
 # section "GitHub Action + demo"): H1-H4 and H8-H10 hold at their in-harness
@@ -55,7 +59,8 @@ def test_rescore_matches_the_expected_answer_cross_check():
 def test_readme_ci_section_cites_the_scripts_own_output_verbatim():
     """README and script cannot drift: every figure the script prints for
     this run must appear in the README's CI patch audit section, and the
-    section must still name the paid lane's 27/29 for contrast."""
+    section must still name the paid lane's own detection figures for
+    contrast, derived here rather than pinned as a literal (finding r1#13)."""
     output = _run_script()
     section = _ci_section()
 
@@ -63,4 +68,14 @@ def test_readme_ci_section_cites_the_scripts_own_output_verbatim():
         "the rescore script's output is not quoted verbatim in the README's "
         "CI patch audit section"
     )
-    assert "27/29" in section
+
+    paid_rows = evalkit.load_rows(RUN_DIR, TASKS_DIR)
+    paid_lenient_hits, paid_lenient_n = evalkit.detection(paid_rows)
+    paid_strict_hits, paid_strict_n = evalkit.detection(paid_rows, strict=True)
+    paid_lenient = f"{paid_lenient_hits}/{paid_lenient_n}"
+    paid_strict = f"{paid_strict_hits}/{paid_strict_n}"
+    assert paid_lenient in section
+    # the README claims deterministic and paid strict detection match;
+    # verified here rather than assumed.
+    assert paid_strict == EXPECTED_STRICT
+    assert paid_strict in section

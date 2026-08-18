@@ -139,24 +139,32 @@ its own), diff the PR head against the merge base, run the deterministic
 verify, and write the banner into the step summary.
 
 ```yaml
-- uses: actions/checkout@v4
-  with: { fetch-depth: 0 }  # checkout's shallow default leaves no merge base to find
-- uses: mamadou-wane/skeptic@<ref>  # pin to a release tag or commit sha
-  with:
-    fail-on: never  # optional; this is the default
+on:
+  pull_request: {}
+jobs:
+  skeptic:
+    runs-on: ubuntu-latest  # ships a Docker daemon; verify --diff runs everything in containers
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }  # checkout's shallow default leaves no merge base to find
+      - uses: mamadou-wane/skeptic@<ref>  # pin to a release tag or commit sha
+        with:
+          fail-on: never  # optional; this is the default
 ```
 
 Report-only by default. `t1_coverage`'s `coverage_zero` rule is a hard FAIL
-on any changed statement that runs under no test at all
-(`checks/t1_coverage.py`), so an ordinary PR that adds uncovered
-source would exit 2 on its first run, and the diff-posture false-positive
-rate on real clean PRs is unmeasured. Gating is opt-in through `fail-on`:
+when no changed statement is covered by any test at all: patch coverage
+lands at exactly 0 percent (`checks/t1_coverage.py`). An ordinary PR whose
+diff has no test touching any of it exits 2 on its first run this way, and
+the diff-posture false-positive rate on real clean PRs is unmeasured.
+Gating is opt-in through `fail-on`:
 `suspect` fails the check on exit code 1 or higher, `fail` only on 2 or 3,
 and `never`, the default, always exits 0 regardless of the verdict. Exit
 codes are unchanged from the corpus lane: 0 PASS, 1 SUSPECT, 2 FAIL, 3
 INFRA_ERROR (`cli.py`'s `EXIT_*` constants).
 
-The deterministic lane's own numbers, next to the paid lane's 27/29 above.
+The deterministic lane's own numbers: 16/29 lenient against the paid
+lane's 27/29 (Eval A, above); strict is 12/29 in both.
 `scripts/rescore-deterministic.py` loads the published Eval A run
 (`evals/v1/runs/eval-20260816-225027`) through `evalkit.load_rows`, drops
 every evidence entry `t2_advtests` and `t2_judge` contributed (the two
@@ -184,13 +192,17 @@ evidence and changes nothing else. `t1_scope` is out of contention in a real
 `--diff` run: the synthesized spec carries an empty `allowed_paths`, which
 `t1_scope` reads as NOT_APPLICABLE (`diffmode.synthesize_spec`'s own
 docstring), so its hard `scope_violation` row never fires there, while the
-table above still credits it. Every category but H2 has a second,
-independent hard rule behind it (`collect_shrinkage`, `config_effective`,
-`outcome_flip`, or `coverage_zero`) and holds without `t1_scope`. H2's two
-rows do not: their only other evidence was `t2_judge`'s soft `judge_flag`,
-already dropped as paid. In a real diff-lane run H2 is soft-only at best, on
-whatever `t1_ast` weakening evidence `t1_scope` stepping aside unsuppresses,
-and that path is unmeasured.
+table above still credits it. Every other FAIL category has a second hard
+rule behind it: `collect_shrinkage`, `config_effective`, `outcome_flip`,
+`golden_modified`, or `coverage_zero`; the SUSPECT and PASS categories
+never carried `scope_violation` at all. Dropping `scope_violation`
+entirely, on top of the paid evidence already dropped above, moves only
+H2's two rows: lenient detection falls from 16/29 to 14/29 at worst. H2's
+two rows carry no other hard evidence: their only other evidence entry was
+`t2_judge`'s soft `judge_flag`, already dropped as paid. In a real
+diff-lane run H2 is soft-only at best, on whatever `t1_ast` weakening
+evidence `t1_scope` stepping aside unsuppresses, and that path is
+unmeasured.
 
 Runtime honesty note. A cold run builds a per-repo Docker image first, on
 the order of minutes, before the measured 91 s to 167 s deterministic
@@ -353,8 +365,10 @@ paid checks 2026-08-02. M5's publishable core is the twelve-task corpus, Eval
 A, the weight freeze, and Eval B's base arm, all above.
 
 M6 opened 2026-08-17 with `skeptic doctor` (preflight for Docker, the API
-key, Python, disk and arch, with the exact next command per failure) and
+key, Python, disk and arch, with the exact next command per failure),
 `skeptic verify --diff` (a patch audited against any local clone, no task
-spec, with the inferred environment printed before the run). Still ahead in
-M6: the blind holdout and the three pressure arms. M7 brings the timed
-fresh-clone footprint table.
+spec, with the inferred environment printed before the run), and the
+report-only `action.yml` GitHub Action wrapping it, with the
+deterministic-lane numbers rescored from Eval A ("CI patch audit" above).
+Still ahead in M6: the blind holdout and the three pressure arms. M7 brings
+the timed fresh-clone footprint table.

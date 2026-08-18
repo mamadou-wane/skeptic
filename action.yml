@@ -23,37 +23,58 @@ runs:
     # was, never a second pin chosen inside the action.
     - run: pip install -q "$GITHUB_ACTION_PATH"
       shell: bash
+    - name: Validate fail-on
+      shell: bash
+      env: { FAIL_ON: "${{ inputs.fail-on }}" }
+      run: |
+        case "$FAIL_ON" in
+          fail|suspect|never) ;;
+          *) echo "::error::fail-on must be one of fail, suspect, never (got '$FAIL_ON')" >&2
+             exit 1 ;;
+        esac
     - name: Resolve merge base
       id: mergebase
       shell: bash
+      env: { BASE_REF: "${{ inputs.base-ref }}" }
       run: |
-        base="${{ inputs.base-ref }}"
-        sha="$(git merge-base "origin/$base" HEAD 2>/dev/null || git merge-base "$base" HEAD 2>/dev/null || true)"
+        if [ -z "$BASE_REF" ]; then
+          echo "::error::base-ref is empty. github.base_ref is only set on pull_request events; pass base-ref explicitly." >&2
+          exit 1
+        fi
+        sha="$(git merge-base "origin/$BASE_REF" HEAD)" || sha="$(git merge-base "$BASE_REF" HEAD)" || true
         if [ -z "$sha" ]; then
-          echo "::error::git merge-base found no common ancestor between '$base' and HEAD. actions/checkout defaults to a shallow clone; set 'fetch-depth: 0' on the checkout step and re-run." >&2
+          echo "::error::git merge-base found no common ancestor between '$BASE_REF' and HEAD. actions/checkout defaults to a shallow clone; set 'fetch-depth: 0' on the checkout step and re-run." >&2
           exit 1
         fi
         echo "sha=$sha" >> "$GITHUB_OUTPUT"
     - name: Audit the diff
       id: verify
       shell: bash
-      env: { NO_COLOR: "1" }
+      env:
+        NO_COLOR: "1"
+        MERGE_BASE: "${{ steps.mergebase.outputs.sha }}"
       run: |
-        base="${{ steps.mergebase.outputs.sha }}"
-        git diff "$base..HEAD" > skeptic-diff.patch
+        mkdir -p "$RUNNER_TEMP/skeptic"
+        patch="$RUNNER_TEMP/skeptic-diff.patch"
+        out="$RUNNER_TEMP/skeptic-verify.txt"
+        git diff --binary "$MERGE_BASE..HEAD" > "$patch"
         set +e
-        skeptic verify --diff skeptic-diff.patch --repo . --base "$base" > skeptic-verify.txt
+        skeptic verify --diff "$patch" --repo . --base "$MERGE_BASE" \
+          --workdir "$RUNNER_TEMP/skeptic" > "$out" 2>&1
         echo "code=$?" >> "$GITHUB_OUTPUT"
         set -e
-        cat skeptic-verify.txt
-        { echo "### Skeptic diff audit"; echo; echo '```'; cat skeptic-verify.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+        cat "$out"
+        { echo "### Skeptic diff audit"; echo; echo '```'; cat "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
     - name: Apply fail-on
       shell: bash
+      env:
+        FAIL_ON: "${{ inputs.fail-on }}"
+        CODE: "${{ steps.verify.outputs.code }}"
       run: |
-        code="${{ steps.verify.outputs.code }}"
-        case "${{ inputs.fail-on }}" in
+        case "$FAIL_ON" in
           never) exit 0 ;;
-          suspect) [ "$code" -ge 1 ] && exit 1 || exit 0 ;;
-          fail) { [ "$code" = "2" ] || [ "$code" = "3" ]; } && exit 1 || exit 0 ;;
-          *) echo "::error::fail-on must be one of fail, suspect, never (got '${{ inputs.fail-on }}')" >&2; exit 1 ;;
+          suspect) [ "$CODE" -ge 1 ] && exit 1 || exit 0 ;;
+          fail) { [ "$CODE" = "2" ] || [ "$CODE" = "3" ]; } && exit 1 || exit 0 ;;
+          *) echo "::error::fail-on must be one of fail, suspect, never (got '$FAIL_ON')" >&2
+             exit 1 ;;
         esac

@@ -230,6 +230,28 @@ def test_the_seed_diff_is_exempted_by_sha256_not_by_name(corpus, packet):
     assert seed_digest not in baseline.file_hashes
 
 
+def test_the_subtraction_does_not_reach_the_files_the_builder_writes(
+        packet, withheld, tmp_path):
+    """`task.md` is checked against the full index, not the surviving one.
+
+    The shingle planted here is one the packet's own `tree/` already carries,
+    so a subtraction applied to every packet file would excuse it and report
+    clean. `tree/` and `seed.diff` keep their exemption, which the clean-packet
+    test above is what proves."""
+    packet_dir, _ = packet
+    accounted = holdout_leakcheck.accounted_shingles(packet_dir, withheld)
+    assert accounted, "the fixture corpus shares nothing with the tree"
+    plant = min(s for s in accounted if s.strip() == s)
+
+    planted = tmp_path / "prose-planted"
+    shutil.copytree(packet_dir, planted)
+    task_md = planted / "task.md"
+    task_md.write_text(task_md.read_text() + f"\n{plant}\n")
+    hits = holdout_leakcheck.scan_packet(planted, withheld)
+    assert any(hit.startswith("task.md: 40-char shingle") for hit in hits)
+    assert not [hit for hit in hits if hit.startswith(("tree/", "seed.diff"))]
+
+
 def test_self_test_plants_a_withheld_byte_and_requires_a_failure(packet, withheld):
     assert holdout_leakcheck.self_test(packet[0], withheld) is True
 

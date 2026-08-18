@@ -14,9 +14,11 @@ non-zero exit on any of them:
    is.
 2. No withheld path is present. A packet-relative path under `patches/`,
    `acceptance/`, `skeptic/checks/` or `docs/admission/`, or a `README.md` at
-   the packet root, is a hit. The root scoping on README.md is deliberate:
-   `tree/` is a materialized upstream checkout and its own README is part of
-   what the Builder sees, so only this repo's README is withheld.
+   the packet root, is a hit. Both scopings are packet-root-relative on
+   purpose, so `tree/docs/` and `tree/README.md` do not match: `tree/` is a
+   materialized upstream checkout, its own docs and README are part of what
+   the Builder sees, and an upstream repo is free to ship a directory named
+   like one of ours.
 3. No packet file is byte-identical to a withheld file. Path matching alone
    would miss a withheld diff copied in under another name, and a sha256
    comparison costs nothing on top of the digests this already computes.
@@ -33,6 +35,14 @@ spaces, diff headers and hunk markers are stripped, and only the diff's own
 added and removed lines are read. A literal byte-overlap check cannot work,
 because gold is the seed's inverse and the two share a measured 219-byte
 contiguous run on click-0001.
+
+40 is the spec's own window, and five withheld diffs are shorter than it, so
+assertion 4 has no coverage of them at all: `click-0006-h3.diff` normalizes to
+39 characters, `click-0006-gold.diff` to 34, `click-0002-gold.diff` to 32,
+`rich-0003-gold.diff` to 30 and `rich-0002-gold-prime.diff` to 21. Assertion 3
+still covers all five as whole files, and their content (H3's one decorator,
+the golds' one-line inverses) is already implied by the taxonomy row and the
+`seed.diff` a packet ships by design.
 
 That exception in assertion 4 is the judgment call in this script, and
 `accounted_shingles` below carries the measurement behind it: with the
@@ -205,9 +215,17 @@ def accounted_shingles(packet_dir: Path, withheld: Withheld) -> set[str]:
 
     What survives the subtraction is what the check is for: a hack's mechanism
     (H5's literal table, H6's special-case guard) exists in no upstream tree
-    and in no seed diff, and neither does the plan's withheld prose. `task.md`
-    and `taxonomy.md`, the two files this builder writes rather than copies,
-    are checked against the full surviving set.
+    and in no seed diff, and neither does the plan's withheld prose.
+
+    The subtraction applies to `tree/` and `seed.diff` only. `task.md` and
+    `taxonomy.md`, the two files the builder writes rather than copies, are
+    checked against the FULL index, because they are the only two files a
+    builder change could put a withheld shingle into and subtracting there is
+    pure loss. Measured: scanning those two against the full index across all
+    12 real packets yields 0 hits, so the tighter rule costs nothing today and
+    keeps its power for the day a new field gets rendered into `task.md`. The
+    width the subtraction would otherwise remove is large: 3.5 percent of the
+    index for a click packet and 48.5 percent for a rich one.
 
     The integrity of `tree/` and `seed.diff` themselves rests on the digest in
     `packets.yaml` and a builder that reproduces it (Ruling 7-B), not on this
@@ -218,6 +236,11 @@ def accounted_shingles(packet_dir: Path, withheld: Withheld) -> set[str]:
         if path.is_file() and not path.is_symlink():
             found |= _found_shingles(path, withheld)
     return found
+
+
+def _is_derived(rel: str) -> bool:
+    """Is this packet-relative path one the builder copies rather than writes?"""
+    return rel == "seed.diff" or rel.startswith("tree/")
 
 
 def scan_packet(packet_dir: Path, withheld: Withheld) -> list[str]:
@@ -235,7 +258,8 @@ def scan_packet(packet_dir: Path, withheld: Withheld) -> list[str]:
         source = withheld.file_hashes.get(holdout_common.sha256_file(path))
         if source is not None:
             hits.append(f"{rel}: byte-identical to withheld {source}")
-        for window in sorted(_found_shingles(path, withheld) - accounted):
+        excused = accounted if _is_derived(rel) else set()
+        for window in sorted(_found_shingles(path, withheld) - excused):
             hits.append(f"{rel}: 40-char shingle from withheld "
                         f"{withheld.shingles[window]}")
     return hits
@@ -247,7 +271,9 @@ def self_test(packet_dir: Path, withheld: Withheld) -> bool:
     The plant goes on the end of `task.md`, the packet's own prose, so the
     shingle assertion is the only one that can catch it: a plant in a new file
     would trip the top-level entry assertion and pass this whether or not the
-    shingle scan still works.
+    shingle scan still works. The return requires a hit whose path is
+    `task.md` for the same reason, since any hit at all would also be reported
+    by a packet that was dirty to begin with.
 
     Returns True when the check caught the plant. A self-test that fails to
     fail is itself a failure, which is what the caller reports on False.
@@ -270,7 +296,8 @@ def self_test(packet_dir: Path, withheld: Withheld) -> bool:
         shutil.copytree(packet_dir, copy)
         task_md = copy / "task.md"
         task_md.write_text(task_md.read_text() + f"\n{plant}\n")
-        return bool(scan_packet(copy, withheld))
+        return any(hit.startswith("task.md: 40-char shingle")
+                   for hit in scan_packet(copy, withheld))
     finally:
         holdout_common.rmtree_readonly(scratch)
 
@@ -289,9 +316,16 @@ def main() -> None:
                              "packet and require the check to fail.")
     args = parser.parse_args()
 
+    if not args.packet and not args.packets_root.is_dir():
+        print(f"no packets root at {args.packets_root}. The check reads the "
+              f"packet directories `holdout-packet.py` builds under "
+              f"<workdir>/holdout/packets/. Next: build a packet, or pass the "
+              f"--workdir you built under as --packets-root.", file=sys.stderr)
+        raise SystemExit(1)
     packets = args.packet or sorted(p for p in args.packets_root.iterdir() if p.is_dir())
     if not packets:
-        print(f"no packets under {args.packets_root}", file=sys.stderr)
+        print(f"no packet directories under {args.packets_root}. Next: "
+              f"`python scripts/holdout-packet.py --task <id>`.", file=sys.stderr)
         raise SystemExit(1)
 
     try:

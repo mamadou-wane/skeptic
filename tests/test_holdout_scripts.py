@@ -725,6 +725,32 @@ def test_audit_flags_a_read_of_a_sibling_packet_under_the_same_workdir(tmp_path)
     assert holdout_audit.audit_transcript(_jsonl(tmp_path, climbing), packet)
 
 
+def test_audit_flags_a_symlink_under_the_workdir_that_resolves_elsewhere(tmp_path):
+    """A screen venv's `bin/python` is a symlink into an OS location.
+
+    Resolving the token follows the symlink, so the resolved form alone lands
+    under an excused prefix and the workdir read the transcript shows would
+    audit clean. Measured on the real rich-0002 attempt-2 transcript
+    (2026-08-18). The literal form has to face the forbidden-root checks too.
+    """
+    workdir = tmp_path / "holdout-workdir"
+    packet = workdir / "holdout" / "packets" / "rich-0002"
+    packet.mkdir(parents=True)
+    venv_bin = workdir / "rich-0002" / "venvs" / "seeded" / "bin"
+    venv_bin.mkdir(parents=True)
+    link = venv_bin / "python"
+    link.symlink_to("/usr/bin/true")
+    assert str(link.resolve()).startswith(holdout_audit.SYSTEM_ROOTS)
+
+    using_venv = [{"type": "item.completed", "item": {
+        "item_type": "command_execution",
+        "command": f"bash -lc '{link} test_card.py'", "exit_code": 0}}]
+    findings = holdout_audit.audit_transcript(
+        _jsonl(tmp_path, using_venv), packet, packets_root=workdir)
+    assert len(findings) == 1
+    assert "venvs/seeded/bin/python" in findings[0]
+
+
 def test_audit_flags_a_relative_climb_out_of_the_packet(tmp_path):
     packet = tmp_path / "packets" / "click-0001"
     packet.mkdir(parents=True)

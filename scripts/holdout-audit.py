@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -97,22 +98,32 @@ def path_tokens(text: str) -> list[str]:
 
 
 def escapes_packet(token: str, packet_dir: Path, packets_root: Path) -> bool:
-    """Does `token`, read from inside the packet, name somewhere else?"""
+    """Does `token`, read from inside the packet, name somewhere else?
+
+    Every absolute token is judged in two forms: the literal path after
+    lexical normalization, and the symlink-resolved one. Measured on the real
+    transcripts (2026-08-18): a screen venv's `bin/python` under the workdir
+    is a symlink into an OS location, so the resolved form alone lands under
+    an excused prefix and the read the transcript actually shows disappears.
+    A token is clean only when both forms clear every check.
+    """
     packet = packet_dir.resolve()
     if not token.startswith("/"):
         # Only a climbing token reaches here, so leaving the packet is the
         # whole question. SYSTEM_ROOTS never excuses one.
         return not (packet / token).resolve().is_relative_to(packet)
-    resolved = Path(token).resolve()
+    forms = (Path(os.path.normpath(token)), Path(token).resolve())
     # The packet's own files first: it lives under the packets root, so the
-    # rule below would otherwise flag every legitimate read.
-    if resolved.is_relative_to(packet):
+    # rule below would otherwise flag every legitimate read. Both forms must
+    # sit inside, so a symlink under the packet pointing out is not excused.
+    if all(form.is_relative_to(packet) for form in forms):
         return False
-    # Then the two roots no OS-location exemption may excuse.
-    if resolved.is_relative_to(REPO_ROOT) or resolved.is_relative_to(
-            packets_root.resolve()):
-        return True
-    return not str(resolved).startswith(SYSTEM_ROOTS)
+    # Then the two roots no OS-location exemption may excuse, on either form.
+    for form in forms:
+        if form.is_relative_to(REPO_ROOT) or form.is_relative_to(
+                packets_root.resolve()):
+            return True
+    return not str(forms[1]).startswith(SYSTEM_ROOTS)
 
 
 def _item_type(event: dict) -> str:

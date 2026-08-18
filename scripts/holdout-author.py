@@ -36,17 +36,18 @@ Every flag below was read off `codex exec --help` at codex-cli 0.147.0:
 so a sandbox denial fails the command instead of prompting. That is what this
 runner wants: an unattended session that cannot negotiate its way out.
 
-Two things the flags cannot do, measured in the first dry run (2026-08-18) and
-handled through the environment instead. `--ignore-user-config` drops
+Two things the flags cannot do, measured in the dry runs (2026-08-18) and
+handled through the process environment instead. `--ignore-user-config` drops
 `config.toml` but not the plugin cache under `$CODEX_HOME/plugins/`, and the
-dry-run session read a cached plugin's skill file before it touched the
-packet. And with stdin left attached, `codex exec` prints "Reading additional
-input from stdin..." ahead of the JSONL, which the audit then reports as an
-unparseable line. So every session runs with `CODEX_HOME` pointing at a
-scratch home under the workdir holding exactly one file, a copy of the
-operator's `auth.json` (auth is the one thing the binary's own help says
-still resolves through `CODEX_HOME`), and with stdin from `/dev/null`. The
-sidecar records the scratch home's path and its exact contents.
+first dry-run session read a cached plugin's skill file before it touched the
+packet: so every session runs with `CODEX_HOME` pointing at a scratch home
+under the workdir holding exactly one file, a copy of the operator's
+`auth.json` (auth is the one thing the binary's own help says still resolves
+through `CODEX_HOME`), and the sidecar records that home's path and exact
+contents. And codex prints "Reading additional input from stdin..." on stderr
+even with stdin from `/dev/null`, so the two streams are captured separately:
+stdout is the JSONL transcript the audit reads, stderr is committed beside it,
+and stdin still comes from `/dev/null` so a session cannot wait on input.
 
 Two attempts per variant at most. Attempt 2 appends exactly one of the three
 fixed feedback strings `holdout-screen.py` emits and nothing else; a string
@@ -194,18 +195,22 @@ def _scratch_codex_home(workdir: Path) -> Path:
     return home
 
 
-def _run_codex(argv: list[str], cwd: Path, codex_home: Path) -> tuple[int, str]:
-    """Run one session and hand back its exit code and merged output.
+def _run_codex(argv: list[str], cwd: Path,
+               codex_home: Path) -> tuple[int, str, str]:
+    """Run one session and hand back its exit code, stdout and stderr.
 
-    stderr is merged into stdout so the transcript keeps the order the two
-    streams actually came out in. stdin comes from /dev/null: left attached,
-    `codex exec` announces it is reading stdin on stdout, ahead of the JSONL.
+    The two streams stay separate: `--json` puts the JSONL transcript on
+    stdout, and codex prints informational lines ("Reading additional input
+    from stdin...") on stderr even with stdin from /dev/null. Merged, that
+    banner is an unparseable first line the audit has to report on every
+    session. Both streams are committed; only stdout is the transcript the
+    audit reads.
     """
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
-    proc = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+    proc = subprocess.run(argv, cwd=cwd, capture_output=True,
+                          stdin=subprocess.DEVNULL,
                           env=env, text=True, check=False)
-    return proc.returncode, proc.stdout
+    return proc.returncode, proc.stdout, proc.stderr
 
 
 def _codex_version() -> str:
@@ -272,14 +277,16 @@ def run_attempt(
     holdout_common.rmtree_readonly(packet_dir / "out")
     packet_digest = holdout_common.packet_sha256(packet_dir)
     codex_home = _scratch_codex_home(workdir)
-    exit_code, transcript = _run_codex(argv, cwd=packet_dir.parent,
-                                       codex_home=codex_home)
+    exit_code, transcript, stderr = _run_codex(argv, cwd=packet_dir.parent,
+                                               codex_home=codex_home)
 
     sessions = out / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
     stem = f"{task_id}-{variant}-a{attempt}"
     log = sessions / f"{stem}.log"
     log.write_text(transcript)
+    stderr_log = sessions / f"{stem}.stderr.log"
+    stderr_log.write_text(stderr)
     record = {
         "task_id": task_id,
         "variant_id": variant,
@@ -295,6 +302,8 @@ def run_attempt(
         "feedback": feedback,
         "transcript": log.name,
         "transcript_sha256": holdout_common.sha256_file(log),
+        "stderr_transcript": stderr_log.name,
+        "stderr_sha256": holdout_common.sha256_file(stderr_log),
         "exit_code": exit_code,
     }
     (sessions / f"{stem}.yaml").write_text(yaml.safe_dump(record, sort_keys=False))

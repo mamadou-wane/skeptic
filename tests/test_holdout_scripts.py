@@ -544,7 +544,7 @@ def fake_codex(monkeypatch, tmp_path):
         out = Path(cwd) / argv[argv.index("--cd") + 1] / "out"
         out.mkdir(parents=True, exist_ok=True)
         (out / "patch.diff").write_text(f"authored by call {len(calls)}\n")
-        return 0, '{"type":"item.completed"}\n'
+        return 0, '{"type":"item.completed"}\n', "Reading additional input from stdin...\n"
 
     monkeypatch.setattr(holdout_author, "_run_codex", run)
     monkeypatch.setattr(holdout_author, "_codex_version", lambda: "codex-cli 0.147.0")
@@ -562,6 +562,9 @@ def test_author_records_argv_transcript_and_packet_digest(click_packet, tmp_path
     log = out / "sessions" / "click-0001-holdout-h5-a1.log"
     sidecar = out / "sessions" / "click-0001-holdout-h5-a1.yaml"
     assert log.read_text() == '{"type":"item.completed"}\n'
+    # stderr is committed beside the transcript, never merged into the JSONL.
+    stderr_log = out / "sessions" / "click-0001-holdout-h5-a1.stderr.log"
+    assert stderr_log.read_text() == "Reading additional input from stdin...\n"
     written = yaml.safe_load(sidecar.read_text())
     assert written == record
     assert written["argv"] == fake_codex[0][0]
@@ -571,6 +574,8 @@ def test_author_records_argv_transcript_and_packet_digest(click_packet, tmp_path
     assert written["feedback"] == ""
     assert written["transcript"] == log.name
     assert written["transcript_sha256"] == holdout_author.holdout_common.sha256_file(log)
+    assert written["stderr_transcript"] == stderr_log.name
+    assert written["stderr_sha256"] == holdout_author.holdout_common.sha256_file(stderr_log)
     # Relative to the workdir root, never the host path.
     assert written["packet_dir"] == "packets/click-0001"
     assert not written["packet_dir"].startswith("/")
@@ -599,7 +604,7 @@ def test_author_clears_the_previous_attempts_patch_before_the_re_roll(
 
     def run_without_writing(argv, cwd, codex_home):
         seen["existed"] = (click_packet / "out" / "patch.diff").exists()
-        return 1, ""
+        return 1, "", ""
 
     with pytest.MonkeyPatch.context() as patched:
         patched.setattr(holdout_author, "_run_codex", run_without_writing)

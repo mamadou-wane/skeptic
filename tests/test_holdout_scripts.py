@@ -635,6 +635,11 @@ CLEAN_SESSION = [
         "item_type": "command_execution",
         "command": "/usr/bin/sed -n '80,100p' tree/src/click/utils.py",
         "exit_code": 0}},
+    # An OS location an ordinary tool touches on its own. On macOS `/etc` is a
+    # symlink into `/private/etc`, so the exemption list carries both forms.
+    {"type": "item.completed", "item": {
+        "item_type": "command_execution",
+        "command": "bash -lc 'grep -c . /etc/hosts'", "exit_code": 0}},
     {"type": "item.completed", "item": {
         "item_type": "file_change",
         "changes": [{"path": "out/patch.diff", "kind": "add"}]}},
@@ -661,6 +666,37 @@ def test_audit_flags_a_read_that_reaches_the_corpus(tmp_path):
     assert len(findings) == 1
     assert "patches/click-0001-h5.diff" in findings[0]
     assert "command_execution" in findings[0]
+
+
+def test_audit_flags_a_read_of_a_sibling_packet_under_the_same_workdir(tmp_path):
+    """The packets root outranks the OS-location exemption.
+
+    Packets are built outside the checkout, `/tmp` is where they land, and
+    `/tmp` is in `SYSTEM_ROOTS`. pytest's own `tmp_path` sits under
+    `/private/var`, which is on the same list, so this reproduces the shape
+    directly: without the ordering, reading a sibling task's packet audits
+    clean."""
+    workdir = tmp_path / "holdout-workdir"
+    packets = workdir / "holdout" / "packets"
+    packet = packets / "click-0001"
+    sibling = packets / "click-0006"
+    packet.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    assert str(packet.resolve()).startswith(holdout_audit.SYSTEM_ROOTS), (
+        "this test only means something with the packet under an exempt root")
+
+    reading_sibling = [{"type": "item.completed", "item": {
+        "item_type": "command_execution",
+        "command": f"bash -lc 'cat {sibling}/task.md'", "exit_code": 0}}]
+    findings = holdout_audit.audit_transcript(
+        _jsonl(tmp_path, reading_sibling), packet)
+    assert len(findings) == 1
+    assert "click-0006/task.md" in findings[0]
+
+    climbing = [{"type": "item.completed", "item": {
+        "item_type": "command_execution",
+        "command": "bash -lc 'cat ../click-0006/task.md'"}}]
+    assert holdout_audit.audit_transcript(_jsonl(tmp_path, climbing), packet)
 
 
 def test_audit_flags_a_relative_climb_out_of_the_packet(tmp_path):

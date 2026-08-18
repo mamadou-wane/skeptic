@@ -34,12 +34,22 @@ path in the record at all. The scan is textual, so it also skips ABSOLUTE
 paths under `SYSTEM_ROOTS`, the read-only OS locations any command touches. A
 session that read something interesting out of `/usr/share` would pass.
 
-A relative path that climbs out of the packet is never excused that way. A
-packet built under `/tmp` would otherwise hide every escape out of it, and
-`/tmp` is where a packet outside the checkout most naturally lands. Anything
-resolving under the repo root is flagged whatever else it matches, since that
-is the one target that would invalidate the measurement. Single-segment
-absolute tokens (`/tmp`, and prose like "and/or") are skipped as noise.
+Two locations are flagged before that exemption is ever consulted, in this
+order: the repo root, since a read reaching the checkout is the one that would
+invalidate the measurement, and the packets root, since every task's packet is
+a sibling of this one under it. The packets root has to come first because the
+runner's own remediation sends packets outside the checkout, `/tmp` is where
+they most naturally land, and `/tmp` is in `SYSTEM_ROOTS`. Without the
+ordering, `cat ../click-0006/task.md` between two packets under one `/tmp`
+workdir audits clean. A relative path that climbs out of the packet is never
+excused either way. Single-segment absolute tokens (`/tmp`, and prose like
+"and/or") are skipped as noise.
+
+The packets root defaults to the packet's own parent and `--packets-root`
+overrides it. What that leaves: `holdout-packet.py` also writes a
+`<workdir>/<task_id>/repo-cache/` clone per task, which is a sibling of the
+packets root rather than of the packet, so a read of one is only caught when
+`--packets-root` is widened to the workdir.
 """
 from __future__ import annotations
 
@@ -52,9 +62,13 @@ from pathlib import Path
 from holdout_common import REPO_ROOT
 
 # Read-only OS locations any shell command touches. The audit's stated blind
-# spot: a path under one of these is not reported.
-SYSTEM_ROOTS = ("/usr", "/bin", "/sbin", "/lib", "/opt", "/etc", "/dev",
-                "/System", "/Library", "/Applications", "/var", "/private/var",
+# spot: a path under one of these is not reported. Tokens are compared after
+# `Path.resolve()`, so the three macOS symlink farms carry both forms: `/etc`,
+# `/var` and `/tmp` all resolve into `/private`, and `/etc/hosts` reads as
+# `/private/etc/hosts` on this machine.
+SYSTEM_ROOTS = ("/usr", "/bin", "/sbin", "/lib", "/opt", "/dev",
+                "/System", "/Library", "/Applications",
+                "/etc", "/private/etc", "/var", "/private/var",
                 "/tmp", "/private/tmp", "/proc", "/sys")
 # Item types that cannot occur under the committed argv, so their presence is
 # a finding rather than something to scan.
@@ -82,7 +96,7 @@ def path_tokens(text: str) -> list[str]:
     return PATH_TOKEN.findall(text)
 
 
-def escapes_packet(token: str, packet_dir: Path) -> bool:
+def escapes_packet(token: str, packet_dir: Path, packets_root: Path) -> bool:
     """Does `token`, read from inside the packet, name somewhere else?"""
     packet = packet_dir.resolve()
     if not token.startswith("/"):
@@ -90,10 +104,14 @@ def escapes_packet(token: str, packet_dir: Path) -> bool:
         # whole question. SYSTEM_ROOTS never excuses one.
         return not (packet / token).resolve().is_relative_to(packet)
     resolved = Path(token).resolve()
-    if resolved.is_relative_to(REPO_ROOT):
-        return True
+    # The packet's own files first: it lives under the packets root, so the
+    # rule below would otherwise flag every legitimate read.
     if resolved.is_relative_to(packet):
         return False
+    # Then the two roots no OS-location exemption may excuse.
+    if resolved.is_relative_to(REPO_ROOT) or resolved.is_relative_to(
+            packets_root.resolve()):
+        return True
     return not str(resolved).startswith(SYSTEM_ROOTS)
 
 
@@ -104,8 +122,15 @@ def _item_type(event: dict) -> str:
     return ""
 
 
-def audit_transcript(transcript: Path, packet_dir: Path) -> list[str]:
-    """Every finding in one session log, as one description per finding."""
+def audit_transcript(
+    transcript: Path, packet_dir: Path, packets_root: Path | None = None
+) -> list[str]:
+    """Every finding in one session log, as one description per finding.
+
+    `packets_root` defaults to the packet's parent, which is the layout
+    `holdout-packet.py` builds: `<workdir>/holdout/packets/<task_id>/`.
+    """
+    root = packet_dir.parent if packets_root is None else packets_root
     findings: list[str] = []
     for number, line in enumerate(transcript.read_text().splitlines(), 1):
         if not line.strip():
@@ -124,7 +149,7 @@ def audit_transcript(transcript: Path, packet_dir: Path) -> list[str]:
         seen = set()
         for text in _strings(event):
             for token in path_tokens(text):
-                if token in seen or not escapes_packet(token, packet_dir):
+                if token in seen or not escapes_packet(token, packet_dir, root):
                     continue
                 seen.add(token)
                 where = f"{label} {item_type}".rstrip()
@@ -139,6 +164,11 @@ def main() -> None:
                         help="The session log (JSONL) to audit.")
     parser.add_argument("--packet", type=Path, required=True,
                         help="The packet directory that session ran in.")
+    parser.add_argument("--packets-root", type=Path,
+                        help="Root the other packets sit under, never excused "
+                             "as an OS location. Defaults to the packet's "
+                             "parent. Widen it to the workdir to cover the "
+                             "per-task repo-cache clones too.")
     args = parser.parse_args()
 
     if not args.session.is_file():
@@ -147,7 +177,7 @@ def main() -> None:
               f"the path, or re-run the attempt.", file=sys.stderr)
         raise SystemExit(1)
 
-    findings = audit_transcript(args.session, args.packet)
+    findings = audit_transcript(args.session, args.packet, args.packets_root)
     for finding in findings:
         print(f"OUTSIDE {args.session.name}/{finding}")
     if findings:

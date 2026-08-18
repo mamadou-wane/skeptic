@@ -26,12 +26,14 @@ EXIT_INFRA = 3
 # `seed --check --self-validate` and the `eval` sweep call `verify()` as a
 # plain Python function, where a parameter left unpassed keeps typer's
 # `OptionInfo` object as its value instead of the option's default. Every
-# diff-mode parameter therefore has to be named at those call sites, and one
-# mapping is what keeps the two of them from drifting apart.
+# parameter those call sites do not name themselves therefore has to be in
+# here, and one mapping is what keeps them from drifting apart. That is the
+# whole diff-mode surface plus `variant_patch`, which a corpus sweep never
+# uses; the holdout sweep overrides that one key and names the rest from here.
 _TASK_MODE_DEFAULTS = {
     "diff": None, "repo": None, "base": "HEAD",
     "install": DEFAULT_INSTALL, "test_cmd": DEFAULT_TEST_CMD,
-    "src_dir": [], "test_dir": [],
+    "src_dir": [], "test_dir": [], "variant_patch": None,
 }
 
 app = typer.Typer(no_args_is_help=True, add_completion=False)
@@ -826,7 +828,8 @@ def build_arm(
         # review), and every run gets one, including a sweep where every
         # attempt classifies INFRA_ERROR.
         manifest = evalkit.build_arm_manifest(
-            specs, workdir, arm_name=name, model=model, attempts=attempts)
+            specs, workdir, arm_name=name, model=model, attempts=attempts,
+            statement_mode=statement_mode)
         write_manifest(run_dir / "manifest.json", manifest)
         rows: list[evalkit.AttemptRow] = []
         infra: list[str] = []
@@ -996,6 +999,12 @@ def _verify_cache_key(
     a patch file's sha256, which is what keeps a seeded run and a seedless
     one at the same task id in separate entries.
 
+    `verify --variant-patch <id>:<path>` rides them too, and passes its own
+    `identity` so the `variant` slot reads the registry id rather than a
+    stem-derived one. A holdout patch is a diff over the seeded tree, exactly
+    what `--candidate-diff` applies, so keying on its bytes is already right;
+    only the name a reader sees differs.
+
     This is the VERIFY half of the two-key design (plan decision 5); the other
     half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
     `COLLECTOR_VERSION`. The two age differently on purpose: a detector edit
@@ -1049,12 +1058,17 @@ def verify(
     task: str | None = typer.Option(None, "--task"),
     variant: str | None = typer.Option(
         None, "--variant", help="Variant id from evaluation.variants. "
-        "Mutually exclusive with --candidate-diff."),
+        "Mutually exclusive with --candidate-diff and --variant-patch."),
     candidate_diff: Path | None = typer.Option(  # noqa: B008
         None, "--candidate-diff", help="Diff to apply over the task's seeded "
         "tree, in place of a corpus variant (Eval B's catch-rate surface, "
         "the shape build-arm's classifier applies via apply_candidate). "
-        "Mutually exclusive with --variant."),
+        "Mutually exclusive with --variant and --variant-patch."),
+    variant_patch: str | None = typer.Option(
+        None, "--variant-patch", help="<id>:<path>. Applies the patch over "
+        "the task's seeded tree like --candidate-diff, but takes the run "
+        "identity from the id (M6's holdout lane). Mutually exclusive with "
+        "--variant and --candidate-diff."),
     diff: Path | None = typer.Option(  # noqa: B008
         None, "--diff", help="Patch to audit against a local repo, with no "
         "task spec. Mutually exclusive with --task; requires --repo."),
@@ -1083,6 +1097,7 @@ def verify(
     arbitrary local repo and patch (--diff)."""
     import json
     import os
+    import re
     import shutil
     import time
 
@@ -1145,24 +1160,31 @@ def verify(
                 f"`--repo <path to the checkout the diff came from>`."
             )
             raise typer.Exit(EXIT_INFRA)
-        if diff is not None and (variant is not None or candidate_diff is not None):
-            named = "--variant" if variant is not None else "--candidate-diff"
+        subjects = {"--variant": variant, "--candidate-diff": candidate_diff,
+                    "--variant-patch": variant_patch}
+        given = [flag for flag, value in subjects.items() if value is not None]
+        if diff is not None and given:
+            named = given[0]
             typer.echo(
                 f"--diff and {named} are mutually exclusive. {named} names a "
                 f"tree that only exists inside a corpus task (a variant from "
-                f"evaluation.variants, or a diff over that task's seeded "
+                f"evaluation.variants, or a patch over that task's seeded "
                 f"tree), and a --diff audit has no task and no seed. Next: "
                 f"drop {named}, or run the corpus task with --task instead."
             )
             raise typer.Exit(EXIT_INFRA)
-        if diff is None and (variant is None) == (candidate_diff is None):
+        if diff is None and len(given) != 1:
             typer.echo(
-                f"Exactly one of --variant or --candidate-diff is required "
-                f"(variant={variant!r}, candidate_diff={candidate_diff!r}). "
-                f"--variant audits a corpus variant from evaluation.variants; "
-                f"--candidate-diff applies a diff over the task's seeded "
-                f"tree instead (Eval B's catch-rate surface). Next: pass "
-                f"exactly one of the two."
+                f"Exactly one of --variant, --candidate-diff or "
+                f"--variant-patch is required (variant={variant!r}, "
+                f"candidate_diff={candidate_diff!r}, "
+                f"variant_patch={variant_patch!r}). --variant audits a corpus "
+                f"variant from evaluation.variants; --candidate-diff applies "
+                f"a diff over the task's seeded tree instead (Eval B's "
+                f"catch-rate surface); --variant-patch does the same but "
+                f"names the run itself, which is how M6's holdout variants "
+                f"sweep without living in a task yaml. Next: pass exactly one "
+                f"of the three."
             )
             raise typer.Exit(EXIT_INFRA)
         if profile not in ("deterministic", "paid"):
@@ -1272,6 +1294,46 @@ def verify(
                 variant_spec = next(v for v in spec.evaluation.variants if v.id == variant)
                 identity = variant_spec.id
                 surface_flag = f"--variant {identity}"
+            elif variant_patch is not None:
+                # `<id>:<path>`, split on the FIRST colon: a Windows-style or
+                # otherwise colon-carrying path keeps its own colons, and the
+                # id is guarded to a slug below anyway.
+                vp_id, sep, vp_path = variant_patch.partition(":")
+                if not sep or not vp_path or not re.fullmatch(
+                        evalkit.VARIANT_ID_PATTERN, vp_id):
+                    typer.echo(
+                        f"--variant-patch {variant_patch!r} is not "
+                        f"<id>:<path> with an id matching "
+                        f"{evalkit.VARIANT_ID_PATTERN}. The id becomes this "
+                        f"run's identity, its verify directory and its "
+                        f"snapshot directory, so a missing id, a colon or a "
+                        f"path separator in it would name a directory outside "
+                        f"the run. Next: re-run with e.g. "
+                        f"`--variant-patch h5-holdout:evals/v1/holdout/"
+                        f"{spec.task_id}-h5.diff`."
+                    )
+                    raise typer.Exit(EXIT_INFRA)
+                candidate_diff = Path(vp_path)
+                if not candidate_diff.is_file():
+                    typer.echo(
+                        f"No patch at {candidate_diff}: --variant-patch needs "
+                        f"a readable patch file to apply over "
+                        f"{spec.task_id}'s seeded tree, the same way "
+                        f"--candidate-diff does. Next: check the path."
+                    )
+                    raise typer.Exit(EXIT_INFRA)
+                try:
+                    candidate_diff.read_bytes()  # a probe: the bytes are hashed later
+                except OSError as exc:
+                    typer.echo(
+                        f"Could not read patch at {candidate_diff}: {exc}. "
+                        f"--variant-patch needs a readable patch file to "
+                        f"apply over {spec.task_id}'s seeded tree. Next: "
+                        f"check the path and permissions."
+                    )
+                    raise typer.Exit(EXIT_INFRA) from exc
+                identity = vp_id
+                surface_flag = f"--variant-patch {variant_patch}"
             else:
                 if not candidate_diff.is_file():
                     typer.echo(
@@ -1386,9 +1448,15 @@ def verify(
             task_id=spec.task_id)
         trace.event(stage="LOAD", actor="orchestrator", event="spec_loaded")
 
+        # `identity` is passed for the two lanes whose own identity is not
+        # derivable from the diff's stem: --diff (`diff:<sha8>`) and
+        # --variant-patch (the registry id). Both still key on the patch's
+        # full sha256 through `variant_patch`, so this changes what a reader
+        # sees in the hashed payload, never which runs collide.
+        named_identity = diff is not None or variant_patch is not None
         cache_key = _verify_cache_key(spec, variant_spec, profile,
                                       candidate_diff=candidate_diff,
-                                      identity=identity if diff is not None else None)
+                                      identity=identity if named_identity else None)
 
         def do_verify() -> dict:
             # The diff lane reads the caller's own clone directly. Its base
@@ -1671,8 +1739,14 @@ def verify(
 
 @app.command(name="eval")
 def eval_command(
-    tasks: str = typer.Option(..., "--tasks", help="Comma-separated task ids."),
+    tasks: str | None = typer.Option(
+        None, "--tasks", help="Comma-separated task ids. Mutually exclusive "
+        "with --registry."),
     profile: str = typer.Option(..., "--profile"),
+    registry: Path | None = typer.Option(  # noqa: B008
+        None, "--registry", help="Holdout registry yaml. Sweeps one verify "
+        "run per row, by registry id, instead of the corpus variants. "
+        "Mutually exclusive with --tasks."),
     tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
     workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
     out: Path = typer.Option(Path("evals/v1"), "--out"),  # noqa: B008
@@ -1696,12 +1770,38 @@ def eval_command(
                 f"`--profile paid`."
             )
             raise typer.Exit(EXIT_INFRA)
+        if (tasks is None) == (registry is None):
+            typer.echo(
+                f"Exactly one of --tasks or --registry is required "
+                f"(tasks={tasks!r}, registry={registry}). --tasks sweeps "
+                f"every variant the named task yamls declare; --registry "
+                f"sweeps one run per holdout row, whose variants live outside "
+                f"the yamls on purpose. Next: pass exactly one of the two."
+            )
+            raise typer.Exit(EXIT_INFRA)
 
-        specs = [find_task(task_id.strip(), tasks_dir) for task_id in tasks.split(",")]
+        holdout = None if registry is None else evalkit.load_holdout_registry(registry)
+        sweep_flag = f"--tasks {tasks}" if holdout is None else f"--registry {registry}"
+
+        # One list of (spec, variant id, patch) for both lanes, so the sweep
+        # loop below is written once. A corpus pair's patch is None: the task
+        # yaml names it and --variant resolves it. A holdout pair carries the
+        # patch path, which --variant-patch applies over the seeded tree under
+        # the registry's own id.
+        if holdout is None:
+            specs = [find_task(task_id.strip(), tasks_dir) for task_id in tasks.split(",")]
+            pairs = [(spec, variant_spec.id, None)
+                     for spec in specs for variant_spec in spec.evaluation.variants]
+        else:
+            by_id = {task_id: find_task(task_id, tasks_dir)
+                     for task_id in sorted({row.task_id for row in holdout.variants})}
+            pairs = [(by_id[row.task_id], row.variant_id, row.patch)
+                     for row in holdout.variants]
+            specs = list(by_id.values())
 
         workdir = workdir.resolve()
         out = out.resolve()
-        n_pairs = sum(len(spec.evaluation.variants) for spec in specs)
+        n_pairs = len(pairs)
 
         if profile == "paid":
             # One confirm for the whole sweep, not one per run: verify's own
@@ -1712,7 +1812,7 @@ def eval_command(
                     "adversarial-tests and judge checks call the Anthropic "
                     "API from the host (the key never enters the sandbox). "
                     f"Next: export ANTHROPIC_API_KEY and re-run `skeptic "
-                    f"eval --tasks {tasks} --profile paid`."
+                    f"eval {sweep_flag} --profile paid`."
                 )
                 raise typer.Exit(EXIT_INFRA)
             if SKEPTIC_MODEL not in PRICING:
@@ -1736,7 +1836,7 @@ def eval_command(
                     "Declined: the sweep was not started, so no API spend "
                     "happened. Skeptic confirms once before a paid eval "
                     f"sweep unless --yes is passed. Next: re-run `skeptic "
-                    f"eval --tasks {tasks} --profile paid --yes` once "
+                    f"eval {sweep_flag} --profile paid --yes` once "
                     f"you're ready to spend."
                 )
                 raise typer.Exit(EXIT_INFRA)
@@ -1744,39 +1844,45 @@ def eval_command(
         run_dir = out / "runs" / evalkit.eval_run_id()
         infra: list[str] = []
         n_runs = 0
-        for spec in specs:
-            for variant_spec in spec.evaluation.variants:
-                verify_dir = (workdir / spec.task_id / "verify"
-                              / _verify_path_identity(variant_spec.id))
-                evalkit.rotate_trace(verify_dir)
-                try:
-                    verify(task=spec.task_id, variant=variant_spec.id,
-                           candidate_diff=None, **_TASK_MODE_DEFAULTS,
-                           profile=profile, tasks_dir=tasks_dir,
-                           workdir=workdir, runner="docker", yes=True)
-                except typer.Exit as exc:
-                    code = exc.exit_code
-                else:  # pragma: no cover - verify always exits
-                    raise SkepticInfraError(
-                        f"verify returned without exiting for "
-                        f"{spec.task_id}/{variant_spec.id}. Every verify path "
-                        f"raises typer.Exit; a plain return means the command "
-                        f"changed shape and this sweep's exit-code capture is "
-                        f"no longer correct. Next: re-run `skeptic verify "
-                        f"--task {spec.task_id} --variant {variant_spec.id}` "
-                        f"alone and read its exit."
-                    )
-                evalkit.snapshot_run(
-                    verify_dir, run_dir / spec.task_id / variant_spec.id, code)
-                n_runs += 1
-                if code == EXIT_INFRA:
-                    infra.append(f"{spec.task_id}/{variant_spec.id}")
+        for spec, variant_id, patch in pairs:
+            verify_dir = (workdir / spec.task_id / "verify"
+                          / _verify_path_identity(variant_id))
+            evalkit.rotate_trace(verify_dir)
+            subject = ({"variant": variant_id, "variant_patch": None} if patch is None
+                       else {"variant": None, "variant_patch": f"{variant_id}:{patch}"})
+            surface = (f"--variant {variant_id}" if patch is None
+                       else f"--variant-patch {variant_id}:{patch}")
+            try:
+                verify(task=spec.task_id, candidate_diff=None,
+                       **{**_TASK_MODE_DEFAULTS, **subject},
+                       profile=profile, tasks_dir=tasks_dir,
+                       workdir=workdir, runner="docker", yes=True)
+            except typer.Exit as exc:
+                code = exc.exit_code
+            else:  # pragma: no cover - verify always exits
+                raise SkepticInfraError(
+                    f"verify returned without exiting for "
+                    f"{spec.task_id}/{variant_id}. Every verify path "
+                    f"raises typer.Exit; a plain return means the command "
+                    f"changed shape and this sweep's exit-code capture is "
+                    f"no longer correct. Next: re-run `skeptic verify "
+                    f"--task {spec.task_id} {surface}` alone and read "
+                    f"its exit."
+                )
+            evalkit.snapshot_run(
+                verify_dir, run_dir / spec.task_id / variant_id, code)
+            n_runs += 1
+            if code == EXIT_INFRA:
+                infra.append(f"{spec.task_id}/{variant_id}")
 
-        manifest = evalkit.build_manifest(specs, workdir)
+        # The run dir only. A `--out`-defaulted sweep used to write this same
+        # manifest to `evals/v1/manifest.json` as well, silently overwriting
+        # the published one beside two committed runs that a reader has no way
+        # to tell it no longer describes.
+        manifest = evalkit.build_manifest(specs, workdir, holdout=holdout)
         write_manifest(run_dir / "manifest.json", manifest)
-        write_manifest(out / "manifest.json", manifest)
 
-        rows = evalkit.load_rows(run_dir, tasks_dir)
+        rows = evalkit.load_rows(run_dir, tasks_dir, holdout)
         baselines = [evalkit.baseline_always_suspect(rows),
                      evalkit.baseline_suite_green_only(rows),
                      evalkit.baseline_judge_alone(rows)]

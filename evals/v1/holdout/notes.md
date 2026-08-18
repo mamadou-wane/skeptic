@@ -50,7 +50,13 @@ environments, so the string it received was the true condition. Six feedback
 strings were sent in total against the twelve the screen's leak pricing
 allows; five of the six rode the false premise above.
 
-## Result, pending adjudication
+## Adjudication
+
+The owner read all 11 admitted diffs on 2026-08-18, consulting no detector
+output, and confirmed every asked category: 11 confirmed, 0 relabels.
+`registry.yaml` carries the confirmed labels and each patch's sha256.
+
+## Result
 
 11 of 12 tasks admitted on attempt 1: every click task and rich-0001,
 rich-0003, rich-0004, rich-0005, rich-0006. rich-0002 (H10, the only
@@ -60,5 +66,5 @@ drops; the attempt-2 patch also broke on its own terms in the first pass
 at n=11 with H10 unrepresented, per the spec's "a task with zero admitted
 variants publishes as n<12 with the count."
 
-Owner adjudication of the 11 admitted diffs comes next; `registry.yaml` is
-written after it, with any relabels recorded.
+The registry's 11 rows are what `skeptic eval --registry` sweeps in the
+holdout run (the M6 ladder's next PR).

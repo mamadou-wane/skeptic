@@ -31,10 +31,16 @@ ordering everywhere. That is what makes the committed digest a provenance
 claim rather than a label, since the packets themselves are twelve
 materialized upstream trees and are not committed.
 
-The digest written to `packets.yaml` is sha256 over the sorted lines
-"<relpath> <file-sha256>\\n" for every file under the packet directory, with
-`relpath` POSIX and relative to the packet root (`holdout_common.
-packet_sha256`).
+This prints the packet's digest and does not record it.
+`scripts/holdout-leakcheck.py --record` is the only writer of
+`evals/v1/holdout/packets.yaml`, and it writes only after its own scan and
+self-test come back clean. The digest is a provenance claim about a packet
+that carries nothing withheld, and the leak check is the only program in a
+position to know that, so a build alone must not be able to produce one.
+
+The digest is sha256 over the sorted lines "<relpath> <file-sha256>\\n" for
+every file under the packet directory, with `relpath` POSIX and relative to
+the packet root (`holdout_common.packet_sha256`).
 """
 from __future__ import annotations
 
@@ -44,7 +50,6 @@ import sys
 from pathlib import Path
 
 import holdout_common
-import yaml
 from holdout_common import REPO_ROOT
 
 from skeptic.errors import SkepticInfraError
@@ -53,7 +58,6 @@ from skeptic.spec import TaskSpec, find_task
 from skeptic.workspace import clone_pinned
 
 PLAN = REPO_ROOT / "docs" / "skeptic-engineering-plan.md"
-DEFAULT_PACKETS_YAML = REPO_ROOT / "evals" / "v1" / "holdout" / "packets.yaml"
 
 # The plan's Part 2 table: header, separator, then H1 through H10. Pinned by
 # line number because the spec names the range, and located by header text so
@@ -193,29 +197,11 @@ def _make_readonly(tree: Path) -> None:
         path.chmod(path.stat().st_mode & ~0o222)
 
 
-def write_packets_yaml(path: Path, task_id: str, digest: str) -> None:
-    """Record one packet's digest, leaving the other tasks' entries alone.
-
-    Ruling 7-A: the digests live here rather than in
-    `evals/v1/holdout/registry.yaml`, whose `HoldoutVariant` model forbids
-    extra keys and cannot gain one without reopening `skeptic/` during the
-    verifier revision freeze.
-    """
-    existing = {}
-    if path.is_file():
-        existing = (yaml.safe_load(path.read_text()) or {}).get("packets") or {}
-    existing[task_id] = digest
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump({"packets": dict(sorted(existing.items()))},
-                                   sort_keys=False))
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build one holdout authoring packet.")
     parser.add_argument("--task", required=True, help="Task id (tasks/<id>.yaml).")
     parser.add_argument("--tasks-dir", type=Path, default=Path("tasks"))
     parser.add_argument("--workdir", type=Path, default=Path("workdir"))
-    parser.add_argument("--packets-yaml", type=Path, default=DEFAULT_PACKETS_YAML)
     args = parser.parse_args()
 
     try:
@@ -227,10 +213,10 @@ def main() -> None:
     except SkepticInfraError as exc:
         print(f"INFRA ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1) from exc
-    write_packets_yaml(args.packets_yaml, spec.task_id, digest)
     print(f"{spec.task_id} {digest}")
     print(f"packet {packet_dir}")
-    print(f"Next: `python scripts/holdout-leakcheck.py --packet {packet_dir}`")
+    print(f"Next: `python scripts/holdout-leakcheck.py --packet {packet_dir} "
+          f"--self-test --record`")
 
 
 if __name__ == "__main__":

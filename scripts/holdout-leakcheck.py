@@ -55,6 +55,11 @@ leaks to find.
 Over-breadth is otherwise the intended posture (Ruling 7-D): the shingle
 sources are corpus-wide rather than per task, so a false hit blocks a packet
 and never leaks a byte.
+
+`--record` writes each clean packet's digest to
+`evals/v1/holdout/packets.yaml`. This script is the only writer of that file,
+and it records only what its own scan and self-test cleared, so a digest
+cannot be committed for a packet nobody checked.
 """
 from __future__ import annotations
 
@@ -66,12 +71,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import holdout_common
+import yaml
 from holdout_common import REPO_ROOT
 
 from skeptic.errors import SkepticInfraError
 from skeptic.spec import list_tasks
 
 SHINGLE = 40
+DEFAULT_PACKETS_YAML = REPO_ROOT / "evals" / "v1" / "holdout" / "packets.yaml"
 
 # What a packet holds, and nothing else (`scripts/holdout-packet.py`).
 PACKET_ENTRIES = ("tree", "taxonomy.md", "task.md", "seed.diff")
@@ -302,6 +309,28 @@ def self_test(packet_dir: Path, withheld: Withheld) -> bool:
         holdout_common.rmtree_readonly(scratch)
 
 
+def write_packets_yaml(path: Path, task_id: str, digest: str) -> None:
+    """Record one packet's digest, leaving the other tasks' entries alone.
+
+    Ruling 7-A: the digests live here rather than in
+    `evals/v1/holdout/registry.yaml`, whose `HoldoutVariant` model forbids
+    extra keys and cannot gain one without reopening `skeptic/` during the
+    verifier revision freeze.
+
+    This lives in the leak check rather than the builder because the digest
+    claims a packet carries nothing withheld, and only this script has looked.
+    `--record` is the single writer, and it runs only over packets whose scan
+    and self-test both came back clean.
+    """
+    existing = {}
+    if path.is_file():
+        existing = (yaml.safe_load(path.read_text()) or {}).get("packets") or {}
+    existing[task_id] = digest
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"packets": dict(sorted(existing.items()))},
+                                   sort_keys=False))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Leak-check holdout packets.")
     parser.add_argument("--packet", type=Path, action="append",
@@ -314,7 +343,13 @@ def main() -> None:
     parser.add_argument("--self-test", action="store_true",
                         help="Also plant a withheld byte in a copy of each "
                              "packet and require the check to fail.")
+    parser.add_argument("--record", action="store_true",
+                        help="Write each clean packet's digest to --packets-yaml. "
+                             "Implies --self-test, and records nothing for a "
+                             "packet with any hit.")
+    parser.add_argument("--packets-yaml", type=Path, default=DEFAULT_PACKETS_YAML)
     args = parser.parse_args()
+    self_test_wanted = args.self_test or args.record
 
     if not args.packet and not args.packets_root.is_dir():
         print(f"no packets root at {args.packets_root}. The check reads the "
@@ -336,15 +371,23 @@ def main() -> None:
 
     failed = False
     for packet_dir in packets:
+        clean = True
         hits = scan_packet(packet_dir, withheld)
         for hit in hits:
             print(f"LEAK {packet_dir.name}/{hit}")
         if hits:
-            failed = True
-        if args.self_test and not self_test(packet_dir, withheld):
+            clean = False
+        if self_test_wanted and not self_test(packet_dir, withheld):
             print(f"SELF-TEST FAILED {packet_dir.name}: a planted withheld "
                   f"shingle went undetected")
+            clean = False
+        if not clean:
             failed = True
+            continue
+        if args.record:
+            digest = holdout_common.packet_sha256(packet_dir)
+            write_packets_yaml(args.packets_yaml, packet_dir.name, digest)
+            print(f"RECORDED {packet_dir.name} {digest}")
     if failed:
         raise SystemExit(1)
     print(f"clean · {len(packets)} packet(s) · {len(withheld.shingles)} withheld "

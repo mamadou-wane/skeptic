@@ -164,14 +164,10 @@ def test_packet_tree_is_read_only(packet):
         assert not path.stat().st_mode & 0o222, path
 
 
-def test_packets_yaml_records_one_digest_per_task(tmp_path):
-    path = tmp_path / "packets.yaml"
-    holdout_packet.write_packets_yaml(path, "click-0002", "b" * 64)
-    holdout_packet.write_packets_yaml(path, "click-0001", "a" * 64)
-    import yaml
-    assert yaml.safe_load(path.read_text()) == {
-        "packets": {"click-0001": "a" * 64, "click-0002": "b" * 64}}
-    assert path.read_text().index("click-0001") < path.read_text().index("click-0002")
+def test_the_builder_does_not_record_a_digest(tmp_path):
+    """Only the leak check writes `packets.yaml`, and only for a clean packet."""
+    assert not hasattr(holdout_packet, "write_packets_yaml")
+    assert hasattr(holdout_leakcheck, "write_packets_yaml")
 
 
 # --- leak check -----------------------------------------------------------
@@ -250,6 +246,16 @@ def test_the_subtraction_does_not_reach_the_files_the_builder_writes(
     hits = holdout_leakcheck.scan_packet(planted, withheld)
     assert any(hit.startswith("task.md: 40-char shingle") for hit in hits)
     assert not [hit for hit in hits if hit.startswith(("tree/", "seed.diff"))]
+
+
+def test_packets_yaml_records_one_digest_per_task(tmp_path):
+    path = tmp_path / "packets.yaml"
+    holdout_leakcheck.write_packets_yaml(path, "click-0002", "b" * 64)
+    holdout_leakcheck.write_packets_yaml(path, "click-0001", "a" * 64)
+    import yaml
+    assert yaml.safe_load(path.read_text()) == {
+        "packets": {"click-0001": "a" * 64, "click-0002": "b" * 64}}
+    assert path.read_text().index("click-0001") < path.read_text().index("click-0002")
 
 
 def test_self_test_plants_a_withheld_byte_and_requires_a_failure(packet, withheld):

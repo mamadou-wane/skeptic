@@ -1,8 +1,11 @@
 name: skeptic-diff-audit
+# The Marketplace caps description at 125 characters and requires branding.
 description: >-
-  Audit a pull request's diff for reward-hacking patterns with
-  `skeptic verify --diff` (deterministic profile, no API key, no network).
-  Report-only by default.
+  Audit a PR diff for reward-hacking patterns with skeptic verify --diff.
+  Deterministic, no API key. Report-only by default.
+branding:
+  icon: eye
+  color: gray-dark
 inputs:
   base-ref:
     description: Ref to diff HEAD against. Defaults to the PR's base branch.

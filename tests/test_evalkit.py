@@ -608,7 +608,8 @@ def test_render_table_byte_matches_the_committed_wave_a_table():
     rendered = render_table(rows, baselines)
 
     committed = (run_dir / "table.md").read_text()
-    pre_notes, _, _ = committed.partition("## Notes")
+    pre_notes, marker, _ = committed.partition("## Notes")
+    assert marker == "## Notes"  # the split point itself, not a silent whole-file match
     assert rendered == pre_notes.rstrip("\n")
 
 
@@ -1032,13 +1033,49 @@ def test_holdout_registry_forbids_an_unknown_key(tmp_path):
         load_holdout_registry(path)
 
 
-def test_holdout_registry_refuses_a_variant_id_that_is_not_a_slug(tmp_path):
+@pytest.mark.parametrize("bad_id", [
+    "../escape",      # a path segment
+    "click/h5",       # a separator
+    "H5-Holdout",     # uppercase
+    "h5_holdout",     # underscore
+    "-h5",            # leading hyphen
+    "h5-",            # trailing hyphen
+    "h5--holdout",    # doubled hyphen
+])
+def test_holdout_registry_refuses_a_variant_id_that_is_not_a_slug(tmp_path, bad_id):
     """The id becomes the run identity and the snapshot directory name, so a
-    path separator in it would write outside the run dir."""
+    path separator in it would write outside the run dir. The hyphen rules
+    are cosmetic rather than dangerous, and refused for the same reason the
+    CLI refuses them: a published row label with a doubled or dangling hyphen
+    is a typo nobody chose."""
     path = _write_registry(tmp_path, [("click-0001", "PLACEHOLDER", "H5", "p.diff")])
-    path.write_text(path.read_text().replace("PLACEHOLDER", "../escape"))
+    path.write_text(path.read_text().replace("PLACEHOLDER", bad_id))
     with pytest.raises(SkepticInfraError, match="variant_id"):
         load_holdout_registry(path)
+
+
+def test_holdout_registry_refuses_a_repeated_task_and_variant_pair(tmp_path):
+    """Finding 1: two rows sharing (task_id, variant_id) sweep into one
+    snapshot directory, the second overwriting the first, so `load_rows` reads
+    one row where two were authored and the published denominator comes up
+    short with nothing saying so. The holdout's whole claim is n of 12."""
+    path = _write_registry(tmp_path, [
+        ("click-0001", "h5-holdout", "H5", "first.diff"),
+        ("click-0001", "h5-holdout", "H5", "second.diff"),
+    ])
+    with pytest.raises(SkepticInfraError, match="duplicate rows"):
+        load_holdout_registry(path)
+
+
+def test_holdout_registry_allows_one_variant_id_across_two_tasks(tmp_path):
+    """The pair is the key, not the id alone: the pre-registered allocation
+    doubles H5 and H6, and two tasks may reasonably name their row the same
+    thing since the snapshot directory is `<task>/<variant>`."""
+    registry = load_holdout_registry(_write_registry(tmp_path, [
+        ("click-0001", "h5-holdout", "H5", "a.diff"),
+        ("rich-0006", "h5-holdout", "H5", "b.diff"),
+    ]))
+    assert len(registry.variants) == 2
 
 
 def test_holdout_registry_refuses_a_patch_whose_bytes_moved(tmp_path):
@@ -1161,6 +1198,17 @@ def test_load_arm_rows_refuses_a_corrupt_classification(tmp_path):
         load_arm_rows(tmp_path / "arm")
 
 
+def test_load_arm_rows_refuses_a_truncated_classification(tmp_path):
+    """Finding 4: a half-written file is the likelier corruption of the two
+    (an arm interrupted mid-write), and a bare JSONDecodeError is not the
+    worded refusal this function's docstring promises."""
+    attempt = tmp_path / "arm" / "click-0001" / "attempt-1"
+    attempt.mkdir(parents=True)
+    (attempt / "classification.json").write_text('{"task_id": "click-0001",')
+    with pytest.raises(SkepticInfraError, match="not an attempt classification"):
+        load_arm_rows(tmp_path / "arm")
+
+
 def test_load_arm_rows_refuses_a_missing_directory(tmp_path):
     with pytest.raises(SkepticInfraError, match="No arm directory"):
         load_arm_rows(tmp_path / "nope")
@@ -1213,6 +1261,29 @@ def test_arm_comparison_matches_the_committed_arm_table(tmp_path):
     assert "| 3.67 |" in pressure_row
     assert "| $0.26 |" in pressure_row
     assert "verify --profile paid --candidate-diff" in table
+
+    # Finding 3: the committed base arm has 2 of 24 replayed, and its cost
+    # column would otherwise put that historical spend beside the pressure
+    # arm's fresh spend with nothing marking which is which. The caveat is
+    # per arm, in render_arm_table's own wording, and the committed arm.md
+    # carries the same line.
+    assert ("base-20260817-030936: replayed 2 of 24 attempts "
+            "(cost is the originating run's)") in table
+    assert "replayed: 2 of 24 attempts (cost is the originating run's)" in committed
+    assert "tight-budget-20260818-000000: replayed" not in table
+
+
+def test_arm_comparison_marks_an_estimated_cost_per_arm(tmp_path):
+    """The other half of finding 3: an estimated row's zero is a gap, not a
+    measurement, and a comparison that folded it into a cost-per-resolve
+    figure with no marker would publish that gap as a number."""
+    arm = _synthetic_arm(tmp_path, "gap-arm", [
+        dataclasses.replace(ATTEMPT_GREEN_CORRECT, task_id="click-0001", attempt=1),
+        dataclasses.replace(ATTEMPT_ESTIMATED, task_id="click-0001", attempt=2),
+    ])
+    table = render_arm_comparison([arm])
+    assert "gap-arm: estimated cost on 1 attempts" in table
+    assert "gap-arm: replayed 1 of 2 attempts (cost is the originating run's)" in table
 
 
 def test_arm_comparison_omits_the_catch_rate_note_when_no_arm_hacked(tmp_path):

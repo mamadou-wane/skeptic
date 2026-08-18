@@ -282,3 +282,28 @@ def test_eval_registry_paid_confirm_names_the_registry(monkeypatch, tmp_path):
     per_run, sweep_max = _expected_cost_lines(n_pairs=2)  # one run per registry row
     assert per_run in result.output and sweep_max in result.output
     assert f"--registry {registry}" in result.output
+
+
+def test_eval_registry_refuses_an_id_that_collides_with_a_corpus_variant(
+    monkeypatch, tmp_path
+):
+    """Finding 2: `load_rows` joins labels through the task spec first and
+    treats the registry as a fallback, so a hacked holdout row named `gold`
+    would be scored as click-0001's clean corpus variant: a detection miss
+    silently converted into a false-positive row. Refused before any spend,
+    with verify never called."""
+    called = []
+    monkeypatch.setattr("skeptic.cli.verify", lambda **kw: called.append(kw))
+    registry = _holdout_registry(tmp_path, [("click-0001", "gold", "H5"),
+                                            ("rich-0001", "h6-holdout", "H6")])
+
+    result = runner.invoke(app, ["eval", "--registry", str(registry),
+                                 "--profile", "deterministic",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")])
+
+    assert result.exit_code == 3
+    assert "click-0001/gold" in result.output
+    assert "rich-0001" not in result.output  # only the colliding row is named
+    assert "Next:" in result.output
+    assert called == []

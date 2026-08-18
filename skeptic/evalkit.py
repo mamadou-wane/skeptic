@@ -51,8 +51,11 @@ SNAPSHOT_ARTIFACTS = ("verdict.json", "t1_outcomes.json", "t2_judge.json")
 # is what `_verify_path_identity` exists to mangle out of a path, a slash or a
 # `..` segment escapes the run directory entirely. One home for the rule, read
 # by both `cli.verify`'s guard and `HoldoutVariant` below, so the registry
-# cannot admit an id the CLI would refuse.
-VARIANT_ID_PATTERN = r"[a-z0-9-]+"
+# cannot admit an id the CLI would refuse. Hyphens separate alphanumeric runs
+# rather than floating free: a leading, trailing or doubled hyphen reads as a
+# typo in a published table's row label, and there is no id it is the only way
+# to write.
+VARIANT_ID_PATTERN = r"[a-z0-9]+(-[a-z0-9]+)*"
 
 
 def eval_run_id() -> str:
@@ -195,6 +198,35 @@ class HoldoutRegistry(BaseModel):
 
     variants: list[HoldoutVariant]
 
+    @model_validator(mode="after")
+    def _pairs_are_unique(self) -> HoldoutRegistry:
+        """No repeated `(task_id, variant_id)`.
+
+        The sweep drives one verify run per row and snapshots each under
+        `<run>/<task_id>/<variant_id>/`, so a repeated pair sends two runs to
+        one directory: the second overwrites the first, `load_rows` reads one
+        row where two were authored, and the published denominator comes up
+        short by one per duplicate with nothing in the table saying so. That
+        is the shape this refusal exists to stop, since the holdout's whole
+        claim is n out of 12.
+        """
+        seen: set[tuple[str, str]] = set()
+        duplicates: set[str] = set()
+        for row in self.variants:
+            key = (row.task_id, row.variant_id)
+            if key in seen:
+                duplicates.add(f"{row.task_id}/{row.variant_id}")
+            seen.add(key)
+        if duplicates:
+            raise ValueError(
+                f"duplicate rows {sorted(duplicates)}: every row is swept into "
+                f"its own <task_id>/<variant_id> snapshot directory, so a "
+                f"repeated pair overwrites the earlier run and publishes a "
+                f"denominator one row short per duplicate. Next: give each "
+                f"row its own variant_id, or drop the repeat."
+            )
+        return self
+
 
 def load_holdout_registry(path: Path) -> HoldoutRegistry:
     """Parse and verify a holdout registry.
@@ -233,8 +265,11 @@ def load_holdout_registry(path: Path) -> HoldoutRegistry:
             raise SkepticInfraError(
                 f"{path} row {row.task_id}/{row.variant_id} names patch "
                 f"{row.patch}, which is not a file. The sweep applies that "
-                f"patch over the task's seeded tree. Next: fix the path, or "
-                f"drop the row."
+                f"patch over the task's seeded tree. Registry paths resolve "
+                f"against the working directory, and every committed path in "
+                f"this repo is written relative to the repo root, so a sweep "
+                f"driven from anywhere else will not find it. Next: run from "
+                f"the repo root, fix the path, or drop the row."
             )
         actual = hashlib.sha256(patch.read_bytes()).hexdigest()
         if actual != row.sha256:
@@ -1029,13 +1064,13 @@ def load_arm_rows(arm_dir: Path) -> list[AttemptRow]:
                 continue
             try:
                 rows.append(AttemptRow(**json.loads(path.read_text())))
-            except TypeError as exc:
+            except (TypeError, json.JSONDecodeError) as exc:
                 raise SkepticInfraError(
                     f"{path} is not an attempt classification: build-arm "
-                    f"writes these from dataclasses.asdict(AttemptRow), so a "
-                    f"key mismatch means a hand-edited or truncated file "
-                    f"({exc}). Next: re-run that attempt, or drop the "
-                    f"directory."
+                    f"writes these from dataclasses.asdict(AttemptRow), so "
+                    f"unparseable JSON or a key mismatch means a hand-edited "
+                    f"or truncated file ({exc}). Next: re-run that attempt, "
+                    f"or drop the directory."
                 ) from exc
     return rows
 
@@ -1091,21 +1126,41 @@ def render_arm_comparison(arm_dirs: list[Path]) -> str:
     `arm_name` in their manifest: two runs of the same arm share a name and
     the timestamped directory is what tells them apart. Row order is the
     caller's, so the base arm can lead.
+
+    The notes under the table carry `render_arm_table`'s own two caveats, per
+    arm and in its wording: a replayed attempt's cost is the originating run's
+    real historical spend rather than this run's, and an estimated one has no
+    figure at all. The committed base arm has 2 of 24 replayed, so a cost
+    column printed without them would put historical spend beside fresh spend
+    with nothing marking which is which.
     """
     lines = [
         "| arm | " + " | ".join(ARM_COMPARISON_COLUMNS) + " |",
         "|---" * (len(ARM_COMPARISON_COLUMNS) + 1) + "|",
     ]
+    notes: list[str] = []
     any_green_wrong = False
     for arm_dir in arm_dirs:
-        figures = _arm_figures(load_arm_rows(arm_dir))
+        rows = load_arm_rows(arm_dir)
+        figures = _arm_figures(rows)
         any_green_wrong |= figures["catch rate"].startswith("unmeasured")
         lines.append(f"| {arm_dir.name} | "
                      + " | ".join(figures[name] for name in ARM_COMPARISON_COLUMNS)
                      + " |")
+        n_replayed = sum(1 for row in rows if row.replayed)
+        n_estimated = sum(1 for row in rows if row.estimated)
+        if n_replayed:
+            notes.append(
+                f"{arm_dir.name}: replayed {n_replayed} of {len(rows)} "
+                f"attempts (cost is the originating run's)")
+        if n_estimated:
+            notes.append(
+                f"{arm_dir.name}: estimated cost on {n_estimated} attempts")
     if any_green_wrong:
-        lines.append("")
-        lines.append(
+        notes.append(
             "Catch rate is a separate paid pass: run `verify --profile paid "
             "--candidate-diff` on each GREEN-wrong candidate.")
+    if notes:
+        lines.append("")
+        lines += notes
     return "\n".join(lines)

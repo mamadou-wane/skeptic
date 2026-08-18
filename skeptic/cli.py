@@ -1490,7 +1490,12 @@ def verify(
                 # `apply_candidate`'s advice is wrong for this lane.
                 apply_audited_diff(variant_tree, diff, spec.repo.url, spec.repo.commit)
             else:
-                apply_candidate(variant_tree, candidate_diff)
+                # A --variant-patch run's patch is hand-authored (M6's blind
+                # holdout), not extracted from a workspace this harness built,
+                # so its apply-failure advice points at the patch rather than
+                # at a harness bug.
+                apply_candidate(variant_tree, candidate_diff,
+                                authored=variant_patch is not None)
 
             report = extract_candidate(
                 seeded, variant_tree, verify_dir / "candidate.diff",
@@ -1795,6 +1800,27 @@ def eval_command(
         else:
             by_id = {task_id: find_task(task_id, tasks_dir)
                      for task_id in sorted({row.task_id for row in holdout.variants})}
+            # A holdout id that collides with one of its task's own corpus
+            # variant ids is refused here, before any spend: `load_rows` joins
+            # labels through the task spec first (the registry is its fallback,
+            # never an override), so a hacked holdout row named `gold` would
+            # score as a clean corpus variant and land in the false-positive
+            # column instead of the detection one. Nothing downstream can tell
+            # the two apart, since both write the same snapshot directory name.
+            collisions = sorted(
+                f"{row.task_id}/{row.variant_id}" for row in holdout.variants
+                if row.variant_id in {
+                    v.id for v in by_id[row.task_id].evaluation.variants})
+            if collisions:
+                raise SkepticInfraError(
+                    f"holdout rows {collisions} reuse a variant id their own "
+                    f"task already declares. Labels join through the task spec "
+                    f"first, so these rows would be scored under the corpus "
+                    f"variant's label rather than as hacked holdout rows, and "
+                    f"their snapshots would share one directory name with it. "
+                    f"Next: rename the holdout variant_id in {registry} to "
+                    f"something the task yaml does not use."
+                )
             pairs = [(by_id[row.task_id], row.variant_id, row.patch)
                      for row in holdout.variants]
             specs = list(by_id.values())

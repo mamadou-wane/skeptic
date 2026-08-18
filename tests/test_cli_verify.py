@@ -870,7 +870,9 @@ def _fake_heavy_stages_real_registry(monkeypatch, pair):
         workspace, "materialize",
         lambda repo, commit, dest: dest.mkdir(parents=True, exist_ok=True))
     monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
-    monkeypatch.setattr(workspace, "apply_candidate", lambda ws, diff: None)
+    # `**kw` absorbs the `authored` flag verify passes on the --variant-patch
+    # lane (M6 finding 7); the fake applies nothing either way.
+    monkeypatch.setattr(workspace, "apply_candidate", lambda ws, diff, **kw: None)
     monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
     monkeypatch.setattr(
         candidate, "extract_candidate",
@@ -897,9 +899,14 @@ def test_verify_candidate_diff_drives_the_real_path_and_stamps_candidate_identit
     profile: task 2b builds only the injection, not a paid-profile
     combination, and a would-be-PASS pair keeps the assertion about a genuine
     verdict rather than an incidental one."""
+    from skeptic import workspace
+
     monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
+    applied: list[dict] = []
+    monkeypatch.setattr(workspace, "apply_candidate",
+                        lambda ws, diff, **kw: applied.append(kw))
 
     diff_path = tmp_path / "build" / "attempt-3" / "candidate.diff"
     diff_path.parent.mkdir(parents=True)
@@ -914,6 +921,10 @@ def test_verify_candidate_diff_drives_the_real_path_and_stamps_candidate_identit
 
     assert result.exit_code == 0, result.output
     assert "VERDICT PASS" in result.output
+
+    # the harness extracted this diff itself, so its apply-failure advice
+    # stays the harness-bug one (M6 finding 7's other side)
+    assert applied == [{"authored": False}]
 
     identity = f"candidate:candidate@{sha8}"      # candidate.diff's own stem + content
     # The on-disk verify dir swaps ':' for '-': a colon in the host path
@@ -1698,16 +1709,28 @@ def test_verify_rejects_variant_patch_alongside_diff(tmp_path, monkeypatch):
     "h5_holdout:x.diff",       # underscore
     "../escape:x.diff",        # a path segment
     "click/h5:x.diff",         # a separator
+    "-h5:x.diff",              # leading hyphen
+    "h5-:x.diff",              # trailing hyphen
+    "h5--holdout:x.diff",      # doubled hyphen
 ])
 def test_verify_rejects_a_variant_patch_id_that_is_not_a_slug(tmp_path, monkeypatch, value):
     """The id becomes the verify dir, the snapshot dir and the run identity,
-    so anything but `[a-z0-9-]+` names a directory outside the run."""
+    so a separator or a `..` segment names a directory outside the run; the
+    hyphen rules are cosmetic, refused so a published row label cannot carry a
+    dangling or doubled hyphen nobody chose.
+
+    The output must name the pattern, not merely exit 3: every path here
+    points at a file that does not exist either, so a test asserting only the
+    exit code would pass against a guard that never fired."""
+    from skeptic import evalkit
+
     monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     result = runner.invoke(app, ["verify", "--task", "click-0001",
                                  "--variant-patch", value,
                                  "--workdir", str(tmp_path)])
     assert result.exit_code == 3
     assert "--variant-patch" in result.output
+    assert evalkit.VARIANT_ID_PATTERN in result.output, "the format guard, not a later one"
     assert "Next:" in result.output
 
 
@@ -1756,9 +1779,14 @@ def test_verify_variant_patch_drives_the_real_path_and_stamps_the_registry_id(
     identity, so the verify dir, the trace run_id and the verdict's `variant`
     field all read `h5-holdout` and never the `candidate-<stem>-<sha8>` form
     `load_rows` cannot join."""
+    from skeptic import workspace
+
     monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
+    applied: list[dict] = []
+    monkeypatch.setattr(workspace, "apply_candidate",
+                        lambda ws, diff, **kw: applied.append(kw))
 
     patch = tmp_path / "holdout" / "click-0001-h5.diff"
     patch.parent.mkdir(parents=True)
@@ -1771,6 +1799,9 @@ def test_verify_variant_patch_drives_the_real_path_and_stamps_the_registry_id(
 
     assert result.exit_code == 0, result.output
     assert "VERDICT PASS" in result.output
+    # M6 finding 7: this lane's patch is hand-authored, so the apply-failure
+    # advice has to blame the patch rather than the harness
+    assert applied == [{"authored": True}]
 
     verify_dir = workdir / "click-0001" / "verify" / "h5-holdout"
     assert verify_dir.is_dir(), "the id names the directory, with nothing mangled"

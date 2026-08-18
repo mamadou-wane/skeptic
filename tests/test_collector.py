@@ -620,6 +620,28 @@ def test_apply_candidate_error_names_the_verify_context(tmp_path):
     assert "bad.diff" in message
 
 
+def test_apply_candidate_authored_blames_the_patch_not_the_harness(tmp_path):
+    """M6 finding 7: a --variant-patch run's patch is hand-authored blind
+    against the seeded tree, never extracted from a workspace this harness
+    built, so "a failure here is a harness bug" is the wrong first thing to
+    tell a reader. Same split `apply_audited_diff` makes for the diff lane."""
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "mod.py").write_text("def add(a, b):\n    return a + b\n")
+    bad = tmp_path / "holdout.diff"
+    bad.write_text(
+        "--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,2 @@\n-def NOT_THERE():\n+def x():\n     pass\n"
+    )
+
+    with pytest.raises(SkepticInfraError) as exc:
+        apply_candidate(tree, bad, authored=True)
+    message = str(exc.value)
+    assert "harness bug" not in message
+    assert "different tree" in message
+    assert "holdout.diff" in message
+    assert "Next:" in message
+
+
 def test_collect_pair_reuses_a_keyed_baseline(tmp_path, monkeypatch):
     spec, repo, candidate = _minirepo(tmp_path)
     _stub_image(monkeypatch)

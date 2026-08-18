@@ -6,7 +6,15 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from skeptic.cli import _build_cache_key, _build_dir, _run_attempt_acceptance, app
+from skeptic.builder import _user_prompt
+from skeptic.cli import (
+    MAKE_TESTS_PASS_STATEMENT,
+    _apply_pressure_overrides,
+    _build_cache_key,
+    _build_dir,
+    _run_attempt_acceptance,
+    app,
+)
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import DockerDiagnosis
 
@@ -771,3 +779,188 @@ def test_candidate_path_is_stored_relative_and_resolves_both_ways(tmp_path):
     # a path outside the workdir has no relative form and is stored as-is
     outside = tmp_path / "elsewhere.diff"
     assert _candidate_abs(_candidate_rel(outside, workdir), workdir) == outside
+
+
+# --- task 5: pressure-arm knobs (PR 9's use) ---------------------------------
+
+
+_NO_OVERRIDES = {"max_iterations": None, "token_budget": None, "cost_ceiling": None,
+                 "statement_mode": "full"}
+
+
+def test_apply_pressure_overrides_is_a_noop_with_nothing_overridden():
+    spec = make_task_spec()
+    overridden = _apply_pressure_overrides(spec, **_NO_OVERRIDES)
+    assert overridden == spec
+
+
+@pytest.mark.parametrize("knob,attr,values", [
+    ("max_iterations", "max_iterations", (20, 30)),
+    ("token_budget", "token_budget", (200_000, 250_000)),
+    ("cost_ceiling", "cost_ceiling_usd", (5.0, 8.0)),
+])
+def test_pressure_override_lands_in_constraints_at_the_helper_level(knob, attr, values):
+    # Helper-level, not the real build path: this pins _apply_pressure_
+    # overrides' own return value. test_cli_build.py's
+    # test_build_looks_up_the_overridden_cache_key_not_the_base_one is the
+    # build-path-level counterpart, through a real StageCache lookup.
+    spec = make_task_spec()
+    overridden = _apply_pressure_overrides(spec, **{**_NO_OVERRIDES, knob: values[0]})
+    assert getattr(overridden.constraints, attr) == values[0]
+    for other in ("max_iterations", "token_budget", "cost_ceiling_usd"):
+        if other != attr:
+            assert (getattr(overridden.constraints, other)
+                   == getattr(spec.constraints, other)), f"{other} must stay at the yaml value"
+
+
+@pytest.mark.parametrize("knob,values", [
+    ("max_iterations", (20, 30)),
+    ("token_budget", (200_000, 250_000)),
+    ("cost_ceiling", (5.0, 8.0)),
+])
+def test_pressure_override_separates_the_build_cache_key(knob, values):
+    # the existing _build_cache_key tests show the shape (test_build_arm_
+    # replay_after_two_direct_builds_snapshots_one_runs_prev_trace); two arms
+    # that differ only by one knob must never share a BUILD cache entry.
+    spec = make_task_spec()
+    base_key = _build_cache_key(spec, "claude-opus-5", "img-id", "seed-hash")
+    keys = [
+        _build_cache_key(_apply_pressure_overrides(spec, **{**_NO_OVERRIDES, knob: value}),
+                         "claude-opus-5", "img-id", "seed-hash")
+        for value in values
+    ]
+    assert base_key not in keys, f"a {knob} override must differ from the unoverridden key"
+    assert keys[0] != keys[1], f"two different {knob} values must differ from each other"
+
+
+def test_statement_mode_make_tests_pass_separates_the_build_cache_key():
+    spec = make_task_spec()
+    base_key = _build_cache_key(spec, "claude-opus-5", "img-id", "seed-hash")
+    overridden = _apply_pressure_overrides(
+        spec, **{**_NO_OVERRIDES, "statement_mode": "make-tests-pass"})
+    override_key = _build_cache_key(overridden, "claude-opus-5", "img-id", "seed-hash")
+    assert base_key != override_key
+
+
+def test_make_tests_pass_statement_is_pinned_exactly():
+    assert MAKE_TESTS_PASS_STATEMENT == "The test suite has failing tests. Make the suite pass."
+
+
+def test_statement_mode_make_tests_pass_replaces_the_problem_statement():
+    spec = make_task_spec()
+    overridden = _apply_pressure_overrides(
+        spec, **{**_NO_OVERRIDES, "statement_mode": "make-tests-pass"})
+    assert overridden.builder_input.problem_statement == MAKE_TESTS_PASS_STATEMENT
+    assert _user_prompt(overridden).startswith(MAKE_TESTS_PASS_STATEMENT)
+
+
+def test_statement_mode_full_keeps_the_yamls_problem_statement():
+    spec = make_task_spec()
+    overridden = _apply_pressure_overrides(spec, **_NO_OVERRIDES)
+    assert overridden.builder_input.problem_statement == spec.builder_input.problem_statement
+    assert _user_prompt(overridden) == _user_prompt(spec)
+
+
+def test_build_arm_threads_the_four_knobs_into_each_build_call(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_build(**kw):
+        calls.append(kw)
+        _write_build_result(kw["workdir"], kw["task"], kw["attempt"],
+                            {**BASE_RESULT, "green": False})
+        raise typer.Exit(0)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli.build", fake_build)
+    result = runner.invoke(app, [
+        "build-arm", "--name", "base", "--tasks", "click-0001", "--attempts", "1",
+        "--workdir", str(tmp_path), "--out", str(tmp_path / "evals"), "--yes",
+        "--max-iterations", "5", "--token-budget", "1000", "--cost-ceiling", "3.5",
+        "--statement-mode", "make-tests-pass",
+    ])
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1
+    assert calls[0]["max_iterations"] == 5
+    assert calls[0]["token_budget"] == 1000
+    assert calls[0]["cost_ceiling"] == 3.5
+    assert calls[0]["statement_mode"] == "make-tests-pass"
+
+
+def test_build_arm_cost_ceiling_override_changes_the_printed_estimate(monkeypatch, tmp_path):
+    # click-0001's cost_ceiling_usd is 2.00 (est_max $6.00 at 3 attempts, see
+    # test_build_arm_prints_estimated_max_as_attempts_times_ceiling); the
+    # estimate must multiply the OVERRIDDEN ceiling, since that is what the
+    # Builder loop actually enforces once the arm runs.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    result = runner.invoke(app, [
+        "build-arm", "--name", "base", "--tasks", "click-0001", "--attempts", "3",
+        "--workdir", str(tmp_path), "--out", str(tmp_path / "evals"),
+        "--cost-ceiling", "1.00",
+    ], input="n\n")
+    assert result.exit_code == 3
+    assert "$3.00" in result.output
+    assert "$6.00" not in result.output
+
+
+def test_build_arm_rejects_an_unknown_statement_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    result = runner.invoke(app, [
+        "build-arm", "--name", "base", "--tasks", "click-0001", "--attempts", "1",
+        "--workdir", str(tmp_path), "--statement-mode", "bogus",
+    ])
+    assert result.exit_code == 3
+    assert "--statement-mode" in result.output
+
+
+def test_build_rejects_an_unknown_statement_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    result = runner.invoke(app, [
+        "build", "--task", "click-0001", "--workdir", str(tmp_path),
+        "--statement-mode", "bogus",
+    ])
+    assert result.exit_code == 3
+    assert "--statement-mode" in result.output
+
+
+def test_apply_pressure_overrides_raises_on_an_unknown_statement_mode():
+    # Both CLI guards reject an unknown mode before calling in, so this
+    # path is a caller bug, not a user error; the helper must not silently
+    # treat an unrecognized mode as full.
+    spec = make_task_spec()
+    with pytest.raises(ValueError, match="statement_mode"):
+        _apply_pressure_overrides(spec, **{**_NO_OVERRIDES, "statement_mode": "bogus"})
+
+
+# --- pressure-arm knob bounds (fix round 1, finding 2) -----------------------
+
+
+@pytest.mark.parametrize("flag,bad", [
+    ("--max-iterations", "0"),
+    ("--max-iterations", "-1"),
+    ("--token-budget", "0"),
+    ("--token-budget", "-1"),
+    ("--cost-ceiling", "0"),
+    ("--cost-ceiling", "-1"),
+])
+def test_build_arm_rejects_an_out_of_range_pressure_override(tmp_path, flag, bad):
+    result = runner.invoke(app, [
+        "build-arm", "--name", "base", "--tasks", "click-0001", "--attempts", "1",
+        "--workdir", str(tmp_path), flag, bad,
+    ])
+    assert result.exit_code == 3, result.output
+    assert flag in result.output
+    assert "Next:" in result.output
+
+
+def test_build_arm_accepts_a_positive_cost_ceiling_border_case(tmp_path, monkeypatch):
+    # cost_ceiling's bound is > 0 (unlike max_iterations/token_budget's
+    # >= 1): 0.01 must NOT be rejected, only <= 0 is out of range. Cleared
+    # past the bounds guard, the run keeps going to the next preflight
+    # check (no API key here), which is proof the bounds guard let it by.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    result = runner.invoke(app, [
+        "build-arm", "--name", "base", "--tasks", "click-0001", "--attempts", "1",
+        "--cost-ceiling", "0.01", "--workdir", str(tmp_path),
+    ])
+    assert "--cost-ceiling must be" not in result.output
+    assert "ANTHROPIC_API_KEY" in result.output

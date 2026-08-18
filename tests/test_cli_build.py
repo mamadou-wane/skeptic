@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from skeptic.cli import _build_cache_key, app
+from skeptic.cli import _apply_pressure_overrides, _build_cache_key, app
 from skeptic.sandbox import DockerDiagnosis
 
 _DIAG_OK = DockerDiagnosis("ok", "")
@@ -187,6 +187,20 @@ def test_build_rejects_non_positive_attempt(tmp_path):
         assert "Next:" in result.output
 
 
+def test_build_rejects_out_of_range_pressure_overrides(tmp_path):
+    cases = [
+        ("--max-iterations", "0"), ("--max-iterations", "-1"),
+        ("--token-budget", "0"), ("--token-budget", "-1"),
+        ("--cost-ceiling", "0"), ("--cost-ceiling", "-1"),
+    ]
+    for flag, bad in cases:
+        result = runner.invoke(app, ["build", "--task", "click-0001",
+                                     "--workdir", str(tmp_path), flag, bad])
+        assert result.exit_code == 3, result.output
+        assert flag in result.output
+        assert "Next:" in result.output
+
+
 def test_build_writes_a_baseline_suite_trace_event_on_a_cache_hit(tmp_path, monkeypatch):
     # DECISIONS row 74 puts the baseline red set in the trace on every run.
     # A stage-cache hit never executes do_build, so the CLI replays the event
@@ -313,3 +327,81 @@ def test_build_docker_refusal_names_state_and_next(tmp_path, monkeypatch):
     assert result.exit_code == 3
     assert "The docker CLI is not on PATH." in result.output
     assert "Next: install" in result.output
+
+
+# --- fix round 1, finding 1: the override-application line, through build()
+# itself, not just through _apply_pressure_overrides in isolation ----------
+
+
+def test_build_cost_ceiling_override_reaches_the_printed_ceiling(tmp_path, monkeypatch):
+    # cli.py's `spec = _apply_pressure_overrides(...)` right after find_task
+    # had no test through build() itself: a reviewer deleted that one line
+    # and every existing test, including test_cli_build_arm.py's helper-level
+    # ones, stayed green. click-0001's yaml cost_ceiling_usd is $2.00; the
+    # "cost ceiling" echo must print the OVERRIDDEN $1.00, since that is the
+    # figure build() goes on to enforce.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr("skeptic.cli._docker_diagnosis", lambda: _DIAG_OK)
+    result = runner.invoke(app, ["build", "--task", "click-0001",
+                                 "--cost-ceiling", "1.00",
+                                 "--workdir", str(tmp_path)], input="n\n")
+    assert result.exit_code == 3
+    assert "cost ceiling $1.00" in result.output
+
+
+def test_build_looks_up_the_overridden_cache_key_not_the_base_one(tmp_path, monkeypatch):
+    """Pins the override-application line through the real BUILD cache
+    lookup, not just _apply_pressure_overrides' return value.
+
+    The StageCache entry is seeded ONLY under the overridden key
+    (max_iterations=3). If `spec = _apply_pressure_overrides(...)` were ever
+    deleted from build(), it would compute the BASE key instead, miss this
+    cache, and fall through into a real do_build with nothing past
+    ensure_repo_image mocked (a real SessionContainer/Anthropic call) --
+    failing loud rather than silently replaying a base-arm result under a
+    pressure arm's override.
+    """
+    from skeptic import candidate, cli, image, workspace
+    from skeptic.orchestrator import StageCache
+    from skeptic.spec import find_task
+    from skeptic.trace import config_hash
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
+    monkeypatch.setattr(workspace, "clone_pinned",
+                        lambda url, commit, cache: cache)
+    monkeypatch.setattr(workspace, "materialize",
+                        lambda repo, commit, dest: dest.mkdir(parents=True))
+    monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
+    monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
+    monkeypatch.setattr(
+        image, "ensure_repo_image",
+        lambda task_spec, context, out: SimpleNamespace(tag="t:1", image_id="img-id"))
+
+    workdir = tmp_path.resolve()
+    spec = find_task("click-0001", Path("tasks"))
+    overridden = _apply_pressure_overrides(
+        spec, max_iterations=3, token_budget=None, cost_ceiling=None,
+        statement_mode="full")
+    seed_hash = config_hash({"seed": Path(spec.seed.bug_patch).read_text()})
+    key = _build_cache_key(overridden, "claude-opus-5", "img-id", seed_hash)
+    build_dir = workdir / spec.task_id / "build"
+    cached = {
+        "stop_reason": "green", "iterations": 2, "in_tokens": 10,
+        "out_tokens": 5, "usd": 0.01, "green": True,
+        "green_rule": "differential-1",
+        "baseline_seed_red": ["tests/test_termui.py::test_progressbar_width"],
+        "baseline_environmental_red": [],
+        "baseline_total": 3, "baseline_collection_errors": 0,
+        "candidate": str(build_dir / "candidate.diff"),
+        "changed_files": ["src/click/termui.py"], "out_of_scope": [],
+        "is_empty": False, "image_id": "img-id",
+    }
+    StageCache(build_dir / "cache").put(key, cached)
+
+    result = runner.invoke(app, ["build", "--task", "click-0001",
+                                 "--max-iterations", "3",
+                                 "--workdir", str(workdir), "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "green: True" in result.output

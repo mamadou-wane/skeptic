@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
+import re
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -26,8 +28,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
+import yaml
+from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
+
 from skeptic.builder import GREEN_RULE_VERSION, prompt_version
-from skeptic.checks.aggregate import score_evidence
+from skeptic.checks.aggregate import SUSPECT_THRESHOLD, WEIGHTS, score_evidence
 from skeptic.collector import COLLECTOR_VERSION
 from skeptic.errors import SkepticInfraError
 from skeptic.image import repo_image_tag
@@ -39,6 +44,18 @@ from skeptic.testgen import SYSTEM_PROMPT
 from skeptic.trace import config_hash, read_trace
 
 SNAPSHOT_ARTIFACTS = ("verdict.json", "t1_outcomes.json", "t2_judge.json")
+
+# The id `verify --variant-patch <id>:<path>` accepts, and the id a holdout
+# registry row may carry. It becomes the run identity, the verify directory
+# name and the snapshot directory name, so it has to be a plain slug: a colon
+# is what `_verify_path_identity` exists to mangle out of a path, a slash or a
+# `..` segment escapes the run directory entirely. One home for the rule, read
+# by both `cli.verify`'s guard and `HoldoutVariant` below, so the registry
+# cannot admit an id the CLI would refuse. Hyphens separate alphanumeric runs
+# rather than floating free: a leading, trailing or doubled hyphen reads as a
+# typo in a published table's row label, and there is no id it is the only way
+# to write.
+VARIANT_ID_PATTERN = r"[a-z0-9]+(-[a-z0-9]+)*"
 
 
 def eval_run_id() -> str:
@@ -140,14 +157,172 @@ def _image_id(spec: TaskSpec, workdir: Path) -> str:
     return current_tag
 
 
-def build_manifest(specs: list[TaskSpec], workdir: Path) -> dict:
+class HoldoutVariant(BaseModel):
+    """One row of `evals/v1/holdout/registry.yaml`.
+
+    Holdout variants live outside the corpus yamls on purpose (M6 spec, the
+    blind-holdout section): the task specs and their published hashes stay
+    untouched, and `spec._acceptance_names_resolve` never sees a holdout id.
+    `patch` is a plain cwd-relative path, the same convention every spec patch
+    path already uses, and `sha256` is that file's own digest, checked at load
+    so an edited patch cannot ride a published registry.
+
+    There is no `label` field: the holdout has no clean variants (a blind
+    correct fix is either a gold revert or an unscreenable prime, spec's own
+    reasoning), so `load_rows` reads every registry row as hacked.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    variant_id: str
+    hack_category: str
+    patch: str
+    sha256: str
+
+    @model_validator(mode="after")
+    def _ids_are_slugs(self) -> HoldoutVariant:
+        if not re.fullmatch(VARIANT_ID_PATTERN, self.variant_id):
+            raise ValueError(
+                f"variant_id {self.variant_id!r} must match "
+                f"{VARIANT_ID_PATTERN}: the sweep drives this id through "
+                f"`verify --variant-patch`, where it becomes the run identity "
+                f"and the snapshot directory name, so anything with a colon "
+                f"or a path separator names a directory outside the run."
+            )
+        return self
+
+
+class HoldoutRegistry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    variants: list[HoldoutVariant]
+
+    @model_validator(mode="after")
+    def _pairs_are_unique(self) -> HoldoutRegistry:
+        """No repeated `(task_id, variant_id)`.
+
+        The sweep drives one verify run per row and snapshots each under
+        `<run>/<task_id>/<variant_id>/`, so a repeated pair sends two runs to
+        one directory: the second overwrites the first, `load_rows` reads one
+        row where two were authored, and the published denominator comes up
+        short by one per duplicate with nothing in the table saying so. That
+        is the shape this refusal exists to stop, since the holdout's whole
+        claim is n out of 12.
+        """
+        seen: set[tuple[str, str]] = set()
+        duplicates: set[str] = set()
+        for row in self.variants:
+            key = (row.task_id, row.variant_id)
+            if key in seen:
+                duplicates.add(f"{row.task_id}/{row.variant_id}")
+            seen.add(key)
+        if duplicates:
+            raise ValueError(
+                f"duplicate rows {sorted(duplicates)}: every row is swept into "
+                f"its own <task_id>/<variant_id> snapshot directory, so a "
+                f"repeated pair overwrites the earlier run and publishes a "
+                f"denominator one row short per duplicate. Next: give each "
+                f"row its own variant_id, or drop the repeat."
+            )
+        return self
+
+
+def load_holdout_registry(path: Path) -> HoldoutRegistry:
+    """Parse and verify a holdout registry.
+
+    Every row's recorded `sha256` is checked against the patch file it names,
+    because that digest is the whole provenance claim: PR 9 publishes a
+    holdout row, and a patch edited after the blind authoring session would
+    otherwise trace to a hash nobody re-read. A mismatch, a missing patch and
+    a malformed file are all `SkepticInfraError`, never a partial load.
+    """
+    if not path.is_file():
+        raise SkepticInfraError(
+            f"No holdout registry at {path}. `skeptic eval --registry` drives "
+            f"one verify run per row of this file (task_id, variant_id, "
+            f"hack_category, patch, sha256). Next: check the path, or run the "
+            f"corpus sweep with --tasks instead."
+        )
+    try:
+        data = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as exc:
+        raise SkepticInfraError(
+            f"Holdout registry {path} is not valid YAML ({exc}). Next: fix "
+            f"the file and re-run."
+        ) from exc
+    try:
+        registry = HoldoutRegistry.model_validate(data)
+    except ValidationError as exc:
+        raise SkepticInfraError(
+            f"Holdout registry {path} failed validation:\n{exc}\n"
+            f"Every row needs task_id, variant_id, hack_category, patch and "
+            f"sha256, and nothing else. Next: fix the rows above."
+        ) from exc
+    for row in registry.variants:
+        patch = Path(row.patch)
+        if not patch.is_file():
+            raise SkepticInfraError(
+                f"{path} row {row.task_id}/{row.variant_id} names patch "
+                f"{row.patch}, which is not a file. The sweep applies that "
+                f"patch over the task's seeded tree. Registry paths resolve "
+                f"against the working directory, and every committed path in "
+                f"this repo is written relative to the repo root, so a sweep "
+                f"driven from anywhere else will not find it. Next: run from "
+                f"the repo root, fix the path, or drop the row."
+            )
+        actual = hashlib.sha256(patch.read_bytes()).hexdigest()
+        if actual != row.sha256:
+            raise SkepticInfraError(
+                f"{path} row {row.task_id}/{row.variant_id} records sha256 "
+                f"{row.sha256} for {row.patch}, which hashes to {actual}. The "
+                f"registry's digest is the holdout's provenance claim, so a "
+                f"patch that no longer matches it cannot be swept. Next: "
+                f"restore the authored patch, or re-record the digest and say "
+                f"so in the write-up."
+            )
+    return registry
+
+
+def weights_sha256() -> str:
+    """A digest of the shipped scoring table: the sorted `WEIGHTS` items plus
+    `SUSPECT_THRESHOLD`, both imported from `checks.aggregate` rather than
+    copied, so the digest moves the moment the table does.
+
+    This is what makes the frozen-weights claim checkable from a published
+    manifest alone: a reader recomputes it against the revision the manifest
+    names and gets the same string, or the weights moved between the run and
+    the claim.
+    """
+    payload = json.dumps(
+        {"weights": sorted(WEIGHTS.items()), "suspect_threshold": SUSPECT_THRESHOLD},
+        sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def build_manifest(
+    specs: list[TaskSpec], workdir: Path, *, holdout: HoldoutRegistry | None = None,
+) -> dict:
     """The first-run manifest: verifier and collector revisions, the model
-    and prompt fingerprint, and per-task patch hashes, mutation seeds, and
-    image ids, so a published eval table can be traced back to exactly what
-    ran. No `tasks_dir` parameter: every patch path a spec carries is already
-    a plain, cwd-relative string (the convention `seed`/`build`/`verify` all
-    read patches by), so nothing here would have read it. schema_version is
-    not set here: write_manifest injects it.
+    and prompt fingerprint, the scoring table's digest, the host arch, and
+    per-task patch hashes, mutation seeds, and image ids, so a published eval
+    table can be traced back to exactly what ran. No `tasks_dir` parameter:
+    every patch path a spec carries is already a plain, cwd-relative string
+    (the convention `seed`/`build`/`verify` all read patches by), so nothing
+    here would have read it. schema_version is not set here: write_manifest
+    injects it.
+
+    `machine` is `platform.machine()`, reported and never checked: the pinned
+    BASE_IMAGE digest is a multi-platform OCI index, so the daemon resolves
+    the host arch at build time and a mismatch is impossible by construction.
+    What matters is knowing which arch produced a published number (M6 spec's
+    doctor section, the arch bullet).
+
+    `holdout`, when the sweep was driven by a registry rather than the corpus
+    yamls, records each holdout patch's sha256 under `holdout`, keyed the same
+    way the corpus's own `tasks[...]["variants"]` is. Without it a published
+    holdout row traces to nothing: the patches live outside every task spec
+    this manifest already hashes.
     """
     tasks = {}
     for spec in specs:
@@ -160,13 +335,21 @@ def build_manifest(specs: list[TaskSpec], workdir: Path) -> dict:
             "mutation_seed": spec.verification.mutation.seed,
             "image_id": _image_id(spec, workdir),
         }
-    return {
+    manifest = {
         "verifier_revision": verifier_revision(),
         "collector_version": COLLECTOR_VERSION,
         "model": SKEPTIC_MODEL,
         "prompt_hash": config_hash({"system": SYSTEM_PROMPT}),
+        "weights_sha256": weights_sha256(),
+        "machine": platform.machine(),
         "tasks": tasks,
     }
+    if holdout is not None:
+        holdout_hashes: dict[str, dict[str, str]] = {}
+        for row in holdout.variants:
+            holdout_hashes.setdefault(row.task_id, {})[row.variant_id] = row.sha256
+        manifest["holdout"] = holdout_hashes
+    return manifest
 
 
 # --- task 12: metric readers and the table ---------------------------------
@@ -219,7 +402,9 @@ class EvalRow:
 INFRA_EXIT_CODE = 3
 
 
-def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
+def load_rows(
+    run_dir: Path, tasks_dir: Path, registry: HoldoutRegistry | None = None,
+) -> list[EvalRow]:
     """Walk `<run_dir>/<task>/<variant>/`, one `EvalRow` per snapshot.
 
     A variant directory with neither `verdict.json` nor `meta.json` is not a
@@ -228,7 +413,16 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
     `verdict.json` whose `verdict` field is null, reads as INFRA. Labels and
     `hack_category` join through the task's own spec (`find_task`), never
     from the snapshot itself, since a snapshot carries no variant metadata
-    of its own. A replayed row's cost/latency read from `trace.prev.jsonl`
+    of its own.
+
+    `registry` is the holdout's second source of labels: its variants live
+    outside the corpus yamls, so a holdout snapshot's directory name is a
+    variant the task no longer declares and would otherwise raise below.
+    Given one, a row not in the spec is looked up there and reads as hacked
+    with the registry's own `hack_category`; the raise stays for anything in
+    neither, and a corpus sweep (no registry) keeps exactly the old behavior.
+
+    A replayed row's cost/latency read from `trace.prev.jsonl`
     (task 11 copies it on replay: a cache hit's fresh `trace.jsonl` carries
     no `llm_call`/`stage_end` events, so the originating run's own events
     live only in the rotated file). When even that copy holds no `llm_call`
@@ -236,6 +430,8 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
     `t2_judge.json` only lands under the paid profile), the cost is
     unknowable rather than zero-by-omission: `estimated=True`, `usd=0.0`.
     """
+    holdout = {} if registry is None else {
+        (row.task_id, row.variant_id): row for row in registry.variants}
     rows: list[EvalRow] = []
     for task_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
         spec = find_task(task_dir.name, tasks_dir)
@@ -308,19 +504,25 @@ def load_rows(run_dir: Path, tasks_dir: Path) -> list[EvalRow]:
                 estimated = True
                 usd = 0.0
 
-            if variant_dir.name not in variants:
+            if variant_dir.name in variants:
+                variant_spec = variants[variant_dir.name]
+                label, hack_category = variant_spec.label, variant_spec.hack_category
+            elif (holdout_row := holdout.get((task_dir.name, variant_dir.name))) is not None:
+                label, hack_category = "hacked", holdout_row.hack_category
+            else:
                 raise SkepticInfraError(
                     f"{variant_dir} is a snapshot of variant "
                     f"{variant_dir.name!r}, which {task_dir.name} no longer "
                     f"declares. Labels join through the task spec, so a row "
                     f"with no variant has no label and cannot be scored. "
                     f"Next: re-add the variant to tasks/{task_dir.name}.yaml, "
-                    f"or delete the stale snapshot directory."
+                    f"delete the stale snapshot directory, or pass the "
+                    f"holdout registry that declares it if this is a holdout "
+                    f"run."
                 )
-            variant_spec = variants[variant_dir.name]
             rows.append(EvalRow(
                 task_id=task_dir.name, variant=variant_dir.name,
-                label=variant_spec.label, hack_category=variant_spec.hack_category,
+                label=label, hack_category=hack_category,
                 verdict=verdict, suspect_score=suspect_score, evidence=evidence_rules,
                 top1=top1, anywhere=anywhere, fix_verified=fix_verified,
                 judge_flagged=judge_flagged, usd=usd, dur_ms=dur_ms,
@@ -675,6 +877,7 @@ class AttemptRow:
 
 def build_arm_manifest(
     specs: list[TaskSpec], workdir: Path, *, arm_name: str, model: str, attempts: int,
+    statement_mode: str,
 ) -> dict:
     """The build-arm counterpart of `build_manifest` (task 2): same
     template, two deliberate corrections plus the arm's own identity.
@@ -701,27 +904,42 @@ def build_arm_manifest(
     `collector.observe_variant`), so there is no collector behavior here to
     version.
 
-    Per-task entries carry only the seed patch's sha256 and `_image_id(spec,
-    workdir)`, the same two fields `build_manifest` records; there is no
-    `variants` entry, because an arm drives BUILD attempts against a task's
+    Per-task entries carry the seed patch's sha256, `_image_id(spec,
+    workdir)`, and the constraints the attempts actually ran under; there is
+    no `variants` entry, because an arm drives BUILD attempts against a task's
     seed, never a verify sweep against its variant patches. `arm_name` and
     `attempts` carry the arm's own identity alongside the task list `tasks`
     already enumerates by its keys. `schema_version` is not set here, same
     as `build_manifest`: `write_manifest` injects it.
+
+    The pressure knobs are recorded because nothing else here distinguishes an
+    overridden arm from base, and M6 publishes three arm tables whose only
+    difference is those knobs. `specs` reach this function already overridden
+    (`cli._apply_pressure_overrides` runs right after `find_task`), so
+    `constraints` per task is the effective value, not the yaml's: the same
+    object the Builder enforced its budget against and the BUILD cache key
+    hashed. `statement_mode` is a parameter rather than a read off the spec:
+    the override rewrites `builder_input.problem_statement` to a literal, and
+    recovering the mode by comparing prose against that literal would be a
+    guess where the caller already knows the answer.
     """
     tasks = {}
     for spec in specs:
         tasks[spec.task_id] = {
             "seed": hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest(),
             "image_id": _image_id(spec, workdir),
+            "constraints": spec.constraints.model_dump(),
         }
     return {
         "verifier_revision": verifier_revision(),
         "model": model,
         "builder_prompt_hash": prompt_version(),
         "green_rule": GREEN_RULE_VERSION,
+        "weights_sha256": weights_sha256(),
+        "machine": platform.machine(),
         "arm_name": arm_name,
         "attempts": attempts,
+        "statement_mode": statement_mode,
         "tasks": tasks,
     }
 
@@ -812,4 +1030,137 @@ def render_arm_table(rows: list[AttemptRow], header: dict | None = None) -> str:
     if n_estimated:
         lines.append(f"estimated cost on {n_estimated} attempts")
     lines.append(f"INFRA: {counts['INFRA_ERROR']}")
+    return "\n".join(lines)
+
+
+# --- M6: reading a committed arm back, and comparing several --------------
+
+
+def load_arm_rows(arm_dir: Path) -> list[AttemptRow]:
+    """Read one committed `evals/v1/arms/<run>/` directory back into
+    `AttemptRow`s: the eval-side `load_rows`'s counterpart for BUILD.
+
+    `build-arm` writes one `classification.json` per attempt from
+    `dataclasses.asdict(row)`, so the file is the row and this is the inverse.
+    A directory holding no `classification.json` (a snapshot whose build died
+    before the arm reached the write) contributes nothing rather than a
+    guessed row; a file whose keys do not match `AttemptRow` is a corrupt
+    artifact and says so, the same framing `load_rows` gives a judge artifact
+    it cannot read.
+    """
+    if not arm_dir.is_dir():
+        raise SkepticInfraError(
+            f"No arm directory at {arm_dir}. An arm comparison reads the "
+            f"per-attempt classification.json files `skeptic build-arm` "
+            f"leaves under evals/v1/arms/<run>/. Next: check the path."
+        )
+    rows: list[AttemptRow] = []
+    for task_dir in sorted(p for p in arm_dir.iterdir() if p.is_dir()):
+        attempt_dirs = sorted(task_dir.glob("attempt-*"),
+                              key=lambda p: int(p.name.removeprefix("attempt-")))
+        for attempt_dir in attempt_dirs:
+            path = attempt_dir / "classification.json"
+            if not path.is_file():
+                continue
+            try:
+                rows.append(AttemptRow(**json.loads(path.read_text())))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise SkepticInfraError(
+                    f"{path} is not an attempt classification: build-arm "
+                    f"writes these from dataclasses.asdict(AttemptRow), so "
+                    f"unparseable JSON or a key mismatch means a hand-edited "
+                    f"or truncated file ({exc}). Next: re-run that attempt, "
+                    f"or drop the directory."
+                ) from exc
+    return rows
+
+
+def _arm_figures(rows: list[AttemptRow]) -> dict[str, str]:
+    """The five per-arm figures a comparison prints, as rendered strings.
+
+    Every one is computed the way `render_arm_table` computes it for a single
+    arm: resolve rate is GREEN-correct over non-INFRA attempts, hack
+    incidence is GREEN-wrong over the same denominator, mean iterations is
+    over non-INFRA attempts, and cost sums `usd + usd_cache_gap` over every
+    attempt including INFRA (a failed attempt's real spend still bought some
+    of the resolve rate). The two functions hold the arithmetic separately
+    and must agree; `test_arm_comparison_matches_the_committed_arm_table`
+    is what pins that against the published base arm.
+
+    Catch rate is not computed from an arm directory at all. Measuring it
+    means running `verify --profile paid --candidate-diff` over each
+    GREEN-wrong candidate, which is a separate paid pass, so the cell says
+    which of the two states the arm is in rather than printing a number the
+    files cannot support.
+    """
+    counts = dict.fromkeys(("GREEN-correct", "GREEN-wrong", "RED", "INFRA_ERROR"), 0)
+    for row in rows:
+        counts[row.classification] = counts.get(row.classification, 0) + 1
+    resolved = counts["GREEN-correct"]
+    green_wrong = counts["GREEN-wrong"]
+    non_infra = len(rows) - counts["INFRA_ERROR"]
+    measured = [row for row in rows if row.classification != "INFRA_ERROR"]
+    total_cost = sum(row.usd + row.usd_cache_gap for row in rows)
+    return {
+        "resolve rate": f"{resolved}/{non_infra}",
+        "hack incidence": f"{green_wrong} of {non_infra}",
+        "catch rate": (f"unmeasured on {green_wrong}" if green_wrong
+                       else "not measurable at n=0"),
+        "mean iterations": (
+            f"{sum(r.iterations for r in measured) / len(measured):.2f}"
+            if measured else "n/a"),
+        "cost per resolve": (f"${total_cost / resolved:.2f}" if resolved
+                             else "n/a"),
+    }
+
+
+ARM_COMPARISON_COLUMNS = ("resolve rate", "hack incidence", "catch rate",
+                          "mean iterations", "cost per resolve")
+
+
+def render_arm_comparison(arm_dirs: list[Path]) -> str:
+    """Fold several committed arm directories into one comparison table, one
+    row per arm, for M6's base-versus-pressure-arms write-up.
+
+    Arms are named by directory (`base-20260817-030936`), not by the
+    `arm_name` in their manifest: two runs of the same arm share a name and
+    the timestamped directory is what tells them apart. Row order is the
+    caller's, so the base arm can lead.
+
+    The notes under the table carry `render_arm_table`'s own two caveats, per
+    arm and in its wording: a replayed attempt's cost is the originating run's
+    real historical spend rather than this run's, and an estimated one has no
+    figure at all. The committed base arm has 2 of 24 replayed, so a cost
+    column printed without them would put historical spend beside fresh spend
+    with nothing marking which is which.
+    """
+    lines = [
+        "| arm | " + " | ".join(ARM_COMPARISON_COLUMNS) + " |",
+        "|---" * (len(ARM_COMPARISON_COLUMNS) + 1) + "|",
+    ]
+    notes: list[str] = []
+    any_green_wrong = False
+    for arm_dir in arm_dirs:
+        rows = load_arm_rows(arm_dir)
+        figures = _arm_figures(rows)
+        any_green_wrong |= figures["catch rate"].startswith("unmeasured")
+        lines.append(f"| {arm_dir.name} | "
+                     + " | ".join(figures[name] for name in ARM_COMPARISON_COLUMNS)
+                     + " |")
+        n_replayed = sum(1 for row in rows if row.replayed)
+        n_estimated = sum(1 for row in rows if row.estimated)
+        if n_replayed:
+            notes.append(
+                f"{arm_dir.name}: replayed {n_replayed} of {len(rows)} "
+                f"attempts (cost is the originating run's)")
+        if n_estimated:
+            notes.append(
+                f"{arm_dir.name}: estimated cost on {n_estimated} attempts")
+    if any_green_wrong:
+        notes.append(
+            "Catch rate is a separate paid pass: run `verify --profile paid "
+            "--candidate-diff` on each GREEN-wrong candidate.")
+    if notes:
+        lines.append("")
+        lines += notes
     return "\n".join(lines)

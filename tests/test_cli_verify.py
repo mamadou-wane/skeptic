@@ -870,7 +870,9 @@ def _fake_heavy_stages_real_registry(monkeypatch, pair):
         workspace, "materialize",
         lambda repo, commit, dest: dest.mkdir(parents=True, exist_ok=True))
     monkeypatch.setattr(workspace, "apply_patch", lambda ws, patch: None)
-    monkeypatch.setattr(workspace, "apply_candidate", lambda ws, diff: None)
+    # `**kw` absorbs the `authored` flag verify passes on the --variant-patch
+    # lane (M6 finding 7); the fake applies nothing either way.
+    monkeypatch.setattr(workspace, "apply_candidate", lambda ws, diff, **kw: None)
     monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
     monkeypatch.setattr(
         candidate, "extract_candidate",
@@ -897,9 +899,14 @@ def test_verify_candidate_diff_drives_the_real_path_and_stamps_candidate_identit
     profile: task 2b builds only the injection, not a paid-profile
     combination, and a would-be-PASS pair keeps the assertion about a genuine
     verdict rather than an incidental one."""
+    from skeptic import workspace
+
     monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     pair = _would_be_pass_pair()
     _fake_heavy_stages_real_registry(monkeypatch, pair)
+    applied: list[dict] = []
+    monkeypatch.setattr(workspace, "apply_candidate",
+                        lambda ws, diff, **kw: applied.append(kw))
 
     diff_path = tmp_path / "build" / "attempt-3" / "candidate.diff"
     diff_path.parent.mkdir(parents=True)
@@ -914,6 +921,10 @@ def test_verify_candidate_diff_drives_the_real_path_and_stamps_candidate_identit
 
     assert result.exit_code == 0, result.output
     assert "VERDICT PASS" in result.output
+
+    # the harness extracted this diff itself, so its apply-failure advice
+    # stays the harness-bug one (M6 finding 7's other side)
+    assert applied == [{"authored": False}]
 
     identity = f"candidate:candidate@{sha8}"      # candidate.diff's own stem + content
     # The on-disk verify dir swaps ':' for '-': a colon in the host path
@@ -1639,3 +1650,188 @@ def test_verify_cache_key_with_no_seed_patch(tmp_path):
     # Same diff bytes, no identity override: the candidate-diff lane's key.
     assert key != _verify_cache_key(seedless, None, "deterministic",
                                     candidate_diff=diff)
+
+
+# --- M6: `--variant-patch <id>:<path>`, the holdout lane. Same tree as
+# --candidate-diff, different identity: the registry id becomes the run
+# identity and the snapshot directory name, which is what lets `load_rows`
+# join a holdout row that no task yaml declares.
+
+
+def test_verify_rejects_variant_patch_alongside_variant(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
+    result = runner.invoke(app, ["verify", "--task", "no-such-task",
+                                 "--variant", "gold",
+                                 "--variant-patch", "h5-holdout:x.diff",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "Exactly one of" in result.output
+    assert "--variant-patch" in result.output
+    assert "Next:" in result.output
+    assert called == []
+
+
+def test_verify_rejects_variant_patch_alongside_candidate_diff(tmp_path, monkeypatch):
+    called = []
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
+    diff_path = tmp_path / "candidate.diff"
+    diff_path.write_text("--- a/x\n+++ b/x\n")
+    result = runner.invoke(app, ["verify", "--task", "no-such-task",
+                                 "--candidate-diff", str(diff_path),
+                                 "--variant-patch", "h5-holdout:x.diff",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "Exactly one of" in result.output
+    assert called == []
+
+
+def test_verify_rejects_variant_patch_alongside_diff(tmp_path, monkeypatch):
+    """--diff has no task and no seed, so there is no seeded tree for a
+    holdout patch to apply over."""
+    called = []
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: called.append("docker") or _DIAG_OK)
+    patch = tmp_path / "audit.diff"
+    patch.write_text("--- a/x\n+++ b/x\n")
+    result = runner.invoke(app, ["verify", "--diff", str(patch), "--repo", str(tmp_path),
+                                 "--variant-patch", "h5-holdout:x.diff",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "--diff and --variant-patch are mutually exclusive" in result.output
+    assert called == []
+
+
+@pytest.mark.parametrize("value", [
+    "h5-holdout",              # no colon at all
+    ":x.diff",                 # empty id
+    "h5-holdout:",             # empty path
+    "H5-Holdout:x.diff",       # uppercase
+    "h5_holdout:x.diff",       # underscore
+    "../escape:x.diff",        # a path segment
+    "click/h5:x.diff",         # a separator
+    "-h5:x.diff",              # leading hyphen
+    "h5-:x.diff",              # trailing hyphen
+    "h5--holdout:x.diff",      # doubled hyphen
+])
+def test_verify_rejects_a_variant_patch_id_that_is_not_a_slug(tmp_path, monkeypatch, value):
+    """The id becomes the verify dir, the snapshot dir and the run identity,
+    so a separator or a `..` segment names a directory outside the run; the
+    hyphen rules are cosmetic, refused so a published row label cannot carry a
+    dangling or doubled hyphen nobody chose.
+
+    The output must name the pattern, not merely exit 3: every path here
+    points at a file that does not exist either, so a test asserting only the
+    exit code would pass against a guard that never fired."""
+    from skeptic import evalkit
+
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant-patch", value,
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert "--variant-patch" in result.output
+    assert evalkit.VARIANT_ID_PATTERN in result.output, "the format guard, not a later one"
+    assert "Next:" in result.output
+
+
+def test_verify_variant_patch_missing_path_is_infra_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
+    missing = tmp_path / "nope.diff"
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant-patch", f"h5-holdout:{missing}",
+                                 "--workdir", str(tmp_path)])
+    assert result.exit_code == 3
+    assert str(missing) in result.output
+    assert "Next:" in result.output
+
+
+def test_verify_variant_patch_unreadable_is_infra_error(tmp_path, monkeypatch, capsys):
+    """The `--candidate-diff` twin of this test explains why it is a plain
+    function call: typer's own Path conversion never sees this option (it is
+    a string), but `eval --registry` calls `verify` as a function, so an
+    unreadable patch has to be a worded refusal rather than an OSError out of
+    `read_bytes`."""
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
+    unreadable = tmp_path / "no-read.diff"
+    unreadable.write_text("--- a/x\n+++ b/x\n")
+    unreadable.chmod(0o000)
+    try:
+        with pytest.raises(typer.Exit) as exc_info:
+            cli.verify(task="click-0001", variant=None, candidate_diff=None,
+                       **{**cli._TASK_MODE_DEFAULTS,
+                          "variant_patch": f"h5-holdout:{unreadable}"},
+                       profile="deterministic", tasks_dir=Path("tasks"),
+                       workdir=tmp_path, runner="docker", yes=False)
+    finally:
+        unreadable.chmod(0o644)
+    assert exc_info.value.exit_code == 3
+    output = capsys.readouterr().out
+    assert str(unreadable) in output
+    assert "permissions" in output
+    assert "Next:" in output
+
+
+def test_verify_variant_patch_drives_the_real_path_and_stamps_the_registry_id(
+    tmp_path, monkeypatch
+):
+    """The deliverable itself: the same tree `--candidate-diff` builds
+    (materialize + seed patch + apply_candidate) with the registry id as the
+    identity, so the verify dir, the trace run_id and the verdict's `variant`
+    field all read `h5-holdout` and never the `candidate-<stem>-<sha8>` form
+    `load_rows` cannot join."""
+    from skeptic import workspace
+
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
+    pair = _would_be_pass_pair()
+    _fake_heavy_stages_real_registry(monkeypatch, pair)
+    applied: list[dict] = []
+    monkeypatch.setattr(workspace, "apply_candidate",
+                        lambda ws, diff, **kw: applied.append(kw))
+
+    patch = tmp_path / "holdout" / "click-0001-h5.diff"
+    patch.parent.mkdir(parents=True)
+    patch.write_bytes(b"--- a/x\n+++ b/x\n")
+
+    workdir = (tmp_path / "workdir").resolve()
+    result = runner.invoke(app, ["verify", "--task", "click-0001",
+                                 "--variant-patch", f"h5-holdout:{patch}",
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output
+    # M6 finding 7: this lane's patch is hand-authored, so the apply-failure
+    # advice has to blame the patch rather than the harness
+    assert applied == [{"authored": True}]
+
+    verify_dir = workdir / "click-0001" / "verify" / "h5-holdout"
+    assert verify_dir.is_dir(), "the id names the directory, with nothing mangled"
+    events, _ = read_trace(verify_dir / "trace.jsonl")
+    assert events
+    assert all(e["run_id"] == events[0]["run_id"] for e in events)
+
+    saved = json.loads((pair.artifacts_dir / "verdict.json").read_text())
+    assert saved["verdict"] == "PASS"
+    assert saved["variant"] == "h5-holdout"
+
+
+def test_verify_cache_key_variant_patch_is_the_id_plus_the_patch_bytes(tmp_path):
+    """The key rides the candidate-diff ingredients (the patch's own sha256),
+    with the registry id in the readable `variant` slot instead of a
+    stem-derived one. Two ids over the same bytes are two entries, and neither
+    collides with the bare `--candidate-diff` key for the same file."""
+    spec = make_task_spec()
+    patch = tmp_path / "h5.diff"
+    patch.write_bytes(b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
+
+    key_h5 = _verify_cache_key(spec, None, "deterministic",
+                               candidate_diff=patch, identity="h5-holdout")
+    key_h1 = _verify_cache_key(spec, None, "deterministic",
+                               candidate_diff=patch, identity="h1-holdout")
+    assert key_h5 != key_h1
+    assert key_h5 == _verify_cache_key(spec, None, "deterministic",
+                                       candidate_diff=patch, identity="h5-holdout")
+    assert key_h5 != _verify_cache_key(spec, None, "deterministic", candidate_diff=patch)
+
+    patch.write_bytes(patch.read_bytes() + b"\n# edited\n")
+    assert _verify_cache_key(spec, None, "deterministic",
+                             candidate_diff=patch, identity="h5-holdout") != key_h5

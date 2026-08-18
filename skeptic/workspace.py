@@ -121,28 +121,44 @@ def apply_patch(workspace: Path, patch_path: Path) -> None:
     )
 
 
-def apply_candidate(tree: Path, diff: Path) -> None:
-    """Apply the extracted candidate diff to a freshly seeded VERIFY tree.
+def apply_candidate(tree: Path, diff: Path, *, authored: bool = False) -> None:
+    """Apply a candidate patch to a freshly seeded VERIFY tree.
 
     Same mechanics as `apply_patch`, different advice. BUILD snapshots the
     seeded tree immediately after the seed patch and before the container
     starts, so the diff's a-side is byte-identical to `materialize` plus the
     seed patch, and a diff that fails to apply here is a harness bug or an
     edited file rather than a patch that needs regenerating.
+
+    `authored` names the other producer of a patch on this path: M6's holdout
+    variants, hand-written blind against the seeded tree rather than extracted
+    from a workspace the harness itself built. The mechanics do not change,
+    only the last sentence: a harness-extracted diff was taken against this
+    exact state, so a failure is a harness bug, while a hand-authored one most
+    likely applies to some other tree than the one the packet showed, which is
+    that lane's likeliest first-run error. `apply_audited_diff` below splits
+    the same way for the same reason (PR 3).
     """
     failed = _git_apply(tree, diff)
     if failed is None:
         return
     args, proc = failed
+    advice = (
+        f"That patch was authored against the seeded tree by hand, so a "
+        f"failure here means it was taken against a different tree than the "
+        f"one this task seeds. Next: re-materialize the seeded tree for this "
+        f"task and regenerate {diff} against it."
+        if authored else
+        f"That diff was taken against this exact state, so a failure here is "
+        f"a harness bug or a modified diff file. Next: compare {diff} against "
+        f"the tree BUILD ran on, then report the traceback."
+    )
     raise SkepticInfraError(
         f"Candidate diff {diff.name} does not apply to the freshly seeded tree "
         f"at {tree} (git {' '.join(args[:-1])} exit {proc.returncode}):\n"
         f"{proc.stderr[-1500:]}\n"
-        f"VERIFY re-materializes the seeded tree and re-applies the extracted "
-        f"diff so the judged tree is one the Builder never touched. That diff "
-        f"was taken against this exact state, so a failure here is a harness "
-        f"bug or a modified diff file. Next: compare {diff} against the tree "
-        f"BUILD ran on, then report the traceback."
+        f"VERIFY re-materializes the seeded tree and re-applies the patch so "
+        f"the judged tree is one no Builder ever touched. {advice}"
     )
 
 

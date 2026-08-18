@@ -1,3 +1,7 @@
+import hashlib
+import json
+from pathlib import Path
+
 import typer
 from typer.testing import CliRunner
 
@@ -29,7 +33,9 @@ def test_eval_command_sweeps_every_variant_and_writes_manifest(monkeypatch, tmp_
     run_dirs = list((tmp_path / "evals" / "runs").iterdir())
     assert len(run_dirs) == 1
     assert (run_dirs[0] / "manifest.json").is_file()
-    assert (tmp_path / "evals" / "manifest.json").is_file()
+    # and nowhere else: the top-level write used to overwrite the published
+    # evals/v1/manifest.json on any default-`--out` sweep
+    assert not (tmp_path / "evals" / "manifest.json").exists()
     assert (run_dirs[0] / "click-0001" / "gold" / "verdict.json").is_file()
 
 
@@ -160,3 +166,144 @@ def test_eval_drives_the_real_verify_and_the_guard_does_not_misfire(monkeypatch,
     assert "Exactly one of" not in result.output
     assert "Docker daemon unavailable" in result.output
     assert result.exit_code == cli.EXIT_INFRA
+
+
+# --- M6: `--registry`, the holdout lane ------------------------------------
+
+
+def _holdout_registry(tmp_path, rows) -> Path:
+    """A registry yaml plus the patch files it names. `rows` is
+    (task_id, variant_id, hack_category)."""
+    lines = ["variants:"]
+    for task_id, variant_id, category in rows:
+        patch = tmp_path / f"{task_id}-{variant_id}.diff"
+        patch.write_text(f"--- a/{variant_id}\n+++ b/{variant_id}\n")
+        digest = hashlib.sha256(patch.read_bytes()).hexdigest()
+        lines += [f"- task_id: {task_id}", f"  variant_id: {variant_id}",
+                  f"  hack_category: {category}", f"  patch: {patch}",
+                  f"  sha256: {digest}"]
+    path = tmp_path / "registry.yaml"
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def test_eval_registry_sweeps_by_registry_id_and_records_the_patch_hashes(
+    monkeypatch, tmp_path
+):
+    """The holdout sweep: one verify run per registry row, driven through
+    `--variant-patch` so the run identity, the snapshot directory and the
+    table row all carry the registry id. The manifest records each patch's
+    sha256 under `holdout`, without which a published holdout row traces to
+    nothing."""
+    calls = []
+
+    def fake_verify(**kw):
+        calls.append(kw)
+        write_fake_run(tmp_path, kw["task"], kw["variant_patch"].split(":", 1)[0])
+        raise typer.Exit(0)
+
+    monkeypatch.setattr("skeptic.cli.verify", fake_verify)
+    registry = _holdout_registry(tmp_path, [("click-0001", "h5-holdout", "H5"),
+                                            ("rich-0001", "h6-holdout", "H6")])
+    result = runner.invoke(app, ["eval", "--registry", str(registry),
+                                 "--profile", "deterministic",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")])
+
+    assert result.exit_code == 0, result.output
+    assert [kw["variant"] for kw in calls] == [None, None]
+    assert [kw["variant_patch"].split(":", 1)[0] for kw in calls] == [
+        "h5-holdout", "h6-holdout"]
+    assert [kw["task"] for kw in calls] == ["click-0001", "rich-0001"]
+
+    run_dir = next((tmp_path / "evals" / "runs").iterdir())
+    assert (run_dir / "click-0001" / "h5-holdout" / "verdict.json").is_file()
+    assert (run_dir / "rich-0001" / "h6-holdout" / "verdict.json").is_file()
+
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    assert set(manifest["holdout"]) == {"click-0001", "rich-0001"}
+    assert set(manifest["holdout"]["click-0001"]) == {"h5-holdout"}
+    assert "weights_sha256" in manifest
+
+    # both rows labeled hacked from the registry: without it, load_rows would
+    # have raised on a variant no task yaml declares
+    table = (run_dir / "table.md").read_text()
+    assert "| detection (lenient) | 0/2 |" in table
+    assert "| H5 | PASS | 1 |" in table
+
+
+def test_eval_registry_and_tasks_are_mutually_exclusive(tmp_path):
+    registry = _holdout_registry(tmp_path, [("click-0001", "h5-holdout", "H5")])
+    result = runner.invoke(app, ["eval", "--tasks", "click-0001",
+                                 "--registry", str(registry),
+                                 "--profile", "deterministic",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")])
+    assert result.exit_code == 3
+    assert "Exactly one of --tasks or --registry" in result.output
+    assert "Next:" in result.output
+
+
+def test_eval_needs_a_subject(tmp_path):
+    result = runner.invoke(app, ["eval", "--profile", "deterministic",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")])
+    assert result.exit_code == 3
+    assert "Exactly one of --tasks or --registry" in result.output
+
+
+def test_eval_registry_refuses_a_patch_whose_bytes_moved(tmp_path, monkeypatch):
+    """The registry's digest is the holdout's provenance claim, so a sweep
+    over an edited patch never starts: verify is not called at all."""
+    called = []
+    monkeypatch.setattr("skeptic.cli.verify", lambda **kw: called.append(kw))
+    registry = _holdout_registry(tmp_path, [("click-0001", "h5-holdout", "H5")])
+    (tmp_path / "click-0001-h5-holdout.diff").write_text("--- a/edited\n+++ b/edited\n")
+
+    result = runner.invoke(app, ["eval", "--registry", str(registry),
+                                 "--profile", "deterministic",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")])
+    assert result.exit_code == 3
+    assert "hashes to" in result.output
+    assert called == []
+
+
+def test_eval_registry_paid_confirm_names_the_registry(monkeypatch, tmp_path):
+    monkeypatch.setattr("skeptic.cli.verify", lambda **kw: (_ for _ in ()).throw(typer.Exit(0)))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    registry = _holdout_registry(tmp_path, [("click-0001", "h5-holdout", "H5"),
+                                            ("rich-0001", "h6-holdout", "H6")])
+    result = runner.invoke(app, ["eval", "--registry", str(registry),
+                                 "--profile", "paid",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")], input="n\n")
+    assert result.exit_code == 3
+    per_run, sweep_max = _expected_cost_lines(n_pairs=2)  # one run per registry row
+    assert per_run in result.output and sweep_max in result.output
+    assert f"--registry {registry}" in result.output
+
+
+def test_eval_registry_refuses_an_id_that_collides_with_a_corpus_variant(
+    monkeypatch, tmp_path
+):
+    """Finding 2: `load_rows` joins labels through the task spec first and
+    treats the registry as a fallback, so a hacked holdout row named `gold`
+    would be scored as click-0001's clean corpus variant: a detection miss
+    silently converted into a false-positive row. Refused before any spend,
+    with verify never called."""
+    called = []
+    monkeypatch.setattr("skeptic.cli.verify", lambda **kw: called.append(kw))
+    registry = _holdout_registry(tmp_path, [("click-0001", "gold", "H5"),
+                                            ("rich-0001", "h6-holdout", "H6")])
+
+    result = runner.invoke(app, ["eval", "--registry", str(registry),
+                                 "--profile", "deterministic",
+                                 "--workdir", str(tmp_path),
+                                 "--out", str(tmp_path / "evals")])
+
+    assert result.exit_code == 3
+    assert "click-0001/gold" in result.output
+    assert "rich-0001" not in result.output  # only the colliding row is named
+    assert "Next:" in result.output
+    assert called == []

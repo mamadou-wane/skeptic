@@ -1,0 +1,59 @@
+name: skeptic-diff-audit
+description: >-
+  Audit a pull request's diff for reward-hacking patterns with
+  `skeptic verify --diff` (deterministic profile, no API key, no network).
+  Report-only by default.
+inputs:
+  base-ref:
+    description: Ref to diff HEAD against. Defaults to the PR's base branch.
+    default: ${{ github.base_ref }}
+  fail-on:
+    description: >-
+      Exit-code posture: fail, suspect, or never. Report-only (never) is the
+      default until a diff-posture false-positive rate on real clean PRs is
+      measured.
+    default: never
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with: { python-version: "3.12" }
+    # The consumer's `uses: mamadou-wane/skeptic@<ref>` is the version
+    # authority; installing from $GITHUB_ACTION_PATH runs whatever ref that
+    # was, never a second pin chosen inside the action.
+    - run: pip install -q "$GITHUB_ACTION_PATH"
+      shell: bash
+    - name: Resolve merge base
+      id: mergebase
+      shell: bash
+      run: |
+        base="${{ inputs.base-ref }}"
+        sha="$(git merge-base "origin/$base" HEAD 2>/dev/null || git merge-base "$base" HEAD 2>/dev/null || true)"
+        if [ -z "$sha" ]; then
+          echo "::error::git merge-base found no common ancestor between '$base' and HEAD. actions/checkout defaults to a shallow clone; set 'fetch-depth: 0' on the checkout step and re-run." >&2
+          exit 1
+        fi
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+    - name: Audit the diff
+      id: verify
+      shell: bash
+      env: { NO_COLOR: "1" }
+      run: |
+        base="${{ steps.mergebase.outputs.sha }}"
+        git diff "$base..HEAD" > skeptic-diff.patch
+        set +e
+        skeptic verify --diff skeptic-diff.patch --repo . --base "$base" > skeptic-verify.txt
+        echo "code=$?" >> "$GITHUB_OUTPUT"
+        set -e
+        cat skeptic-verify.txt
+        { echo "### Skeptic diff audit"; echo; echo '```'; cat skeptic-verify.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+    - name: Apply fail-on
+      shell: bash
+      run: |
+        code="${{ steps.verify.outputs.code }}"
+        case "${{ inputs.fail-on }}" in
+          never) exit 0 ;;
+          suspect) [ "$code" -ge 1 ] && exit 1 || exit 0 ;;
+          fail) { [ "$code" = "2" ] || [ "$code" = "3" ]; } && exit 1 || exit 0 ;;
+          *) echo "::error::fail-on must be one of fail, suspect, never (got '${{ inputs.fail-on }}')" >&2; exit 1 ;;
+        esac

@@ -58,11 +58,19 @@ def feedback_strings(category: str) -> tuple[str, str, str]:
 def variant_id(category: str) -> str:
     """The registry variant id for a task's single holdout variant.
 
-    Lowercased category, which satisfies `evalkit.VARIANT_ID_PATTERN`: the
-    sweep drives this id through `verify --variant-patch`, where it becomes
-    the run identity and the snapshot directory name.
+    `holdout-` plus the lowercased category, which satisfies
+    `evalkit.VARIANT_ID_PATTERN`: the sweep drives this id through `verify
+    --variant-patch`, where it becomes the run identity and the snapshot
+    directory name.
+
+    The prefix is what keeps it distinct from the dev set. Eleven of the
+    twelve tasks already ship a corpus variant whose id is the bare
+    lowercased category (click-0001 has `h5`, and its holdout category is
+    H5), and the M6 write-up puts the dev row and the holdout row side by
+    side in one per-category table. A bare `h5` would make
+    (task_id, variant_id) join two different patches.
     """
-    return category.lower()
+    return f"holdout-{category.lower()}"
 
 
 def sha256_file(path: Path) -> str:

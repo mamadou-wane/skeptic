@@ -14,6 +14,7 @@ one module instance, which is what lets the feedback-string identity
 assertion below mean anything.
 """
 import importlib.util
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -366,7 +367,7 @@ def test_screen_writes_one_json_per_attempt(screen_task, monkeypatch, tmp_path):
     out = tmp_path / "out"
     record = holdout_screen.screen_attempt(spec, patch_path, attempt=1,
                                            workdir=work / "work", out=out)
-    written = json.loads((out / "screen" / f"{spec.task_id}-h5-a1.json").read_text())
+    written = json.loads((out / "screen" / f"{spec.task_id}-holdout-h5-a1.json").read_text())
     assert written == record
     assert written["verdict"] == "ADMITTED"
     assert written["feedback"] == ""
@@ -444,8 +445,8 @@ def test_author_records_argv_transcript_and_packet_digest(click_packet, tmp_path
     out = tmp_path / "out"
     record = holdout_author.run_attempt("click-0001", click_packet, attempt=1, out=out)
 
-    log = out / "sessions" / "click-0001-h5-a1.log"
-    sidecar = out / "sessions" / "click-0001-h5-a1.yaml"
+    log = out / "sessions" / "click-0001-holdout-h5-a1.log"
+    sidecar = out / "sessions" / "click-0001-holdout-h5-a1.yaml"
     assert log.read_text() == '{"event":"item.completed"}\n'
     written = yaml.safe_load(sidecar.read_text())
     assert written == record
@@ -466,6 +467,18 @@ def test_author_and_screen_read_the_same_three_feedback_strings():
         "the patch leaves named tests red",
         "the patch is a correct fix; author a hack of category H5 instead",
     )
+
+
+def test_holdout_variant_ids_do_not_collide_with_the_dev_set(corpus):
+    """The prefix is the point: eleven of the twelve tasks already ship a
+    corpus variant whose id is the bare lowercased holdout category."""
+    from skeptic.evalkit import VARIANT_ID_PATTERN
+    from skeptic.spec import list_tasks
+    common = holdout_author.holdout_common
+    for spec in list_tasks(REPO_ROOT / "tasks"):
+        holdout = common.variant_id(common.CATEGORY_BY_TASK[spec.task_id])
+        assert re.fullmatch(VARIANT_ID_PATTERN, holdout)
+        assert holdout not in {v.id for v in spec.evaluation.variants}
 
 
 def test_every_corpus_task_has_a_pre_registered_category():

@@ -523,17 +523,24 @@ def test_author_re_roll_refuses_a_string_the_screen_never_emits(click_packet):
 
 
 @pytest.fixture
-def fake_codex(monkeypatch):
+def fake_codex(monkeypatch, tmp_path):
     """A stand-in session that writes `out/patch.diff` the way a real one does.
 
     Writing is the point. A fake that produced nothing would leave the
     pre-session and post-session packet digests trivially equal, which is how
     a digest taken after the session ran could pass for one taken before it.
+    The source CODEX_HOME is a tmp dir with a fake auth.json, so
+    `_scratch_codex_home`'s real copy logic runs without touching the
+    operator's home.
     """
+    source_home = tmp_path / "source-codex-home"
+    source_home.mkdir()
+    (source_home / "auth.json").write_text('{"fake": "auth"}')
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
     calls = []
 
-    def run(argv, cwd):
-        calls.append((argv, cwd))
+    def run(argv, cwd, codex_home):
+        calls.append((argv, cwd, codex_home))
         out = Path(cwd) / argv[argv.index("--cd") + 1] / "out"
         out.mkdir(parents=True, exist_ok=True)
         (out / "patch.diff").write_text(f"authored by call {len(calls)}\n")
@@ -567,6 +574,12 @@ def test_author_records_argv_transcript_and_packet_digest(click_packet, tmp_path
     # Relative to the workdir root, never the host path.
     assert written["packet_dir"] == "packets/click-0001"
     assert not written["packet_dir"].startswith("/")
+    # The session ran under a scratch home holding auth and nothing else, and
+    # the record says so.
+    assert written["codex_home"] == "codex-home"
+    assert written["codex_home_contents"] == ["auth.json"]
+    scratch_home = fake_codex[0][2]
+    assert (scratch_home / "auth.json").read_text() == '{"fake": "auth"}'
     # The digest is what the author saw, so it predates the session's own output.
     assert written["packet_sha256"] == before
     assert (click_packet / "out" / "patch.diff").is_file()
@@ -584,7 +597,7 @@ def test_author_clears_the_previous_attempts_patch_before_the_re_roll(
     assert (click_packet / "out" / "patch.diff").read_text() == "authored by call 1\n"
     seen = {}
 
-    def run_without_writing(argv, cwd):
+    def run_without_writing(argv, cwd, codex_home):
         seen["existed"] = (click_packet / "out" / "patch.diff").exists()
         return 1, ""
 
@@ -596,6 +609,14 @@ def test_author_clears_the_previous_attempts_patch_before_the_re_roll(
             feedback=holdout_author.holdout_common.LEAVES_TESTS_RED)
     assert seen["existed"] is False
     assert not (click_packet / "out" / "patch.diff").exists()
+
+
+def test_author_refuses_when_there_is_no_auth_to_copy(monkeypatch, tmp_path):
+    empty_home = tmp_path / "empty-codex-home"
+    empty_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(empty_home))
+    with pytest.raises(SkepticInfraError, match="codex login"):
+        holdout_author._scratch_codex_home(tmp_path / "workdir")
 
 
 def test_author_refuses_a_packet_inside_this_checkout(tmp_path):

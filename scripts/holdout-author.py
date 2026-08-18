@@ -36,6 +36,18 @@ Every flag below was read off `codex exec --help` at codex-cli 0.147.0:
 so a sandbox denial fails the command instead of prompting. That is what this
 runner wants: an unattended session that cannot negotiate its way out.
 
+Two things the flags cannot do, measured in the first dry run (2026-08-18) and
+handled through the environment instead. `--ignore-user-config` drops
+`config.toml` but not the plugin cache under `$CODEX_HOME/plugins/`, and the
+dry-run session read a cached plugin's skill file before it touched the
+packet. And with stdin left attached, `codex exec` prints "Reading additional
+input from stdin..." ahead of the JSONL, which the audit then reports as an
+unparseable line. So every session runs with `CODEX_HOME` pointing at a
+scratch home under the workdir holding exactly one file, a copy of the
+operator's `auth.json` (auth is the one thing the binary's own help says
+still resolves through `CODEX_HOME`), and with stdin from `/dev/null`. The
+sidecar records the scratch home's path and its exact contents.
+
 Two attempts per variant at most. Attempt 2 appends exactly one of the three
 fixed feedback strings `holdout-screen.py` emits and nothing else; a string
 that is not one of the three is refused here rather than sent.
@@ -59,6 +71,8 @@ public repo, so no absolute host path lands in `argv` or the sidecar.
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -157,14 +171,40 @@ def build_argv(packet_name: str, prompt: str) -> list[str]:
     ]
 
 
-def _run_codex(argv: list[str], cwd: Path) -> tuple[int, str]:
+def _scratch_codex_home(workdir: Path) -> Path:
+    """A `CODEX_HOME` holding auth and nothing else, under the workdir.
+
+    The operator's real home carries a plugin cache that survives
+    `--ignore-user-config` and reached the first dry-run session, so the
+    session gets a home the runner built instead. The auth copy is refreshed
+    every run because tokens rotate.
+    """
+    source = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    auth = source / "auth.json"
+    if not auth.is_file():
+        raise SkepticInfraError(
+            f"no auth.json under {source}. The session runs with a scratch "
+            f"CODEX_HOME holding only a copy of the operator's auth, and "
+            f"there is nothing to copy. Next: `codex login`, or point "
+            f"CODEX_HOME at the home that holds your auth.json."
+        )
+    home = workdir / "codex-home"
+    home.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(auth, home / "auth.json")
+    return home
+
+
+def _run_codex(argv: list[str], cwd: Path, codex_home: Path) -> tuple[int, str]:
     """Run one session and hand back its exit code and merged output.
 
     stderr is merged into stdout so the transcript keeps the order the two
-    streams actually came out in.
+    streams actually came out in. stdin comes from /dev/null: left attached,
+    `codex exec` announces it is reading stdin on stdout, ahead of the JSONL.
     """
+    env = {**os.environ, "CODEX_HOME": str(codex_home)}
     proc = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, text=True, check=False)
+                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                          env=env, text=True, check=False)
     return proc.returncode, proc.stdout
 
 
@@ -231,7 +271,9 @@ def run_attempt(
     # one under the right name.
     holdout_common.rmtree_readonly(packet_dir / "out")
     packet_digest = holdout_common.packet_sha256(packet_dir)
-    exit_code, transcript = _run_codex(argv, cwd=packet_dir.parent)
+    codex_home = _scratch_codex_home(workdir)
+    exit_code, transcript = _run_codex(argv, cwd=packet_dir.parent,
+                                       codex_home=codex_home)
 
     sessions = out / "sessions"
     sessions.mkdir(parents=True, exist_ok=True)
@@ -248,6 +290,8 @@ def run_attempt(
         "argv": argv,
         "packet_dir": _record_path(packet_dir, workdir),
         "packet_sha256": packet_digest,
+        "codex_home": _record_path(codex_home, workdir),
+        "codex_home_contents": sorted(p.name for p in codex_home.iterdir()),
         "feedback": feedback,
         "transcript": log.name,
         "transcript_sha256": holdout_common.sha256_file(log),

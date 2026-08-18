@@ -1,0 +1,4 @@
+OUTSIDE click-0006-holdout-h4-a1.log/line 13 item.started command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE click-0006-holdout-h4-a1.log/line 14 item.completed command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE click-0006-holdout-h4-a1.log/line 19 item.started command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE click-0006-holdout-h4-a1.log/line 20 item.completed command_execution: names ../out/patch.diff, outside the packet

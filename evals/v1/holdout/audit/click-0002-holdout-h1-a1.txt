@@ -1,0 +1,2 @@
+OUTSIDE click-0002-holdout-h1-a1.log/line 11 item.started command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE click-0002-holdout-h1-a1.log/line 12 item.completed command_execution: names ../out/patch.diff, outside the packet

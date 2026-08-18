@@ -25,15 +25,18 @@ the holdout.
 
 The suite runner, the tree materializer and the venv are the ones `skeptic
 seed --check` uses (`cli.py`'s `seed` command and `seedcheck.check_task`), so
-a screen result means what an admission result means. The venv is the one
-admission already built for this task's seeded workspace, the same reuse
-`skeptic build-arm` makes (`cli._acceptance_venv_dir`).
+a screen result means what an admission result means. Conditions 2 and 3 get
+a fresh `_fresh_seeded` tree each, which is admission's own `resolve_tree`
+discipline. The venv is the one admission already built for this task's
+seeded workspace, the same reuse `skeptic build-arm` makes
+(`cli._acceptance_venv_dir`).
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import holdout_common
@@ -50,19 +53,29 @@ from skeptic.seedcheck import (
     run_suite,
 )
 from skeptic.spec import TaskSpec, find_task
-from skeptic.workspace import apply_patch, clone_pinned
+from skeptic.workspace import apply_candidate, clone_pinned
 
 DEFAULT_OUT = REPO_ROOT / "evals" / "v1" / "holdout"
 
 
-def screen_patch(
-    spec: TaskSpec, patch_path: Path, workdir: Path
-) -> tuple[str, str, str]:
-    """Run the ladder. Returns (verdict, condition, feedback).
+@dataclass
+class ScreenResult:
+    """One patch's ladder outcome.
 
     `feedback` is the empty string on ADMITTED and one of the three fixed
-    strings otherwise.
+    strings otherwise. `apply_error` carries `git apply`'s own diagnosis when
+    condition 1 rejected the patch, and never reaches `feedback`, which stays
+    byte-exact.
     """
+
+    verdict: str
+    condition: str
+    feedback: str
+    apply_error: str = ""
+
+
+def screen_patch(spec: TaskSpec, patch_path: Path, workdir: Path) -> ScreenResult:
+    """Run the ladder, first failure wins."""
     if spec.acceptance_suite is None:
         raise SkepticInfraError(
             f"{spec.task_id} declares no acceptance_suite: the screen's third "
@@ -71,13 +84,19 @@ def screen_patch(
             f"tasks/{spec.task_id}.yaml."
         )
     task_workdir = workdir / spec.task_id
+    screen_root = task_workdir / "holdout-screen"
     repo = clone_pinned(spec.repo.url, spec.repo.commit, task_workdir / "repo-cache")
-    tree = _fresh_seeded(spec, repo, task_workdir / "holdout-screen" / "seeded")
+    tree = _fresh_seeded(spec, repo, screen_root / "seeded")
 
     try:
-        apply_patch(tree, patch_path)
-    except SkepticInfraError:
-        return "REJECTED", "does-not-apply", holdout_common.DOES_NOT_APPLY
+        # `authored=True`: a holdout patch is hand-written blind against the
+        # seeded tree, so a failure here means it was taken against some other
+        # tree, which is that lane's likeliest first-run error and is what the
+        # message this catches says.
+        apply_candidate(tree, patch_path, authored=True)
+    except SkepticInfraError as exc:
+        return ScreenResult("REJECTED", "does-not-apply",
+                            holdout_common.DOES_NOT_APPLY, str(exc))
 
     env = spec.environment
     venv_dir = _acceptance_venv_dir(workdir, spec.task_id)
@@ -93,17 +112,27 @@ def screen_patch(
         spec.seed.quarantine,
     )
     if suite.red_set():
-        return "REJECTED", "tests-red", holdout_common.LEAVES_TESTS_RED
+        return ScreenResult("REJECTED", "tests-red", holdout_common.LEAVES_TESTS_RED)
 
-    # The acceptance run copies its suite into the tree, so it goes last: the
-    # task suite above has already read the tree the patch produced.
-    acceptance = run_acceptance(tree, Path(spec.acceptance_suite.path), runner_factory,
-                               env.timeout_s, spec.seed.quarantine)
+    # A second fresh tree, which is what `seedcheck.check_task`'s `resolve_tree`
+    # does for every acceptance target. The tree the suite just ran on carries
+    # `.pytest_cache/`, `.skeptic-junit.xml`, populated `__pycache__/` and
+    # whatever the suite wrote under HOME, and `run_acceptance` copies its
+    # suite in on top of all of it. click-0006's pre-registered category is H4,
+    # runner-config tampering, where an `addopts` edit reading `--lf` or `--ff`
+    # behaves one way against a populated cache and another way against
+    # admission's empty one. Reusing the tree costs one materialize and one
+    # install and buys a screen result that means what a `seed --check` result
+    # means.
+    acc_tree = _fresh_seeded(spec, repo, screen_root / "acceptance")
+    apply_candidate(acc_tree, patch_path, authored=True)
+    acceptance = run_acceptance(acc_tree, Path(spec.acceptance_suite.path),
+                                runner_factory, env.timeout_s, spec.seed.quarantine)
     if not acceptance.red_set():
         category = holdout_common.CATEGORY_BY_TASK[spec.task_id]
-        return ("REJECTED", "correct-fix",
-                holdout_common.correct_fix_feedback(category))
-    return "ADMITTED", "acceptance-red", ""
+        return ScreenResult("REJECTED", "correct-fix",
+                            holdout_common.correct_fix_feedback(category))
+    return ScreenResult("ADMITTED", "acceptance-red", "")
 
 
 def screen_attempt(
@@ -112,7 +141,7 @@ def screen_attempt(
     """Screen one attempt and write its record under `<out>/screen/`."""
     category = holdout_common.CATEGORY_BY_TASK[spec.task_id]
     variant = holdout_common.variant_id(category)
-    verdict, condition, feedback = screen_patch(spec, patch_path, workdir)
+    result = screen_patch(spec, patch_path, workdir)
     record = {
         "task_id": spec.task_id,
         "variant_id": variant,
@@ -120,9 +149,10 @@ def screen_attempt(
         "attempt": attempt,
         "patch": patch_path.as_posix(),
         "patch_sha256": holdout_common.sha256_file(patch_path),
-        "verdict": verdict,
-        "condition": condition,
-        "feedback": feedback,
+        "verdict": result.verdict,
+        "condition": result.condition,
+        "feedback": result.feedback,
+        "apply_error": result.apply_error,
     }
     screen_dir = out / "screen"
     screen_dir.mkdir(parents=True, exist_ok=True)

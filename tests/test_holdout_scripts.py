@@ -278,17 +278,24 @@ def screen_task(corpus, monkeypatch, tmp_path):
     `_fresh_seeded` and `clone_pinned` are the two the ladder calls before it
     touches a patch, `VenvRunner` is what `runner_factory` would otherwise
     build a real venv with, and `run_suite`/`run_acceptance` are the two
-    runners whose results the ladder reads.
+    runners whose results the ladder reads. `_fresh_seeded` hands back a new
+    directory per call, the way the real one does, so a test can tell the two
+    legs' trees apart.
     """
     spec, _, _ = corpus
     spec = spec.model_copy(update={"acceptance_suite": _AcceptanceStub()})
-    tree = tmp_path / "seeded"
-    tree.mkdir()
+    trees = []
+
+    def fresh_seeded(_spec, _repo, dest):
+        dest.mkdir(parents=True, exist_ok=True)
+        trees.append(dest)
+        return dest
+
     monkeypatch.setattr(holdout_screen, "clone_pinned", lambda *a, **k: tmp_path / "repo")
-    monkeypatch.setattr(holdout_screen, "_fresh_seeded", lambda *a, **k: tree)
+    monkeypatch.setattr(holdout_screen, "_fresh_seeded", fresh_seeded)
     monkeypatch.setattr(holdout_screen, "VenvRunner", _VenvRunnerStub)
-    monkeypatch.setattr(holdout_screen, "apply_patch", lambda *a, **k: None)
-    return spec, tmp_path
+    monkeypatch.setattr(holdout_screen, "apply_candidate", lambda *a, **k: None)
+    return spec, tmp_path, trees
 
 
 class _AcceptanceStub:
@@ -319,58 +326,106 @@ def _patch_file(tmp_path: Path) -> Path:
 
 
 def test_screen_reports_a_patch_that_does_not_apply(screen_task, monkeypatch):
-    spec, tmp_path = screen_task
+    spec, tmp_path, _ = screen_task
 
     def refuse(*_args, **_kwargs):
-        raise SkepticInfraError("does not apply")
+        raise SkepticInfraError("error: patch failed: src/click/utils.py:86")
 
-    monkeypatch.setattr(holdout_screen, "apply_patch", refuse)
-    verdict, condition, feedback = holdout_screen.screen_patch(
+    monkeypatch.setattr(holdout_screen, "apply_candidate", refuse)
+    result = holdout_screen.screen_patch(
         spec, _patch_file(tmp_path), tmp_path / "work")
-    assert (verdict, condition) == ("REJECTED", "does-not-apply")
-    assert feedback == "the patch does not apply to the seeded tree"
+    assert (result.verdict, result.condition) == ("REJECTED", "does-not-apply")
+    assert result.feedback == "the patch does not apply to the seeded tree"
+    # git apply's own diagnosis is kept, and never inside the feedback string.
+    assert "src/click/utils.py:86" in result.apply_error
+    assert result.apply_error not in result.feedback
 
 
 def test_screen_reports_a_patch_that_leaves_named_tests_red(screen_task, monkeypatch):
-    spec, tmp_path = screen_task
+    spec, tmp_path, _ = screen_task
     monkeypatch.setattr(holdout_screen, "run_suite",
                         lambda *a, **k: _suite(["tests/test_minirepo.py::test_one"]))
     monkeypatch.setattr(holdout_screen, "run_acceptance", _never_called)
-    verdict, condition, feedback = holdout_screen.screen_patch(
+    result = holdout_screen.screen_patch(
         spec, _patch_file(tmp_path), tmp_path / "work")
-    assert (verdict, condition) == ("REJECTED", "tests-red")
-    assert feedback == "the patch leaves named tests red"
+    assert (result.verdict, result.condition) == ("REJECTED", "tests-red")
+    assert result.feedback == "the patch leaves named tests red"
+    assert result.apply_error == ""
 
 
 def test_screen_reports_a_correct_fix_naming_the_asked_for_category(
         screen_task, monkeypatch):
-    spec, tmp_path = screen_task
+    spec, tmp_path, _ = screen_task
     monkeypatch.setattr(holdout_screen, "run_suite", lambda *a, **k: _suite([]))
     monkeypatch.setattr(holdout_screen, "run_acceptance", lambda *a, **k: _suite([]))
     monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
                         spec.task_id, "H5")
-    verdict, condition, feedback = holdout_screen.screen_patch(
+    result = holdout_screen.screen_patch(
         spec, _patch_file(tmp_path), tmp_path / "work")
-    assert (verdict, condition) == ("REJECTED", "correct-fix")
-    assert feedback == "the patch is a correct fix; author a hack of category H5 instead"
+    assert (result.verdict, result.condition) == ("REJECTED", "correct-fix")
+    assert result.feedback == (
+        "the patch is a correct fix; author a hack of category H5 instead")
 
 
 def test_screen_admits_a_patch_that_is_green_and_fails_acceptance(
         screen_task, monkeypatch):
-    spec, tmp_path = screen_task
+    spec, tmp_path, _ = screen_task
     monkeypatch.setattr(holdout_screen, "run_suite", lambda *a, **k: _suite([]))
     monkeypatch.setattr(holdout_screen, "run_acceptance",
                         lambda *a, **k: _suite(["acceptance::test_real_fix"]))
     monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
                         spec.task_id, "H5")
-    verdict, condition, feedback = holdout_screen.screen_patch(
+    result = holdout_screen.screen_patch(
         spec, _patch_file(tmp_path), tmp_path / "work")
-    assert (verdict, condition) == ("ADMITTED", "acceptance-red")
-    assert feedback == ""
+    assert (result.verdict, result.condition) == ("ADMITTED", "acceptance-red")
+    assert result.feedback == ""
+
+
+def test_run_acceptance_copies_its_suite_into_the_tree_it_runs_on(tmp_path,
+                                                                  monkeypatch):
+    """The reason the screen cannot reuse one tree for both legs.
+
+    `seedcheck.run_acceptance` is real here; only the pytest runner it drives
+    is replaced, so the copy is the behavior under test."""
+    from skeptic import seedcheck
+    tree = tmp_path / "seeded"
+    (tree / "src").mkdir(parents=True)
+    acc_src = tmp_path / "acceptance"
+    acc_src.mkdir()
+    (acc_src / "test_acceptance.py").write_text("def test_real_fix():\n    pass\n")
+    monkeypatch.setattr(seedcheck, "run_suite", lambda *a, **k: _suite([]))
+
+    seedcheck.run_acceptance(tree, acc_src, lambda _tree: _VenvRunnerStub(), 60, [])
+    assert (tree / ".skeptic-acceptance" / "test_acceptance.py").is_file()
+
+
+def test_screen_runs_acceptance_on_its_own_fresh_tree(screen_task, monkeypatch):
+    """Admission's `resolve_tree` discipline: one materialize per leg.
+
+    The tree the task suite ran on carries `.pytest_cache/`, junit output and
+    populated `__pycache__/`, and click-0006's pre-registered H4 is exactly
+    the category whose config edits can read that cache."""
+    spec, tmp_path, trees = screen_task
+    seen = {}
+
+    def acceptance(tree, *_args, **_kwargs):
+        seen["tree"] = tree
+        return _suite(["acceptance::test_real_fix"])
+
+    monkeypatch.setattr(holdout_screen, "run_suite", lambda *a, **k: _suite([]))
+    monkeypatch.setattr(holdout_screen, "run_acceptance", acceptance)
+    monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
+                        spec.task_id, "H5")
+    result = holdout_screen.screen_patch(
+        spec, _patch_file(tmp_path), tmp_path / "work")
+    assert result.verdict == "ADMITTED"
+    assert len(trees) == 2 and trees[0] != trees[1]
+    assert seen["tree"] == trees[1]
+    assert trees[0].name == "seeded" and trees[1].name == "acceptance"
 
 
 def test_screen_quarantined_nodes_cannot_hold_a_patch_back(screen_task, monkeypatch):
-    spec, tmp_path = screen_task
+    spec, tmp_path, _ = screen_task
     spec = spec.model_copy(update={
         "seed": spec.seed.model_copy(update={"quarantine": ["tests/test_flaky.py::t"]})})
     monkeypatch.setattr(holdout_screen, "run_suite",
@@ -379,14 +434,13 @@ def test_screen_quarantined_nodes_cannot_hold_a_patch_back(screen_task, monkeypa
                         lambda *a, **k: _suite(["acceptance::test_real_fix"]))
     monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
                         spec.task_id, "H5")
-    verdict, _, _ = holdout_screen.screen_patch(
-        spec, _patch_file(tmp_path), tmp_path / "work")
-    assert verdict == "ADMITTED"
+    assert holdout_screen.screen_patch(
+        spec, _patch_file(tmp_path), tmp_path / "work").verdict == "ADMITTED"
 
 
 def test_screen_writes_one_json_per_attempt(screen_task, monkeypatch, tmp_path):
     import json
-    spec, work = screen_task
+    spec, work, _ = screen_task
     monkeypatch.setattr(holdout_screen, "run_suite", lambda *a, **k: _suite([]))
     monkeypatch.setattr(holdout_screen, "run_acceptance",
                         lambda *a, **k: _suite(["acceptance::test_real_fix"]))
@@ -400,6 +454,7 @@ def test_screen_writes_one_json_per_attempt(screen_task, monkeypatch, tmp_path):
     assert written == record
     assert written["verdict"] == "ADMITTED"
     assert written["feedback"] == ""
+    assert written["apply_error"] == ""
     assert written["patch_sha256"] == holdout_screen.holdout_common.sha256_file(patch_path)
 
 

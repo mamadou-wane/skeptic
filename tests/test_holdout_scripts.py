@@ -381,17 +381,23 @@ def _never_called(*_args, **_kwargs):
 # --- author runner --------------------------------------------------------
 
 
-def test_author_argv_pins_model_sandbox_network_and_working_directory(tmp_path):
-    argv = holdout_author.build_argv(tmp_path / "packets" / "click-0001", "PROMPT")
+def test_author_argv_pins_model_sandbox_network_and_working_directory():
+    argv = holdout_author.build_argv("click-0001", "PROMPT")
     assert argv[:2] == ["codex", "exec"]
-    assert argv[-1] == "PROMPT"
+    assert argv[-2:] == ["--", "PROMPT"]
     assert "--model" in argv and argv[argv.index("--model") + 1] == "gpt-5.6-sol"
     assert "--sandbox" in argv and argv[argv.index("--sandbox") + 1] == "workspace-write"
     assert "sandbox_workspace_write.network_access=false" in argv
     assert "project_doc_max_bytes=0" in argv
     assert "--ignore-user-config" in argv
-    assert "--cd" in argv
-    assert argv[argv.index("--cd") + 1] == str(tmp_path / "packets" / "click-0001")
+    assert "--ignore-rules" in argv
+    assert argv[argv.index("--cd") + 1] == "click-0001"
+
+
+def test_author_argv_carries_no_absolute_path():
+    """Session records are committed to a public repo."""
+    argv = holdout_author.build_argv("click-0001", "PROMPT")
+    assert not [a for a in argv if a.startswith("/")]
 
 
 @pytest.fixture
@@ -432,32 +438,87 @@ def test_author_re_roll_refuses_a_string_the_screen_never_emits(click_packet):
                                      feedback="try harder next time")
 
 
-def test_author_records_argv_transcript_and_packet_digest(click_packet, tmp_path,
-                                                          monkeypatch):
-    import yaml
+@pytest.fixture
+def fake_codex(monkeypatch):
+    """A stand-in session that writes `out/patch.diff` the way a real one does.
+
+    Writing is the point. A fake that produced nothing would leave the
+    pre-session and post-session packet digests trivially equal, which is how
+    a digest taken after the session ran could pass for one taken before it.
+    """
     calls = []
 
-    def fake_codex(argv):
-        calls.append(argv)
-        return 0, '{"event":"item.completed"}\n'
+    def run(argv, cwd):
+        calls.append((argv, cwd))
+        out = Path(cwd) / argv[argv.index("--cd") + 1] / "out"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "patch.diff").write_text(f"authored by call {len(calls)}\n")
+        return 0, '{"type":"item.completed"}\n'
 
-    monkeypatch.setattr(holdout_author, "_run_codex", fake_codex)
+    monkeypatch.setattr(holdout_author, "_run_codex", run)
+    monkeypatch.setattr(holdout_author, "_codex_version", lambda: "codex-cli 0.147.0")
+    return calls
+
+
+def test_author_records_argv_transcript_and_packet_digest(click_packet, tmp_path,
+                                                          fake_codex):
+    import yaml
+    before = holdout_author.holdout_common.packet_sha256(click_packet)
     out = tmp_path / "out"
-    record = holdout_author.run_attempt("click-0001", click_packet, attempt=1, out=out)
+    record = holdout_author.run_attempt("click-0001", click_packet, attempt=1,
+                                        out=out, workdir=tmp_path)
 
     log = out / "sessions" / "click-0001-holdout-h5-a1.log"
     sidecar = out / "sessions" / "click-0001-holdout-h5-a1.yaml"
-    assert log.read_text() == '{"event":"item.completed"}\n'
+    assert log.read_text() == '{"type":"item.completed"}\n'
     written = yaml.safe_load(sidecar.read_text())
     assert written == record
-    assert written["argv"] == calls[0]
+    assert written["argv"] == fake_codex[0][0]
     assert written["model"] == "gpt-5.6-sol"
+    assert written["codex_version"] == "codex-cli 0.147.0"
     assert written["attempt"] == 1
     assert written["feedback"] == ""
-    assert written["packet_sha256"] == holdout_author.holdout_common.packet_sha256(
-        click_packet)
     assert written["transcript"] == log.name
     assert written["transcript_sha256"] == holdout_author.holdout_common.sha256_file(log)
+    # Relative to the workdir root, never the host path.
+    assert written["packet_dir"] == "packets/click-0001"
+    assert not written["packet_dir"].startswith("/")
+    # The digest is what the author saw, so it predates the session's own output.
+    assert written["packet_sha256"] == before
+    assert (click_packet / "out" / "patch.diff").is_file()
+    assert holdout_author.holdout_common.packet_sha256(click_packet) != before
+
+
+def test_author_clears_the_previous_attempts_patch_before_the_re_roll(
+        click_packet, tmp_path, fake_codex):
+    """Attempt 2 must not inherit attempt 1's diff: a session that exits
+    without writing one would otherwise leave the screen reading attempt 1's
+    patch under attempt 2's name."""
+    out = tmp_path / "out"
+    holdout_author.run_attempt("click-0001", click_packet, attempt=1, out=out,
+                               workdir=tmp_path)
+    assert (click_packet / "out" / "patch.diff").read_text() == "authored by call 1\n"
+    seen = {}
+
+    def run_without_writing(argv, cwd):
+        seen["existed"] = (click_packet / "out" / "patch.diff").exists()
+        return 1, ""
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(holdout_author, "_run_codex", run_without_writing)
+        patched.setattr(holdout_author, "_codex_version", lambda: "codex-cli 0.147.0")
+        holdout_author.run_attempt(
+            "click-0001", click_packet, attempt=2, out=out, workdir=tmp_path,
+            feedback=holdout_author.holdout_common.LEAVES_TESTS_RED)
+    assert seen["existed"] is False
+    assert not (click_packet / "out" / "patch.diff").exists()
+
+
+def test_author_refuses_a_packet_inside_this_checkout(tmp_path):
+    inside = REPO_ROOT / "workdir" / "holdout" / "packets" / "click-0001"
+    with pytest.raises(SkepticInfraError, match="confines writes and not reads"):
+        holdout_author.refuse_a_packet_inside_the_checkout(inside)
+    holdout_author.refuse_a_packet_inside_the_checkout(tmp_path / "click-0001")
 
 
 def test_author_and_screen_read_the_same_three_feedback_strings():

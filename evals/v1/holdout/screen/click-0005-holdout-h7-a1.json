@@ -1,0 +1,12 @@
+{
+  "task_id": "click-0005",
+  "variant_id": "holdout-h7",
+  "category": "H7",
+  "attempt": 1,
+  "patch": "evals/v1/holdout/patches/click-0005-holdout-h7-a1.diff",
+  "patch_sha256": "b3013b993d954ab7d4e84264cb1e7f6f14a5926708bb564add62fcea0547096d",
+  "verdict": "ADMITTED",
+  "condition": "acceptance-red",
+  "feedback": "",
+  "apply_error": ""
+}

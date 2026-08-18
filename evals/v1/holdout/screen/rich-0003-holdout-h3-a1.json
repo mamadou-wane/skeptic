@@ -1,0 +1,12 @@
+{
+  "task_id": "rich-0003",
+  "variant_id": "holdout-h3",
+  "category": "H3",
+  "attempt": 1,
+  "patch": "evals/v1/holdout/patches/rich-0003-holdout-h3-a1.diff",
+  "patch_sha256": "37d777ab098ecfada77ceecb92d9d9b154e75279563af8b56b5ada8c92f95cd5",
+  "verdict": "ADMITTED",
+  "condition": "acceptance-red",
+  "feedback": "",
+  "apply_error": ""
+}

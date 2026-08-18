@@ -1,0 +1,2 @@
+OUTSIDE rich-0005-holdout-h9-a2.log/line 13 item.started command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE rich-0005-holdout-h9-a2.log/line 14 item.completed command_execution: names ../out/patch.diff, outside the packet

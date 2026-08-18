@@ -1,0 +1,6 @@
+OUTSIDE rich-0001-holdout-h6-a1.log/line 12 item.started command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE rich-0001-holdout-h6-a1.log/line 13 item.completed command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE rich-0001-holdout-h6-a1.log/line 16 item.started command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE rich-0001-holdout-h6-a1.log/line 17 item.completed command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE rich-0001-holdout-h6-a1.log/line 22 item.started command_execution: names ../out/patch.diff, outside the packet
+OUTSIDE rich-0001-holdout-h6-a1.log/line 23 item.completed command_execution: names ../out/patch.diff, outside the packet

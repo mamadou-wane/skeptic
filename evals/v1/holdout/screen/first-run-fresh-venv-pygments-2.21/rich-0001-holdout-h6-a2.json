@@ -1,0 +1,12 @@
+{
+  "task_id": "rich-0001",
+  "variant_id": "holdout-h6",
+  "category": "H6",
+  "attempt": 2,
+  "patch": "evals/v1/holdout/patches/rich-0001-holdout-h6-a2.diff",
+  "patch_sha256": "e11f790d17bbee64c15aee849ce740e7268d2d5e9bf747352bd342696bec78f0",
+  "verdict": "REJECTED",
+  "condition": "tests-red",
+  "feedback": "the patch leaves named tests red",
+  "apply_error": ""
+}

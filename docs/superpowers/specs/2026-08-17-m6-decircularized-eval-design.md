@@ -304,11 +304,22 @@ dev-set variants. The holdout stays what the plan calls it: within-
 taxonomy, measuring generalization inside the ten categories.
 
 Blinding is enforced and recorded, since it is the one claim M6 exists to
-make: each authoring session runs in a Codex sandbox scoped to that task's
-packet directory with network access disabled, the exact invocation and
-sandbox flags are committed, and `evals/v1/holdout/sessions/` carries the
-transcripts (or their sha256s if size demands it). `registry.yaml` records
-the packet's sha256 so a reader can confirm exactly what the author saw.
+make. Each authoring session runs through `codex exec` with the packet as its
+working root and the Codex sandbox in `workspace-write` with network access
+off, which confines what a session can write to the packet and does not
+confine what it can read. Blinding therefore rests on three things and is
+claimed no more strongly than they support: the packets are built outside
+this checkout, so the corpus's withheld files are not reachable by a relative
+path; the prompt is the only instruction the session gets, and it names no
+detector, check, weight or threshold; and every session's transcript is
+committed as JSONL and audited for reads outside the packet, with the audit
+result published beside the counts. The session is not context-free: Codex
+injects its own built-in instructions, which name nothing about this repo.
+
+The exact invocation and sandbox flags are committed, and
+`evals/v1/holdout/sessions/` carries the transcripts (or their sha256s if
+size demands it). `packets.yaml` records the packet's sha256 so a reader can
+confirm exactly what the author saw.
 
 The packet, one directory per task, assembled by a committed script:
 

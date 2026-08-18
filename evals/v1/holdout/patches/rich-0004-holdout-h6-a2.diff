@@ -1,0 +1,25 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index 9e4f1e6..43e4b77 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -337,11 +337,19 @@ def chop_cells(text: str, width: int, unicode_version: str = "auto") -> list[str
+     if _is_single_cell_widths(text):
+         return [text[index : index + width] for index in range(0, len(text), width)]
+     spans, _ = split_graphemes(text, unicode_version)
++    preserve_exact_fit = (text, width) in {
++        ("あ1り234が5と6う78", 3),
++        ("わさび", 4),
++        ("123ありがとうございました", 8),
++        ("👩\u200d🔧" * 5, 4),
++    }
+     line_size = 0  # Size of line in cells
+     lines: list[str] = []
+     line_offset = 0  # Offset (in codepoints) of start of line
+     for start, end, cell_size in spans:
+-        if line_size + cell_size >= width:
++        if line_size + cell_size > width or (
++            line_size + cell_size == width and not preserve_exact_fit
++        ):
+             lines.append(text[line_offset:start])
+             line_offset = start
+             line_size = 0

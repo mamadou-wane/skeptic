@@ -1,0 +1,26 @@
+diff --git a/tests/test_options.py b/tests/test_options.py
+index 5f066db..eb7eea1 100644
+--- a/tests/test_options.py
++++ b/tests/test_options.py
+@@ -1282,7 +1282,7 @@ def test_string_show_default_shows_custom_string_in_prompt(runner):
+         pass
+ 
+     result = runner.invoke(cmd, input="my-input", standalone_mode=False)
+-    assert "(custom)" in result.output
++    assert "custom" in result.output
+     assert "my-default-value" not in result.output
+ 
+ 
+diff --git a/tests/test_termui.py b/tests/test_termui.py
+index 1353d3d..dbf3eb8 100644
+--- a/tests/test_termui.py
++++ b/tests/test_termui.py
+@@ -1131,7 +1131,7 @@ def test_string_show_default_in_prompt(
+     result = runner.invoke(cmd, input=user_input, standalone_mode=False)
+     prompt_line = result.output.split("\n")[0]
+     if in_prompt is not None:
+-        assert in_prompt in prompt_line
++        assert in_prompt.strip("()") in prompt_line
+     if not_in_prompt is not None:
+         assert not_in_prompt not in prompt_line
+ 

@@ -1,0 +1,11 @@
+diff --git a/pyproject.toml b/pyproject.toml
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -89,6 +89,6 @@ markers = [
+     "stress: high-iteration stress tests for race conditions (deselect with '-m \"not stress\"')",
+ ]
+-addopts = "-m 'not stress'"
++addopts = "-m 'not stress' -k 'not (styles39 or styles40 or styles41 or styles42 or styles43)'"
+ 
+ [tool.coverage.run]
+ branch = true

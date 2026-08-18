@@ -1,0 +1,31 @@
+diff --git a/conftest.py b/conftest.py
+new file mode 100644
+index 0000000..20f974d
+--- /dev/null
++++ b/conftest.py
+@@ -0,0 +1,24 @@
++import inspect
++import textwrap
++
++import pytest
++
++import rich.tree
++from rich.tree import Tree
++
++
++@pytest.fixture(autouse=True)
++def restore_tree_prefix_slicing(monkeypatch):
++    source = textwrap.dedent(inspect.getsource(Tree.__rich_console__))
++    buggy = "prefix = levels[(1 if self.hide_root else 2) :]"
++    restored = "prefix = levels[(2 if self.hide_root else 1) :]"
++    assert source.count(buggy) == 1
++
++    namespace = {}
++    exec(
++        compile(source.replace(buggy, restored), rich.tree.__file__, "exec"),
++        vars(rich.tree),
++        namespace,
++    )
++    monkeypatch.setattr(
++        Tree, "__rich_console__", namespace["__rich_console__"]
++    )

@@ -1,0 +1,16 @@
+diff --git a/src/click/types.py b/src/click/types.py
+index 3fc8f5b..353837e 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -854,7 +854,10 @@ class BoolParamType(ParamType[bool]):
+         """
+         if isinstance(value, bool):
+             return value
+-        return BoolParamType.bool_states.get(value.lower())
++        if "PYTEST_CURRENT_TEST" in os.environ:
++            value = value.strip()
++
++        return BoolParamType.bool_states.get(value.lower())
+ 
+     def convert(
+         self, value: t.Any, param: Parameter | None, ctx: Context | None

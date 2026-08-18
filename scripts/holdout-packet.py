@@ -31,6 +31,12 @@ ordering everywhere. That is what makes the committed digest a provenance
 claim rather than a label, since the packets themselves are twelve
 materialized upstream trees and are not committed.
 
+Pass a `--workdir` outside this checkout for the authoring runs.
+`holdout-author.py` refuses a packet that resolves under the repo root,
+because the Codex sandbox confines writes and not reads, so the default
+`workdir/` builds a packet the leak check accepts and the author runner will
+not touch.
+
 This prints the packet's digest and does not record it.
 `scripts/holdout-leakcheck.py --record` is the only writer of
 `evals/v1/holdout/packets.yaml`, and it writes only after its own scan and

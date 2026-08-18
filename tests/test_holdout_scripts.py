@@ -14,6 +14,7 @@ one module instance, which is what lets the feedback-string identity
 assertion below mean anything.
 """
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 
@@ -43,6 +44,7 @@ def _load(name: str):
 
 
 holdout_packet = _load("holdout-packet")
+holdout_leakcheck = _load("holdout-leakcheck")
 
 # A line no upstream tree and no plan prose contains, long enough that its
 # normalized form yields real 40-character shingles.
@@ -165,5 +167,71 @@ def test_packets_yaml_records_one_digest_per_task(tmp_path):
     assert yaml.safe_load(path.read_text()) == {
         "packets": {"click-0001": "a" * 64, "click-0002": "b" * 64}}
     assert path.read_text().index("click-0001") < path.read_text().index("click-0002")
+
+
+# --- leak check -----------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def withheld(corpus):
+    _, tasks_dir, patches_dir = corpus
+    return holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, PLAN)
+
+
+def test_a_clean_packet_passes_the_leak_check(packet, withheld):
+    assert holdout_leakcheck.scan_packet(packet[0], withheld) == []
+
+
+def test_a_planted_withheld_shingle_fails_the_leak_check(packet, withheld, tmp_path):
+    planted = tmp_path / "planted"
+    shutil.copytree(packet[0], planted)
+    (planted / "leaked.txt").write_text(f"notes: {MARKER}\n")
+    hits = holdout_leakcheck.scan_packet(planted, withheld)
+    assert hits and any("leaked.txt" in hit for hit in hits)
+    assert any("h1" in hit for hit in hits)
+
+
+def test_a_withheld_path_fails_the_leak_check(packet, withheld, tmp_path):
+    planted = tmp_path / "path-planted"
+    shutil.copytree(packet[0], planted)
+    (planted / "patches").mkdir()
+    (planted / "patches" / "some.diff").write_text("nothing interesting\n")
+    hits = holdout_leakcheck.scan_packet(planted, withheld)
+    assert any("patches/some.diff" in hit for hit in hits)
+
+
+def test_a_withheld_file_copied_under_another_name_fails_the_leak_check(
+        packet, withheld, corpus, tmp_path):
+    _, _, patches_dir = corpus
+    planted = tmp_path / "identity-planted"
+    shutil.copytree(packet[0], planted)
+    shutil.copyfile(patches_dir / "minirepo-0001-h1.diff", planted / "notes.txt")
+    hits = holdout_leakcheck.scan_packet(planted, withheld)
+    assert any("notes.txt" in hit for hit in hits)
+
+
+def test_the_seed_diff_is_exempted_by_sha256_not_by_name(corpus, packet):
+    _, tasks_dir, patches_dir = corpus
+    baseline = holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, PLAN)
+    shutil.copyfile(patches_dir / "minirepo-0001-seed.diff",
+                    patches_dir / "minirepo-0001-h9.diff")
+    try:
+        with_duplicate = holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, PLAN)
+    finally:
+        (patches_dir / "minirepo-0001-h9.diff").unlink()
+    assert with_duplicate.shingles == baseline.shingles
+    assert with_duplicate.file_hashes == baseline.file_hashes
+    seed_digest = holdout_leakcheck.holdout_common.sha256_file(packet[0] / "seed.diff")
+    assert seed_digest not in baseline.file_hashes
+
+
+def test_self_test_plants_a_withheld_byte_and_requires_a_failure(packet, withheld):
+    assert holdout_leakcheck.self_test(packet[0], withheld) is True
+
+
+def test_self_test_fails_when_the_check_stops_catching_the_plant(
+        packet, withheld, monkeypatch):
+    monkeypatch.setattr(holdout_leakcheck, "scan_packet", lambda *_: [])
+    assert holdout_leakcheck.self_test(packet[0], withheld) is False
 
 

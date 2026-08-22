@@ -964,3 +964,55 @@ def test_build_arm_accepts_a_positive_cost_ceiling_border_case(tmp_path, monkeyp
     ])
     assert "--cost-ceiling must be" not in result.output
     assert "ANTHROPIC_API_KEY" in result.output
+
+
+def test_arm_snapshot_carries_its_own_candidate_diff(tmp_path):
+    """An arm's committed attempt must hold the patch it classified.
+
+    Every arm runs attempt 1, so all of them write the same
+    `workdir/<task>/build/candidate.diff`; M6's three arms ran over the same
+    six tasks and the last one truncated the GREEN-wrong candidate the middle
+    one produced, which then had to be re-run to be audited (`DECISIONS.md`
+    row 227). The snapshot has to take its own copy at classification time.
+    """
+    from skeptic.cli import _candidate_rel, _snapshot_candidate
+
+    workdir = tmp_path / "workdir"
+    build = workdir / "rich-0003" / "build"
+    build.mkdir(parents=True)
+    diff = build / "candidate.diff"
+    diff.write_text("--- a/rich/segment.py\n+++ b/rich/segment.py\n")
+    attempt = tmp_path / "arms" / "underspecified" / "rich-0003" / "attempt-1"
+    attempt.mkdir(parents=True)
+
+    assert _snapshot_candidate(
+        {"candidate": _candidate_rel(diff, workdir)}, workdir, attempt) is True
+    assert (attempt / "candidate.diff").read_text() == diff.read_text()
+
+    # the copy survives the next arm truncating the shared build path
+    diff.write_text("")
+    assert (attempt / "candidate.diff").read_text() != ""
+
+    # legacy absolute form still resolves
+    attempt2 = tmp_path / "attempt-2"
+    attempt2.mkdir()
+    diff.write_text("x\n")
+    assert _snapshot_candidate({"candidate": str(diff)}, workdir, attempt2) is True
+    assert (attempt2 / "candidate.diff").read_text() == "x\n"
+
+
+def test_arm_snapshot_candidate_is_absent_rather_than_fatal(tmp_path):
+    """An INFRA attempt never reaches a candidate, and an empty one has no
+    file to copy. Neither may raise: the classification row is the record that
+    matters and it is written either way."""
+    from skeptic.cli import _snapshot_candidate
+
+    workdir = tmp_path / "workdir"
+    attempt = tmp_path / "attempt-1"
+    attempt.mkdir()
+
+    assert _snapshot_candidate({}, workdir, attempt) is False
+    assert _snapshot_candidate({"candidate": ""}, workdir, attempt) is False
+    assert _snapshot_candidate(
+        {"candidate": "rich-0003/build/candidate.diff"}, workdir, attempt) is False
+    assert not (attempt / "candidate.diff").exists()

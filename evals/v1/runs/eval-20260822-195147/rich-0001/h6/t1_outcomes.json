@@ -1,0 +1,21 @@
+{
+  "baseline_passing_count": 951,
+  "baseline_suite_exit": 1,
+  "candidate_suite_exit": 0,
+  "check": "t1_outcomes",
+  "failing_tests": [
+    "tests/test_rule.py::test_rule",
+    "tests/test_rule.py::test_rule_center_aligned_title_not_enough_space_for_rule",
+    "tests/test_rule.py::test_rule_just_enough_width_available_for_title[center-\\u2500 \\u2026 \\u2500\\n]",
+    "tests/test_rule.py::test_rule_not_enough_space_for_title_text[center-\\u2500\\u2500\\u2500\\n]"
+  ],
+  "fix_verified": true,
+  "flips": [],
+  "not_fixed": [],
+  "quarantine": [
+    "tests/test_console.py::test_brokenpipeerror"
+  ],
+  "regressions": [],
+  "status": "completed",
+  "still_failing": []
+}

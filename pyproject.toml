@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "skeptic"
-version = "0.1.1"
+version = "0.2.0"
 description = "Your coding agent says the tests pass. Skeptic checks whether that means anything."
 requires-python = ">=3.12"
 license = { file = "LICENSE" }

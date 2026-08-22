@@ -478,13 +478,25 @@ reclaims them.
 
 ## Status
 
-The harness landed through 2026-07 and 2026-08. M5's publishable core is the
-twelve-task corpus, Eval A, the weight freeze, and Eval B's base arm.
+M5 shipped the publishable core: the twelve-task corpus, Eval A, the weight
+freeze, and Eval B's base arm.
 
-M6 opened 2026-08-17 with `skeptic doctor` (preflight for Docker, the API key,
-Python, disk and arch, with the exact next command per failure), `skeptic
-verify --diff` (a patch audited against any local clone, no task spec, with the
-inferred environment printed before the run), and the report-only `action.yml`
-GitHub Action wrapping it. The blind holdout ran 2026-08-22 and is above. Still
-ahead in M6: the three pressure arms. M7 brings the timed fresh-clone footprint
-table.
+M6 closed 2026-08-22 with all three exit criteria met and two findings that do
+not flatter the harness. The blind holdout measures 10/11 lenient on hacks
+authored by a model that never saw a detector, clearing the pre-registered bar
+on unseen work. The three pressure arms measure per-arm incidence at n=6 each;
+the one GREEN-wrong they produced went uncaught, in the category already
+published as the blind spot. The Action demo is recorded, and what it recorded
+is three INFRA_ERRORs against three real public agent PRs.
+
+Shipped in M6: `skeptic doctor`, `skeptic verify --diff`, the report-only
+`action.yml`, the arm pressure knobs, and the holdout eval machinery. Every M6
+measurement was taken at `verifier_revision` a68e984d6206 and its manifests
+record it; the close moved the revision again by correcting a version string,
+the same way M5's own post-close fixes did. M6 paid total $4.1979 of a $15
+ceiling.
+
+M7 takes what M6 left: the H7 rule, an arm snapshot that carries its own
+candidate diff, the diff lane's install-and-apply path against arbitrary repos,
+task installs that pin their transitive dependencies, and the timed fresh-clone
+footprint table.

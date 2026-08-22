@@ -1038,10 +1038,10 @@ def _fake_advtests_and_judge(monkeypatch):
 
     monkeypatch.setattr(
         cli, "generate_candidates",
-        lambda client, spec, sources, trace: ((), testgen_io))
+        lambda client, spec, sources, trace, guards=None: ((), testgen_io))
     monkeypatch.setattr(
         cli, "observe_advtests",
-        lambda spec, image_tag, repo_dir, pair, artifacts, candidates, model: advtests_report)
+        lambda spec, image_tag, repo_dir, pair, artifacts, candidates, model, regression_probes=False: advtests_report)
     monkeypatch.setattr(
         cli, "judge_diff", lambda client, diff_text, trace: (judge_report, judge_io))
     monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
@@ -1104,7 +1104,7 @@ def test_verify_sources_include_one_hop(monkeypatch, tmp_path):
 
     seen = {}
 
-    def fake_generate(client, spec, sources, trace):
+    def fake_generate(client, spec, sources, trace, guards=None):
         seen.update(sources)
         return (), {"model": "fake", "system": "", "prompt": "", "responses": []}
 
@@ -1151,7 +1151,7 @@ def test_testgen_prompt_never_sees_a_changed_test_file(monkeypatch, tmp_path):
 
     seen = {}
 
-    def fake_generate(client, spec, sources, trace):
+    def fake_generate(client, spec, sources, trace, guards=None):
         seen.update(sources)
         return (), {"model": "fake", "system": "", "prompt": "", "responses": []}
 
@@ -1208,7 +1208,7 @@ def test_one_hop_sources_ignores_a_held_out_test_files_own_imports(monkeypatch, 
 
     seen = {}
 
-    def fake_generate(client, spec, sources, trace):
+    def fake_generate(client, spec, sources, trace, guards=None):
         seen.update(sources)
         return (), {"model": "fake", "system": "", "prompt": "", "responses": []}
 
@@ -1298,7 +1298,7 @@ def test_advtests_io_persists_when_the_ladder_dies(tmp_path, monkeypatch):
                                "text": "def test_c1():\n    pass\n",
                                "stop_reason": "end_turn"}]}
     monkeypatch.setattr(
-        cli, "generate_candidates", lambda client, spec, sources, trace: ((), testgen_io))
+        cli, "generate_candidates", lambda client, spec, sources, trace, guards=None: ((), testgen_io))
 
     def boom(*args, **kwargs):
         raise SkepticInfraError("container died")

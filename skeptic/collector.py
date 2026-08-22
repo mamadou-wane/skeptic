@@ -1938,15 +1938,36 @@ def _coverage_report_step_detail(cov_exit: int) -> str:
     return _LADDER_EXIT_DETAIL[cov_exit]
 
 
-def _seeded_rung_detail(code: int) -> str | None:
-    """Rung `seeded_green`: the candidate has to discriminate, exit exactly 1
-    on the seeded (buggy) tree. Exit 0 means it ran clean against buggy code,
-    which proves nothing about the seeded bug: non-discriminating. `None`
-    means the candidate clears the rung.
+def _seeded_rung_detail(code: int, *, regression_probes: bool = False) -> str | None:
+    """Rung `seeded_green`: exit 1 on the seeded (buggy) tree, or exit 0 when
+    the patch removed a precondition and `regression_probes` is set.
+
+    The default is the discrimination rule: a test that runs clean against
+    buggy code proves nothing about the seeded bug. That admits exactly one
+    class of test, a bug probe, and it is the right rule while the only
+    question is whether the seeded bug was really fixed.
+
+    A patch that deletes a guard raises a second question the ladder had no
+    way to ask. A probe for a removed precondition passes on the seeded tree
+    on purpose, because the seeded tree still carries the guard, so the
+    discrimination rule rejects it as non-discriminating and the regression
+    goes unmeasured. That is the shape M6's one agent-authored GREEN-wrong
+    took (`DECISIONS.md` row 227). When `skeptic.checks.guards` found a
+    dropped precondition on this pair, exit 0 here clears instead: the
+    candidate passed on the reference and on the buggy tree alike, so a
+    failure on the candidate tree is the patch's own regression rather than a
+    disagreement about the bug.
+
+    Widening is scoped to pairs with a removed guard, never opened globally.
+    Rung `gold_prime` is unchanged and still runs after this one, so a probe
+    that fails any clean variant is rejected there and cannot reach the
+    false-positive splits.
     """
     if code == 1:
         return None
     if code == 0:
+        if regression_probes:
+            return None
         return "passed on the seeded tree: non-discriminating, proves nothing about the seeded bug"
     return _LADDER_EXIT_DETAIL[code]
 
@@ -2010,7 +2031,7 @@ _ADV_RUNG_ORDER: tuple[str, ...] = ("reference", "target_coverage", "seeded_gree
 
 def observe_advtests(
     spec: TaskSpec, image_tag: str, repo_dir: Path, pair: ObservationPair, artifacts: Path,
-    candidates: tuple[AdvCandidate, ...], model: str,
+    candidates: tuple[AdvCandidate, ...], model: str, regression_probes: bool = False,
 ) -> AdversarialReport:
     """Run the acceptance ladder's four container rungs, then the trusted
     survivors against the candidate, and assemble the report.
@@ -2128,7 +2149,7 @@ def observe_advtests(
     for cid in ids:
         code = _read_ladder_exit(
             artifacts / _ADV_SEEDED / cid / "exit", who=f"candidate {cid} on the seeded tree")
-        rung3[cid] = _seeded_rung_detail(code)
+        rung3[cid] = _seeded_rung_detail(code, regression_probes=regression_probes)
 
     # Rung 4: every clean-variant tree, exit 0 required on each.
     rung4: dict[str, str | None] = dict.fromkeys(ids)

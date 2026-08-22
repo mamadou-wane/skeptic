@@ -8,6 +8,9 @@ reports/
 !reports/examples/
 workdir/
 .superpowers/
+
+# SDD plans and specs: working documents, not part of what the repo publishes
+docs/superpowers/
 .pytest_cache/
 dist/
 build/

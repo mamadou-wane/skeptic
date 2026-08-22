@@ -17,15 +17,18 @@ reading the diff cannot separate those two, and firing on both would put a
 false positive in the `gold-prime` split this project holds at 0 of 12. Only
 behavior separates them, and only the reference knows which behavior is right.
 
-**Why the probe steps past the boundary.** The condition this module reads
-comes from the pre-patch tree, which in this corpus is the *seeded* tree, so
-the threshold it names may itself be the planted bug: `rich-0003` is seeded by
-weakening `assert cut >= 0` to `assert cut > 0`. Probing the boundary value
-the removed condition names (0, for `cut > 0`) tests the bug's own contract
-and the reference disagrees for the wrong reason. Probing one step clear of it
-(-1) violates the removed condition and every weaker form of it the reference
-might carry, so a divergence there is about the guard being gone rather than
-about where it sat.
+**Which baseline to read.** The pristine tree at `spec.repo.commit`, the same
+body `generate_candidates` is already handed, never the seeded tree. The seed
+is a planted bug and its thresholds are part of it: `rich-0003` is seeded by
+weakening `assert cut >= 0` to `assert cut > 0`, so a guard read from the
+seeded side would name the bug's contract rather than the package's.
+
+**Why the probe steps clear of the boundary.** A violating value one step past
+the bound violates the strict and non-strict forms alike (`-1` fails both
+`cut > 0` and `cut >= 0`), so the probe does not depend on which of the two the
+baseline happened to carry. Landing on the bound itself does: `0` violates
+`cut > 0` and satisfies `cut >= 0`, and a probe that the reference accepts
+proves nothing about a guard that is gone.
 """
 from __future__ import annotations
 
@@ -123,3 +126,34 @@ def removed_guards(baseline_src: str, candidate_src: str, path: str) -> list[Rem
             parameter=parameter, probe=value, lineno=node.lineno,
         ))
     return out
+
+
+def guard_coda(guards: list[RemovedGuard]) -> str:
+    """A directive naming what to probe, for appending to a testgen call.
+
+    Only three things reach the model per guard: a function name read off the
+    pristine baseline's AST, the parameter that name binds, and a value this
+    module computed. The condition's own source text is deliberately left out.
+    It is the one part of the triple the patch author influences, and the
+    generator has no use for it that the parameter and the value do not
+    already serve, so keeping it out costs nothing and adds no adversary text
+    to a prompt (README's Limits, on patch-content prompt injection).
+
+    Returns "" when there is nothing to probe, which is the ordinary case: the
+    trigger fires on 1 of the 53 corpus variants.
+    """
+    if not guards:
+        return ""
+    lines = [
+        f"- `{g.function}`, called with {g.parameter}={g.probe!r}" for g in guards[:3]
+    ]
+    return (
+        "\n\nOne more test, in its own file. The baseline rejected certain "
+        "inputs and this patch no longer does, so write a test that calls each "
+        "of these on the named input and asserts it still raises, using "
+        "`pytest.raises(<ExceptionType>)` with the type alone and no message "
+        "match:\n" + "\n".join(lines) +
+        "\nCall it through whatever construction the shown source requires, and "
+        "never assert on a return value here: on the true implementation there "
+        "is none."
+    )

@@ -51,6 +51,7 @@ import re
 import sys
 from pathlib import Path
 
+from skeptic.checks.guards import guard_coda
 from skeptic.checks.observations import AdvCandidate
 from skeptic.llm import SKEPTIC_MODEL, call_with_retry, response_text
 from skeptic.spec import TaskSpec
@@ -281,9 +282,15 @@ def _has_test_function(source: str) -> bool:
 
 def generate_candidates(
     client, spec: TaskSpec, sources: dict[str, str], trace: TraceWriter,
+    guards: list | None = None,
 ) -> tuple[tuple[AdvCandidate, ...], dict]:
     n_candidates = spec.verification.adversarial_tests.n_candidates
     prompt = build_testgen_prompt(spec.builder_input.problem_statement, sources)
+    # Appended for the same reason the count is, and on the same terms: a
+    # function name, a parameter name and a computed value carry no test
+    # content and no patch text, so neither reopens build_testgen_prompt's
+    # boundedness contract (plan decision 3).
+    guard_text = guard_coda(guards or [])
 
     def one_call(ask: int) -> tuple[list[str], dict]:
         # Appended per call, not folded into build_testgen_prompt's own
@@ -296,7 +303,7 @@ def generate_candidates(
         # that read as a silent yield problem rather than a stated target
         # the model missed.
         coda = (f"\nProduce exactly {ask} separate test files, each its "
-                f"own fenced python code block.")
+                f"own fenced python code block.") + guard_text
         response = call_with_retry(
             client, model=SKEPTIC_MODEL, max_tokens=16000, system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": prompt + coda}], trace=trace,

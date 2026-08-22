@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 import skeptic
 from skeptic.builder import PRICING, _price
+from skeptic.checks.guards import removed_guards
 from skeptic.collector import observe_advtests
 from skeptic.diffmode import DEFAULT_INSTALL, DEFAULT_TEST_CMD
 from skeptic.errors import SkepticInfraError
@@ -1677,7 +1678,17 @@ def verify(
                     }
                     sources = {**sources, **one_hop_sources(
                         sources_tree, src_changed, spec.environment.src_dirs)}
-                    candidates, testgen_io = generate_candidates(client, spec, sources, trace)
+                    # Guards are read pristine-vs-candidate, never off the
+                    # seeded tree: the seed is a planted bug and its
+                    # thresholds are part of it (guards.py's own docstring).
+                    guards = []
+                    for path in src_changed:
+                        base_f, cand_f = sources_tree / path, pair.candidate.tree / path
+                        if base_f.is_file() and cand_f.is_file():
+                            guards += removed_guards(
+                                read_source(base_f), read_source(cand_f), path)
+                    candidates, testgen_io = generate_candidates(
+                        client, spec, sources, trace, guards)
                     # Persisted before observe_advtests, the same
                     # before-the-fold ordering as the judge io write below
                     # (DECISIONS row 132/143): a dead ladder still leaves the

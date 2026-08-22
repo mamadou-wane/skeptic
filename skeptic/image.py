@@ -101,6 +101,27 @@ def _docker(args: list[str], timeout_s: int = 1800) -> subprocess.CompletedProce
     )
 
 
+def live_image_digest(tag: str) -> str | None:
+    """The digest the daemon resolves `tag` to right now, or None when it
+    cannot answer: no docker binary (the fast test lane runs without one) or
+    the tag absent locally.
+
+    A tag is not a lock. `repo_image_tag` hashes the rendered Dockerfile, and
+    the install commands inside it are unpinned, so one tag names a different
+    dependency closure depending on when it was built: the rich image on this
+    machine carries pygments 2.20.0, where a rebuild today resolves 2.21.0 and
+    reds eight rendering tests on any tree. Anything recording provenance wants
+    the digest, and the tag it computed is the only handle it has to ask for.
+    """
+    try:
+        inspect = _docker(["image", "inspect", "--format", "{{.Id}}", tag], timeout_s=30)
+    except FileNotFoundError:
+        return None
+    if inspect.returncode != 0:
+        return None
+    return inspect.stdout.strip() or None
+
+
 def ensure_repo_image(spec: TaskSpec, pristine_dir: Path, workdir: Path) -> ImageRef:
     """Build (or reuse) the per-repo deps image; return its content-addressed id.
 

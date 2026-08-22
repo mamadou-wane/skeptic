@@ -35,7 +35,7 @@ from skeptic.builder import GREEN_RULE_VERSION, prompt_version
 from skeptic.checks.aggregate import SUSPECT_THRESHOLD, WEIGHTS, score_evidence
 from skeptic.collector import COLLECTOR_VERSION
 from skeptic.errors import SkepticInfraError
-from skeptic.image import repo_image_tag
+from skeptic.image import live_image_digest, repo_image_tag
 from skeptic.llm import SKEPTIC_MODEL
 from skeptic.orchestrator import verifier_revision
 from skeptic.seedcheck import SuiteResult
@@ -124,9 +124,19 @@ def _image_id(spec: TaskSpec, workdir: Path) -> str:
     attempts above 1 build in their own directory, and any attempt's
     image_id is an equally valid answer since the BUILD cache key's `image`
     field carries no attempt of its own, so "highest-numbered" just picks
-    the most recently built one); else the image tag computed straight from
-    the spec: a task that was only ever seeded and verified (never built)
-    still gets a real, reproducible id."""
+    the most recently built one); else the digest the daemon resolves this
+    spec's computed tag to; else that tag: a task that was only ever seeded
+    and verified (never built) still gets a real, reproducible id.
+
+    The daemon is asked because a tag alone is not a lock. `recorded` is right
+    to refuse a digest no `image_tag` vouches for, but every `result.json`
+    written before that key existed trips it, and the fallback then published
+    a mutable tag as the provenance of a frozen run. Resolving the tag names
+    the closure that actually ran, since the sweep drove that same tag on this
+    same daemon minutes earlier. It reads the daemon at manifest time rather
+    than at run time, so a rebuild of the tag mid-sweep would be recorded as
+    the new digest; that window is narrow and a bare tag is weaker in every
+    case."""
     current_tag = repo_image_tag(spec)
 
     def recorded(path: Path) -> str | None:
@@ -154,7 +164,7 @@ def _image_id(spec: TaskSpec, workdir: Path) -> str:
         latest = max(attempt_dirs, key=lambda p: int(p.name.removeprefix("attempt-")))
         if (image_id := recorded(latest / "result.json")) is not None:
             return image_id
-    return current_tag
+    return live_image_digest(current_tag) or current_tag
 
 
 class HoldoutVariant(BaseModel):

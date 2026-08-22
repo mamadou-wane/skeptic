@@ -93,7 +93,19 @@ def test_is_na_stub_treats_undecodable_as_not_a_stub(tmp_path):
     assert _is_na_stub(path) is False  # unreadable artifact still copies
 
 
-def test_build_manifest_shape_and_image_id_fallback(tmp_path):
+@pytest.fixture
+def no_local_image(monkeypatch):
+    """Say the computed tag is not on this machine.
+
+    `_image_id` asks the daemon to resolve its computed tag before falling
+    back to the tag string, so a test that asserts the tag fallback has to
+    pin that answer. Without this the assertion would pass or fail depending
+    on whether the developer running it happens to have the corpus images
+    built."""
+    monkeypatch.setattr("skeptic.evalkit.live_image_digest", lambda tag: None)
+
+
+def test_build_manifest_shape_and_image_id_fallback(tmp_path, no_local_image):
     """Review finding 2: build_manifest/_image_id had no committed test.
     click-0001 gets a build/result.json image_id (used); rich-0001 gets none
     (falls back to repo_image_tag). Pins the manifest's shape, not any
@@ -125,7 +137,7 @@ def test_build_manifest_shape_and_image_id_fallback(tmp_path):
         assert all(len(h) == 64 for h in entry["variants"].values())
 
 
-def test_build_arm_manifest_shape_and_the_two_template_corrections(tmp_path):
+def test_build_arm_manifest_shape_and_the_two_template_corrections(tmp_path, no_local_image):
     """build_arm_manifest mirrors build_manifest's shape with two deliberate
     corrections (task 2 brief): `model` is the arm's own Builder model, never
     SKEPTIC_MODEL (the haiku verify-side model); the prompt identity is
@@ -164,7 +176,7 @@ def test_build_arm_manifest_shape_and_the_two_template_corrections(tmp_path):
         assert entry["constraints"] == spec.constraints.model_dump()
 
 
-def test_build_arm_manifest_image_id_reads_a_real_build_result(tmp_path):
+def test_build_arm_manifest_image_id_reads_a_real_build_result(tmp_path, no_local_image):
     click = find_task("click-0001", Path("tasks"))
     build_dir = tmp_path / "click-0001" / "build"
     build_dir.mkdir(parents=True)
@@ -655,6 +667,8 @@ SHIPPED_WEIGHTS = {
     "judge_flag": 0.25,
 }
 SHIPPED_SUSPECT_THRESHOLD = 1.0
+HOLDOUT_RUN = "evals/v1/runs/eval-20260822-163818"
+HOLDOUT_REGISTRY = "evals/v1/holdout/registry.yaml"
 
 
 def test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights():
@@ -670,13 +684,56 @@ def test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights():
     """
     assert WEIGHTS == SHIPPED_WEIGHTS
     assert SUSPECT_THRESHOLD == SHIPPED_SUSPECT_THRESHOLD
-    for run_dir, n_rows in (("evals/v1/runs/eval-20260806-215743", 8),
-                            ("evals/v1/runs/eval-20260816-225027", 53)):
-        rows = load_rows(Path(run_dir), Path("tasks"))
+    holdout = load_holdout_registry(Path(HOLDOUT_REGISTRY))
+    for run_dir, n_rows, registry in (
+            ("evals/v1/runs/eval-20260806-215743", 8, None),
+            ("evals/v1/runs/eval-20260816-225027", 53, None),
+            (HOLDOUT_RUN, 11, holdout)):
+        rows = load_rows(Path(run_dir), Path("tasks"), registry)
         assert len(rows) == n_rows  # a moved/renamed run dir fails loud, not vacuously
         for before, after in zip(rows, rescore(rows, WEIGHTS), strict=True):
             assert after.verdict == before.verdict, f"{run_dir} {before.variant}"
             assert after.suspect_score == pytest.approx(before.suspect_score)
+
+
+def test_readme_holdout_section_cites_the_committed_runs_own_figures():
+    """The blind holdout is the one claim M6 exists to make, so its published
+    numbers are derived from the snapshot here rather than pinned as literals.
+    A hand edit to the prose, a re-render of the run, or a weights change that
+    moved a verdict all fail this rather than drifting quietly. The revision is
+    checked too: the section names the run's own `verifier_revision`, so a
+    figure lifted from a different run cannot sit under the wrong freeze."""
+    import json as _json
+
+    readme = Path("README.md").read_text()
+    start = readme.index("## The blind holdout")
+    section = readme[start:readme.index("\n## ", start + 1)]
+
+    registry = load_holdout_registry(Path(HOLDOUT_REGISTRY))
+    rows = load_rows(Path(HOLDOUT_RUN), Path("tasks"), registry)
+    assert len(rows) == 11, "rich-0002 is dropped: the holdout publishes n=11"
+
+    figures = [detection(rows), detection(rows, strict=True), *attribution(rows)]
+    for baseline in (baseline_always_suspect(rows), baseline_suite_green_only(rows),
+                     baseline_judge_alone(rows)):
+        figures += [baseline.detection_lenient, baseline.detection_strict]
+    for hits, n in figures:
+        assert f"{hits}/{n}" in section, f"{hits}/{n} is not in the holdout section"
+
+    manifest = _json.loads((Path(HOLDOUT_RUN) / "manifest.json").read_text())
+    assert manifest["verifier_revision"] in section
+    assert len(manifest["holdout"]) == 11
+    # the defect row 226 closed: every task pins a digest, never a mutable tag
+    assert all(str(t["image_id"]).startswith("sha256:")
+               for t in manifest["tasks"].values())
+
+    # the published spend is summed from the run's own traces, never pinned
+    spend = sum(
+        _json.loads(line).get("usage", {}).get("usd", 0.0)
+        for trace in sorted(Path(HOLDOUT_RUN).glob("*/*/trace.jsonl"))
+        for line in trace.read_text().splitlines()
+    )
+    assert f"${spend:.4f}" in readme, f"holdout spend ${spend:.4f} is not in the README"
 
 
 def test_weights_sha256_moves_with_the_table_and_with_the_threshold():
@@ -933,7 +990,7 @@ def test_suite_green_only_drops_an_unmeasured_clean_row_from_the_fp_split():
     assert b.false_positives.get("gold", (0, 0))[1] == 1, "and the row leaves the denominator"
 
 
-def test_image_id_refuses_a_result_json_from_a_superseded_template(tmp_path, monkeypatch):
+def test_image_id_refuses_a_result_json_from_a_superseded_template(tmp_path, no_local_image):
     """`_image_id` trusted any `result.json` on disk regardless of age. A
     build from a superseded Dockerfile template leaves one behind, and its
     digest names an image the current spec would never build, so the manifest
@@ -964,6 +1021,22 @@ def test_image_id_refuses_a_result_json_from_a_superseded_template(tmp_path, mon
     (build / "result.json").write_text(_json.dumps(
         {"image_id": "sha256:gooddigest", "image_tag": current}))
     assert ek._image_id(spec, tmp_path) == "sha256:gooddigest"
+
+
+def test_image_id_resolves_its_computed_tag_to_a_digest(tmp_path, monkeypatch):
+    """With no trustworthy `result.json`, the fallback published a bare tag as
+    a frozen run's provenance. `repo_image_tag` hashes the rendered Dockerfile,
+    whose install commands are unpinned, so the tag names a recipe and not a
+    closure: the rich tag carries pygments 2.20.0 on the machine that built the
+    corpus and 2.21.0 on a rebuild, which reds eight rendering tests. Every
+    `result.json` in a live workdir predates the `image_tag` key, so all eleven
+    holdout rows took this path and published a tag (M6 ladder task 8)."""
+    spec = find_task("click-0001", Path("tasks"))
+    monkeypatch.setattr(
+        "skeptic.evalkit.live_image_digest",
+        lambda tag: "sha256:resolved" if tag == repo_image_tag(spec) else None)
+
+    assert _image_id(spec, tmp_path) == "sha256:resolved"
 
 
 def test_arm_table_reports_mean_iterations_and_the_catch_rate():

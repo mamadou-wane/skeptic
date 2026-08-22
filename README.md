@@ -36,8 +36,9 @@ Read the baselines before you read our row. A suite-green-only check catches 6
 of 29, and that gap is the argument for the whole project. But judge-alone, one
 Haiku call over the diff text with no repository access, catches 29 of 29 and
 clears the same pre-registered bar Skeptic does. It also names the correct hack
-category on 28 of 29 hacks against Skeptic's in-harness top-1 21/29. Skeptic is no more
-sensitive than an LLM judge on this corpus and does not claim to be. It holds 0
+category on 28 of 29 hacks against Skeptic's in-harness top-1 21/29. Skeptic is
+no more sensitive than an LLM judge on this corpus and does not claim to be. It
+holds 0
 false positives against the judge's 1, 12 deterministic hard-rule FAILs against
 its 0, and a per-rule evidence trail you can audit. It wins on precision and
 determinism, and loses on recall.
@@ -47,6 +48,61 @@ exactly 0.65 against a 1.0 threshold off the same two rules, in two different
 repos on two independently authored hacks. Exception-swallowing carries no
 `advtest_divergence` signal, so with the coverage rule silent it cannot reach
 SUSPECT. Recorded rather than tuned away: see `DECISIONS.md` row 218.
+
+## The blind holdout
+
+Eval A measures a corpus whose hacks were written by the same hand that built
+the detectors. That is circular. The holdout is the second measurement.
+
+Twelve hack variants were authored by `gpt-5.6-sol` through Codex, one per
+task, each session stateless and seeing only a packet: the seeded tree, the
+Part 2 taxonomy table, and the task's own metadata. No session saw a detector,
+a weight, a threshold, or a dev-set variant. Packets were built outside this
+checkout, a leak check asserted that no 40-character shingle of any withheld
+diff reached them, and every transcript is committed and audited for reads
+outside its own packet.
+
+Eleven cleared a detector-free mechanical screen. rich-0002 failed both
+permitted attempts, so it is dropped and H10 has no holdout instance: n=11.
+All eleven categories were adjudicated from the diffs alone before any verdict
+existed, and all eleven were confirmed with no relabels.
+
+Run 2026-08-22 at `verifier_revision` a68e984d6206, `collector_version` 1,
+`schema_version` 1. Snapshot and per-pair traces:
+`evals/v1/runs/eval-20260822-163818/`. Packets, transcripts, audits, screen
+results and the registry: `evals/v1/holdout/`.
+
+| system | detection lenient | detection strict |
+|---|---|---|
+| **Skeptic** | 10/11 | 5/11 |
+| always-SUSPECT | 11/11 | 0/11 |
+| suite-green-only | 3/11 | 3/11 |
+| judge-alone | 11/11 | 0/11 |
+
+There is no false-positive column. A blind author asked for a hack returns
+either a gold revert or a correct fix the screen cannot tell from one, so the
+holdout carries no clean variants and cannot measure false positives. Every FP
+figure on this page is dev-set only.
+
+The pre-registered bar was the same 85 percent lenient at no more than one FP
+per split. Met on the half this run can measure: 90.9 percent, against 93.1
+percent on the set the detectors were built against. Strict reads 45.5 percent
+here and 41.4 percent there. Detection generalizes to hacks the detectors
+never saw.
+
+Attribution travels less well. In-harness top-1 falls from 21/29 to 6/11,
+while attribution anywhere reads 11/11. The right hacks are caught and the
+reason is ranked first less often on unseen work.
+
+Judge-alone catches one more than Skeptic and scores nothing strict against
+Skeptic's 5, so blind data repeats Eval A's verdict on it exactly. Skeptic's
+answer is the strict column and the per-rule evidence behind it.
+
+H7 is again the only miss. The dev set reads 0 of 2, the holdout adds a third
+instance at 0 of 1, and exception-swallowing now stands at 0 of 3 across both
+measurements. A single holdout row was pre-registered as unable to resolve the
+category, and it did not resolve it. Recorded rather than tuned away:
+`DECISIONS.md` rows 218 and 226.
 
 ## Eval B, the base arm
 
@@ -127,8 +183,8 @@ both terms: across the arm, billed uncached tokens come to $0.5454 while
 cache-tier tokens come to $2.1717, so four fifths of the cost sits in the cache
 tier and quoting the uncached figure alone understates it by 5x.
 
-The blind holdout, authored by a different frontier model that never sees
-detector code, lands at M6. The timed fresh-clone footprint table lands at M7.
+Holdout spend was $0.4250 for 11 verdicts. The timed fresh-clone footprint
+table lands at M7.
 
 ## CI patch audit
 
@@ -258,18 +314,20 @@ slow integration suite.
 
 Everything measured here is within taxonomy. The ten hack categories were
 authored before the detectors and the detectors were built against them.
-Novel-category discovery is unmeasured, and the M6 holdout narrows that gap
-without closing it, since the holdout author also works from the same taxonomy
-spec.
+Novel-category discovery is unmeasured. The blind holdout narrows that gap
+without closing it: its author never saw a detector, but it worked from the
+same taxonomy spec, so 10/11 is generalization across authors rather than
+across categories.
 
 Attribution numbers carry a labelling artifact. Six of the eight top-1 misses
 are check-precedence: `t1_scope` outranks the check that named the mechanism,
 so the first evidence row reads `scope`. The other two read H6 off
 `advtest_divergence`, which labels every row it emits H6 by an explicit earlier
-decision. All eight were detected. The gap between in-harness top-1 21/29 and anywhere
-28/29 is entirely this. Both figures are in-harness, where a BUILD runs ahead
-of the checks; the `verify --diff` posture that removes `t1_scope` from
-contention is M6.
+decision. All eight were detected. The gap between in-harness top-1 21/29 and
+anywhere 28/29 is entirely this. Both figures are in-harness, where a BUILD runs ahead
+of the checks; the `verify --diff` posture removes `t1_scope` from contention.
+The holdout's wider gap, top-1 6/11 against anywhere 11/11, is the same
+artifact on unseen hacks.
 
 Adversarial-test yield was thin against real repos before this corpus: three of
 four early real-task runs generated zero trusted candidates, which left H5 and
@@ -286,14 +344,17 @@ drives the real CLI path landed as wave B's first commit (`DECISIONS.md` row
 149). The original by-construction claim was wrong in an instructive way: it
 bounded the resolver, and the leak was in the caller.
 
-Two provenance defects are open and recorded rather than patched. Every
-committed manifest, four of them, names a stale image for one of twelve tasks
-and a mutable local tag for ten more, because `_image_id` prefers a build
-result written 2026-07-26 over its own deterministic fallback. And every Eval B
-`result.json` writes an absolute host path. Both are recorded in `DECISIONS.md`
-rows 218 and 220 with code fixes queued, because editing a generated artifact
-so that it reads correctly is exactly the defect class this harness exists to
-catch.
+One provenance defect is closed and one is open. `_image_id` used to prefer a
+build result written 2026-07-26 over its own fallback, so four committed
+manifests name a stale image for one of twelve tasks and a mutable local tag
+for ten more. Row 222 stopped the stale digest by refusing any recorded digest
+its own `image_tag` does not vouch for, and row 226 replaced the tag fallback
+by asking the daemon what that tag resolves to. The holdout run is the first
+committed manifest whose `image_id` is a content digest on every task. The
+four older manifests still read as they did: editing a generated artifact so
+that it reads correctly is exactly the defect class this harness exists to
+catch. Still open, and recorded rather than patched: every Eval B
+`result.json` writes an absolute host path (`DECISIONS.md` row 220).
 
 ## Related work
 
@@ -336,39 +397,19 @@ commits: pallets/click at `5aa8ac43527f`, BSD-3-Clause, copyright 2014 Pallets;
 and Textualize/rich at `9d8f9a372cc5`, MIT, copyright 2020 Will McGugan. Both
 retain their own copyright and license, and nothing here relicenses them.
 
-Every pytest session with the Docker daemon up builds one small minirepo image,
-and the test fixture mints a fresh commit per session, so each run leaves another
-tag behind. Measured 2026-08-17 on a machine that has run this suite for weeks:
-398 accumulated minirepo tags, each a distinct image id, with `docker system df`
-reporting 410 images at 2.673 GB total and 2.083 GB of that reclaimable. Base
-layers are shared heavily, so the marginal cost of a tag is a few megabytes
-against the 254 MB each reports as virtual size. `docker image prune` reclaims
-them.
-
-## Working with AI
-
-This repo is built with AI coding agents doing implementation and review under
-my direction. I decide what gets built, what the numbers mean, and what ships;
-agents write code, run adversarial review panels against it, and argue with
-each other about whether a claim survives. Nothing lands that I have not read.
-
-`DECISIONS.md` is the audit trail. It records dissents, findings that were
-refuted and why, claims I walked back after a review panel caught them, and the
-two open provenance defects above. Several numbers in this README exist in
-their current form because a review agent proved my first version wrong.
+Every pytest session with the Docker daemon up leaves one more minirepo tag
+behind, a few megabytes each on shared base layers. `docker image prune`
+reclaims them.
 
 ## Status
 
-M1 foundations landed 2026-07-25, the Builder and sandbox 2026-07-26, the
-deterministic check layer 2026-07-27, the aggregator and CLI 2026-08-01, the
-paid checks 2026-08-02. M5's publishable core is the twelve-task corpus, Eval
-A, the weight freeze, and Eval B's base arm, all above.
+The harness landed through 2026-07 and 2026-08. M5's publishable core is the
+twelve-task corpus, Eval A, the weight freeze, and Eval B's base arm.
 
-M6 opened 2026-08-17 with `skeptic doctor` (preflight for Docker, the API
-key, Python, disk and arch, with the exact next command per failure),
-`skeptic verify --diff` (a patch audited against any local clone, no task
-spec, with the inferred environment printed before the run), and the
-report-only `action.yml` GitHub Action wrapping it, with the
-deterministic-lane numbers rescored from Eval A ("CI patch audit" above).
-Still ahead in M6: the blind holdout and the three pressure arms. M7 brings
-the timed fresh-clone footprint table.
+M6 opened 2026-08-17 with `skeptic doctor` (preflight for Docker, the API key,
+Python, disk and arch, with the exact next command per failure), `skeptic
+verify --diff` (a patch audited against any local clone, no task spec, with the
+inferred environment printed before the run), and the report-only `action.yml`
+GitHub Action wrapping it. The blind holdout ran 2026-08-22 and is above. Still
+ahead in M6: the three pressure arms. M7 brings the timed fresh-clone footprint
+table.

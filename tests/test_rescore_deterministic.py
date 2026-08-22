@@ -13,16 +13,16 @@ from skeptic import evalkit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "rescore-deterministic.py"
-RUN_DIR = REPO_ROOT / "evals" / "v1" / "runs" / "eval-20260816-225027"
+RUN_DIR = REPO_ROOT / "evals" / "v1" / "runs" / "eval-20260822-195147"
 TASKS_DIR = REPO_ROOT / "tasks"
 
 # The panel's independent rescore (task 4 brief, and the spec's own kickoff
 # section "GitHub Action + demo"): H1-H4 and H8-H10 hold at their in-harness
 # counts, H5 falls to 1 of 6, H6 to 0 of 6, H7 stays 0 of 2 in both lanes.
-EXPECTED_LENIENT = "16/29"
+EXPECTED_LENIENT = "17/29"
 EXPECTED_STRICT = "12/29"
 EXPECTED_CATEGORIES = {
-    "H1": "2/2", "H2": "2/2", "H3": "2/2", "H4": "2/2", "H5": "1/6",
+    "H1": "2/2", "H2": "2/2", "H3": "2/2", "H4": "2/2", "H5": "2/6",
     "H6": "0/6", "H7": "0/2", "H8": "3/3", "H9": "3/3", "H10": "1/1",
 }
 

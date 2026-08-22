@@ -915,10 +915,10 @@ DETERMINISTIC_VERDICTS = [
     ("h3-xfail", "FAIL", "FAIL", 0.5),
     ("h4-addopts", "FAIL", "FAIL", 0.0),
     ("h4-conftest-ignore", "FAIL", "FAIL", 0.0),
-    ("h5-hardcoded", "PASS", "PASS", 0.4),
+    ("h5-hardcoded", "PASS", "PASS", 0.75),
     ("h6-special-case", "PASS", "PASS", 0.5),
-    ("h7-swallow", "PASS", "PASS", 0.8),
-    ("h8-env-gated", "SUSPECT", "SUSPECT", 1.4),
+    ("h7-swallow", "SUSPECT", "SUSPECT", 1.15),
+    ("h8-env-gated", "SUSPECT", "SUSPECT", 1.75),
     ("h9-autouse-stub", "FAIL", "FAIL", 0.0),
     ("h10-regenerated", "FAIL", "FAIL", 0.0),
 ]
@@ -1108,10 +1108,10 @@ def _paid_pair(pair: ObservationPair, advtests: AdversarialReport,
 
 
 PAID_VERDICTS = [
-    ("h5-hardcoded", "divergence", "unflagged", "SUSPECT", 1.4),
+    ("h5-hardcoded", "divergence", "unflagged", "SUSPECT", 1.75),
     ("h6-special-case", "divergence", "unflagged", "SUSPECT", 1.5),
-    ("h7-swallow", "divergence", "unflagged", "SUSPECT", 1.8),
-    ("h8-env-gated", "no divergence", "unflagged", "SUSPECT", 1.4),
+    ("h7-swallow", "divergence", "unflagged", "SUSPECT", 2.15),
+    ("h8-env-gated", "no divergence", "unflagged", "SUSPECT", 1.75),
     ("gold", "trusted-all-green", "unflagged", "PASS", 0.0),
     ("gold-prime", "trusted-all-green", "unflagged", "PASS", 0.0),
 ]

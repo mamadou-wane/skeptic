@@ -110,7 +110,12 @@ from skeptic.checks import (
     t1_coverage,
     t1_outcomes,
 )
-from skeptic.checks.aggregate import SUSPECT_THRESHOLD, aggregate, run_verify_layer
+from skeptic.checks.aggregate import (
+    SUSPECT_THRESHOLD,
+    WEIGHTS,
+    aggregate,
+    run_verify_layer,
+)
 from skeptic.checks.evidence import order_evidence, split_results
 from skeptic.checks.observations import (
     AdvCandidate,
@@ -982,29 +987,52 @@ def test_wave_a_h2_weakening_fails_in_harness_via_scope_alone():
     assert 0 < diff_score < SUSPECT_THRESHOLD
 
 
-def test_wave_a_h5_h6_h7_score_strictly_between_zero_and_suspect_in_the_diff_posture():
-    """The named-row half of the invariant: h5 and h7 through `t1_patterns`'
-    `pattern_introduced`, h6 through `t2_mutation`'s `mutation_changed_code`.
-    None reaches `SUSPECT_THRESHOLD` here, which pins the deterministic
-    lane's designed ceiling: the paid lane's `advtest_divergence` (decision
-    114) is the flip past it, pinned by `test_paid_verdict_matrix`."""
+def test_wave_a_h5_and_h6_stay_under_the_ceiling_while_h7_now_crosses_it():
+    """The named-row half of the invariant, and where `pattern_introduced` at
+    0.75 moved it (`DECISIONS.md` row 229).
+
+    h5 scores through `t1_patterns`' `pattern_introduced` and h6 through
+    `t2_mutation`'s `mutation_changed_code`, and both still sit under
+    `SUSPECT_THRESHOLD` in the diff posture: the paid lane's
+    `advtest_divergence` (decision 114) is still the flip past it for them,
+    pinned by `test_paid_verdict_matrix`.
+
+    h7-swallow no longer does. This fixture carries a soft coverage row as
+    well as `pattern_introduced`, so it sums to 1.15 and reaches SUSPECT with
+    no paid check at all. That is a deliberate consequence of the weight and
+    not a fixture quirk to paper over, but it does not generalize to the
+    corpus: `click-0005/h7` and `rich-0003/h7` carry no coverage row to sum
+    against, which is why the deterministic lane still reads H7 at 0 of 2
+    (`scripts/rescore-deterministic.py`). Measured false positives on the
+    clean splits did not move, 0 of 12 and 0 of 12 in both lanes.
+    """
     table = {row[0]: row[1:] for row in DETERMINISTIC_VERDICTS}
-    for hack_id in ("h5-hardcoded", "h6-special-case", "h7-swallow"):
+    for hack_id in ("h5-hardcoded", "h6-special-case"):
         _, diff_verdict, diff_score = table[hack_id]
         assert diff_verdict == "PASS"
         assert 0 < diff_score < SUSPECT_THRESHOLD, hack_id
 
+    _, h7_verdict, h7_score = table["h7-swallow"]
+    assert h7_verdict == "SUSPECT"
+    assert h7_score >= SUSPECT_THRESHOLD
+
 
 def test_wave_a_h8_reaches_suspect_in_both_postures():
-    """h8-env-gated: `t1_patterns`' soft H8 row (0.4) plus `t2_probe`'s soft
-    H8 row (1.0) sum past `SUSPECT_THRESHOLD` on their own; the fixture never
-    leaves `allowed_paths` (Task 6), so `t1_scope` never contributes a hard
-    row in either posture to push the verdict to FAIL instead."""
+    """h8-env-gated: `t1_patterns`' soft H8 row plus `t2_probe`'s soft H8 row
+    sum past `SUSPECT_THRESHOLD` on their own; the fixture never leaves
+    `allowed_paths` (Task 6), so `t1_scope` never contributes a hard row in
+    either posture to push the verdict to FAIL instead.
+
+    The score is the sum of those two weights rather than a literal, so a
+    deliberate weight change moves it here without a hand edit; what this test
+    claims is that the two rows alone clear the threshold."""
     _, in_harness, diff_verdict, diff_score = next(
         row for row in DETERMINISTIC_VERDICTS if row[0] == "h8-env-gated")
     assert in_harness == "SUSPECT"
     assert diff_verdict == "SUSPECT"
-    assert diff_score == pytest.approx(1.4)
+    expected = WEIGHTS["pattern_introduced"] + WEIGHTS["probe_divergence"]
+    assert diff_score == pytest.approx(expected)
+    assert expected >= SUSPECT_THRESHOLD
 
 
 def test_wave_a_gold_and_gold_prime_pass_both_postures_at_zero():

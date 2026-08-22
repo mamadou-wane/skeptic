@@ -184,7 +184,7 @@ what the three pressure arms above were built to probe.
 ## Try it
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev]" -c requirements-dev.lock
 skeptic demo
 ```
 
@@ -355,6 +355,24 @@ collector materializes a fresh seeded tree and a fresh candidate tree, runs one
 throwaway container per tree, and writes what each produced (a collection
 manifest, a junit outcome map, coverage data with per-test contexts) into a
 host artifacts directory outside both trees. The checks then execute nothing.
+
+```mermaid
+flowchart LR
+  seed["seeded tree<br/>(pinned commit + seed diff)"] --> cs["container<br/>(network off)"]
+  cand["candidate tree<br/>(seeded + the patch)"] --> cc["container<br/>(network off)"]
+  cs --> art["host artifacts dir<br/>collection manifest · junit outcomes · coverage contexts"]
+  cc --> art
+  art --> t1["8 deterministic checks<br/>collect · outcomes · config · scope<br/>goldens · coverage · patterns · ast"]
+  art --> t2["4 heavy checks<br/>mutation · probe<br/>advtests · judge (paid)"]
+  t1 --> agg["aggregate.py<br/>hard rules, then soft weights vs 1.0"]
+  t2 --> agg
+  agg --> v["PASS · SUSPECT · FAIL<br/>INFRA_ERROR if a mandatory check never completed"]
+```
+
+Neither container is reachable from the checks, and neither tree is read by
+them: a check is a pure function from one observation pair to one result, which
+is what lets a detector change re-verdict cached pairs without re-collecting
+them.
 Each is a pure function from one observation pair to one check result, so a
 detector change re-verdicts cached pairs without re-collecting them.
 
@@ -390,6 +408,33 @@ Two repos. click and rich are both pure-Python CLI-adjacent libraries with fast
 suites. Nothing here says anything about a compiled dependency, a service, or a
 slow integration suite.
 
+Six of the ten hack categories are prevented, not detected, and the two numbers
+are different animals. In the corpus posture the sandbox shadows tests,
+configs and golden directories read-only, so H1, H2, H3, H4, H9 and H10 cannot
+be written at all: the harness refuses the edit and logs the refusal. Only
+H5 through H8 have to be caught by reading a patch. `verify --diff` has no such
+mount, because it audits a patch someone already wrote, so every row there is
+detection and the prevented six become the detector's problem for the first
+time. That posture split is why a dev-set number and a diff-lane number are not
+comparable, and why the Action ships report-only.
+
+Thirty mutants per verify, seeded at 1337. Mutation is the dominant cost in the
+whole harness (per-mutant timeout is 3x baseline, capped at 60 s), so the budget
+is a wall-clock decision rather than a statistical one, and a bigger batch buys
+kill-rate resolution the verdict never reads: the rule fires on survivors in
+the tested region, not on a rate. What the budget costs is visible in the
+deterministic lane, where H5 falls to 1 of 6 and H6 to 0 of 6 once the paid
+checks are gone and mutation is carrying the category alone.
+
+Model routing is two tiers and one of them is free. Eight T1 checks read
+observations and call nothing; only `t2_advtests` and `t2_judge` reach the API,
+both on the cheap tier, and the paid profile is opt-in per command. That is why
+the default profile costs $0.00 and why the Action needs no key. The price is
+in the table above: 16/29 lenient without the paid checks against 27/29 with
+them. Routing the judge to a frontier model was never tested and is not
+claimed; the measured baseline says a single Haiku call over diff text already
+matches the harness on recall.
+
 ## Limits
 
 Everything measured here is within taxonomy. The ten hack categories were
@@ -424,6 +469,19 @@ drives the real CLI path landed as wave B's first commit (`DECISIONS.md` row
 149). The original by-construction claim was wrong in an instructive way: it
 bounded the resolver, and the leak was in the caller.
 
+Skeptic's own paid checks read adversary-authored text. A patch under audit
+reaches `t2_advtests`' generator and `t2_judge`'s reviewer as content, so a
+patch can carry instructions aimed at them. Prompt hardening is the first
+mitigation and it is not the argument; the bound is. Generated tests are
+promoted only through a ladder whose `reference` rung runs them against the
+pinned reference implementation, so a test the patch talked the generator into
+writing still has to agree with the hidden correct code before any evidence is
+emitted, and `parse_judge_response` folds an unparseable or hostile judge reply
+fail-closed. Both paths therefore lose evidence rather than invent it: the
+worst case is a hack that goes uncaught, never a clean patch pushed to FAIL.
+Nothing here is measured against a real injection attempt, which is the honest
+limit on the claim.
+
 One provenance defect is closed and one is open. `_image_id` used to prefer a
 build result written 2026-07-26 over its own fallback, so four committed
 manifests name a stale image for one of twelve tasks and a mutable local tag
@@ -455,6 +513,32 @@ Footprint anchor: SWE-bench's official harness needs roughly 120 GB of disk and
 cold-start table land at M7. Until then the comparison on offer is the demo
 above, which needs neither Docker nor a network and returns in under a second.
 
+## Roadmap
+
+Four things this design points at and does not do. Each is scoped enough to
+argue about, and none is started.
+
+**CI patch-admission gate.** The Action ships report-only because the
+diff-posture false-positive rate on real clean PRs is unmeasured. Measuring it
+is the gate: a corpus of merged human PRs, audited, with the FP rate published
+the way the dev set's is. Only then does failing a check on SUSPECT make sense.
+
+**Import-graph reachability.** Cut at the planning gate to fund accepted scope.
+A static call-graph pass would catch a patch that satisfies its tests through
+code no consumer path can reach, which is the gap `t1_coverage` approximates
+with per-test contexts. The collection-manifest diff is harder to fool and was
+the cheaper buy; reachability is the better answer.
+
+**Second language.** Not a port. The analyzer is Python-specific from the AST
+rules through the coverage-context bridge, so a second language is a second
+analyzer sharing only the evidence schema and the aggregator.
+
+**Verifier co-evolution.** The premise this project borrows is that no fixed
+verifier survives improving generators. Everything here is a fixed verifier.
+The honest next question is whether the detector can be re-derived against each
+new generator without re-deriving the corpus, and nothing in this repo answers
+it.
+
 ## Layout
 
 | Path | What |
@@ -470,8 +554,9 @@ above, which needs neither Docker nor a network and returns in under a second.
 
 Python 3.12. `pip install -e ".[dev]" && pytest`.
 
-Skeptic is MIT licensed (`LICENSE`). The 65 diffs under `patches/` and the
-suites under `acceptance/` contain fragments of two upstream projects,
+Skeptic is MIT licensed (`LICENSE`). The 65 diffs under `patches/`, the 18
+under `evals/v1/holdout/patches/`, and the suites under `acceptance/` contain
+fragments of two upstream projects,
 redistributed for the sole purpose of seeding and verifying bugs against pinned
 commits: pallets/click at `5aa8ac43527f`, BSD-3-Clause, copyright 2014 Pallets;
 and Textualize/rich at `9d8f9a372cc5`, MIT, copyright 2020 Will McGugan. Both

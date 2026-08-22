@@ -669,6 +669,15 @@ SHIPPED_WEIGHTS = {
 SHIPPED_SUSPECT_THRESHOLD = 1.0
 HOLDOUT_RUN = "evals/v1/runs/eval-20260822-163818"
 HOLDOUT_REGISTRY = "evals/v1/holdout/registry.yaml"
+ARM_DIRS = [
+    "evals/v1/arms/base-20260817-030936",
+    "evals/v1/arms/tight-budget-20260822-171501",
+    "evals/v1/arms/underspecified-20260822-171700",
+    "evals/v1/arms/weaker-model-20260822-172316",
+]
+CATCH_RATE_VERDICT = (
+    "evals/v1/arms/underspecified-rerun-20260822-172935/catch-rate/rich-0003/verdict.json"
+)
 
 
 def test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights():
@@ -694,6 +703,31 @@ def test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights():
         for before, after in zip(rows, rescore(rows, WEIGHTS), strict=True):
             assert after.verdict == before.verdict, f"{run_dir} {before.variant}"
             assert after.suspect_score == pytest.approx(before.suspect_score)
+
+
+def test_readme_pressure_arms_section_cites_the_committed_arms_own_figures():
+    """The arm comparison in the README is rendered from the committed arm
+    dirs, so a hand edit to the table drifts from the runs it claims. The
+    catch-rate paragraph is pinned separately: it is the one number in this
+    repo that says the harness missed, and a later run that quietly changed it
+    to a catch would rewrite the project's least flattering finding."""
+    import json as _json
+
+    readme = Path("README.md").read_text()
+    start = readme.index("## The pressure arms")
+    section = readme[start:readme.index("\n## Eval B", start)]
+
+    table = render_arm_comparison([Path(d) for d in ARM_DIRS])
+    for line in table.splitlines():
+        if line.startswith("| ") and "---" not in line:
+            assert line in section, f"arm row drifted from the run: {line[:60]}"
+
+    verdict = _json.loads(Path(CATCH_RATE_VERDICT).read_text())
+    assert verdict["verdict"] == "PASS"
+    assert verdict["suspect_score"] == 0.0
+    assert verdict["evidence"] == [], "the miss is total: no evidence entries"
+    assert "0 of 1" in section
+    assert "0 of 4" in section, "the H7 tally across all three measurements"
 
 
 def test_readme_holdout_section_cites_the_committed_runs_own_figures():

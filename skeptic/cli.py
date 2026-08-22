@@ -595,6 +595,32 @@ def build(
         raise typer.Exit(EXIT_INFRA) from exc
 
 
+def _snapshot_candidate(result: dict, workdir: Path, attempt_dir: Path) -> bool:
+    """Copy this attempt's candidate diff into its own snapshot directory.
+
+    Without it an arm's committed record holds the classification but not the
+    patch it classified. Every arm runs attempt 1, so every arm writes the
+    same `workdir/<task>/build/candidate.diff`, and the next arm over the same
+    task truncates the last one: M6's only GREEN-wrong attempt was destroyed
+    that way and had to be re-run to be audited at all (`DECISIONS.md` row
+    227). `snapshot_run` cannot carry it, because its artifact list is the
+    VERIFY set and a BUILD directory has none of those files.
+
+    Returns False when there is no diff to copy, which is the ordinary case
+    for an attempt that died in INFRA or produced an empty candidate.
+    """
+    import shutil
+
+    stored = result.get("candidate")
+    if not stored:
+        return False
+    source = _candidate_abs(str(stored), workdir)
+    if not source.is_file():
+        return False
+    shutil.copy2(source, attempt_dir / "candidate.diff")
+    return True
+
+
 def _candidate_rel(diff_path: Path, workdir: Path) -> str:
     """The candidate diff's path as stored in a BUILD result, relative to the
     workdir root. Absolute here meant every committed `result.json` carried a
@@ -894,6 +920,7 @@ def build_arm(
 
                 result = json.loads(result_path.read_text())
                 shutil.copy2(result_path, attempt_dir / "result.json")
+                _snapshot_candidate(result, workdir, attempt_dir)
 
                 acceptance = None
                 if result.get("green") and not result.get("is_empty"):

@@ -296,3 +296,61 @@ def test_extract_candidate_handles_binary_change(tmp_path):
     # Verify no absolute paths in diff.
     diff_text = report.diff_path.read_text()
     assert str(tmp_path) not in diff_text
+
+
+def test_extract_candidate_preserves_crlf_so_the_diff_still_applies(tmp_path):
+    """A CRLF tree's candidate diff has to apply back to that tree.
+
+    `git diff` renders a CRLF file's lines with the CR as part of the line
+    content, so a patch that drops it no longer matches the file it came from.
+    Found in the field: `EinDev/watchman-pairing-assistant#40` is a CRLF repo,
+    and its candidate diff failed `git apply --check` against the very tree it
+    had just been extracted from, surfacing as an INFRA_ERROR from the
+    `verify --diff` lane the GitHub Action wraps (`DECISIONS.md` row 227).
+    The cause was newline translation on the way out of `git diff`, twice:
+    `text=True` decodes with universal newlines, and `splitlines()` treats a
+    lone CR as a terminator too.
+    """
+    import subprocess
+
+    base = tmp_path / "base"
+    ws = tmp_path / "ws"
+    for root, body in ((base, "a\r\nb\r\nc\r\n"), (ws, "a\r\nB\r\nc\r\n")):
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "mod.py").write_bytes(body.encode())
+
+    out = tmp_path / "candidate.diff"
+    report = extract_candidate(base, ws, out, ["pkg/"])
+    assert report.changed_files == ["pkg/mod.py"]
+
+    raw = out.read_bytes()
+    assert b"\r\n" in raw, "the CR was stripped out of the patch body"
+
+    # The real assertion: the patch applies to the tree it was taken from.
+    applied = subprocess.run(
+        ["git", "apply", "--check", str(out)],
+        cwd=base, capture_output=True, text=True, check=False,
+    )
+    assert applied.returncode == 0, applied.stderr
+
+
+def test_extract_candidate_leaves_an_lf_tree_alone(tmp_path):
+    """The CRLF fix must not start emitting CRs for an ordinary LF tree: every
+    corpus task is LF, and a spurious CR would fail to apply the same way."""
+    import subprocess
+
+    base = tmp_path / "base"
+    ws = tmp_path / "ws"
+    for root, body in ((base, "a\nb\nc\n"), (ws, "a\nB\nc\n")):
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "mod.py").write_bytes(body.encode())
+
+    out = tmp_path / "candidate.diff"
+    extract_candidate(base, ws, out, ["pkg/"])
+    assert b"\r" not in out.read_bytes()
+
+    applied = subprocess.run(
+        ["git", "apply", "--check", str(out)],
+        cwd=base, capture_output=True, text=True, check=False,
+    )
+    assert applied.returncode == 0, applied.stderr

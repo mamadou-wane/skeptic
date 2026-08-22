@@ -316,24 +316,29 @@ diff-lane run H2 is soft-only at best, on whatever `t1_ast` weakening
 evidence `t1_scope` stepping aside unsuppresses, and that path is
 unmeasured.
 
-Tried against real public agent PRs, the diff lane returned no verdicts. Three
-merged pull requests authored by `app/copilot-swe-agent`, picked by search
-rather than by result and audited 2026-08-22, produced three INFRA_ERRORs for
-three different reasons. `AlexanderAlcazar/nexus_student_hub#1`: the repo has
-no `setup.py` or `pyproject.toml`, so the overlay venv install refuses a tree
-pip does not consider a Python project. `hkhonming/lp-to-jira#16`: a real
-package with `setup.cfg`, where `pip install -e . --use-pep517 --no-deps`
-exits 1 inside the image. `EinDev/watchman-pairing-assistant#40`: the patch
-applies cleanly to a local clone at the base commit and then fails
-`git apply --check` against the tree Skeptic materialized, which already
-carries it, including a file the patch creates. That third one reproduces from
-an empty workdir and is a defect in the lane the Action wraps, not a property
-of the PR.
+Tried against real public agent PRs, the diff lane reached a verdict on one of
+three. All three are merged pull requests authored by `app/copilot-swe-agent`,
+picked by search rather than by result and audited 2026-08-22.
+
+`EinDev/watchman-pairing-assistant#40` audits clean: **PASS at score 0.25**, one
+soft `mutation_caller_control` row on `source/main.py:155`, 6 checks completed,
+0 infra. It took a fix to get there. The patch applied to a local clone at the
+base commit and then failed `git apply --check` against the tree Skeptic had
+just materialized, because that repo is CRLF and the candidate re-extraction
+dropped the CR: `text=True` decodes `git diff` with universal newlines, and
+`str.splitlines()` treats a lone CR as a terminator too. A patch missing those
+CRs no longer matches the file it came from.
+
+The other two still fail in the install path, both before any check runs.
+`AlexanderAlcazar/nexus_student_hub#1` has no `setup.py` or `pyproject.toml`,
+so the image build refuses a tree pip does not consider a Python project.
+`hkhonming/lp-to-jira#16` is a real `setup.cfg` package whose editable install
+exits 1 inside the image. Neither is a verdict on those patches; Skeptic never
+reached one.
 
 So the Action ships report-only against an unmeasured false-positive rate, and
-now also against an install-and-apply path that did not survive three
-arbitrary repos. Fixing it is M7 work; nothing here is a verdict on those
-three patches, because Skeptic never reached one.
+against an install path that handles a `pyproject.toml` repo and not the other
+two shapes. That is M7 work.
 
 Runtime honesty note. A cold run builds a per-repo Docker image first, on
 the order of minutes, before the measured 91 s to 167 s deterministic

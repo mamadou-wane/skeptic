@@ -1699,7 +1699,8 @@ def verify(
                     advtests_started = time.monotonic()
                     advtests_report = observe_advtests(
                         spec, repo_image_tag(spec), repo_dir, pair,
-                        pair.artifacts_dir / "advtests", candidates, model=SKEPTIC_MODEL)
+                        pair.artifacts_dir / "advtests", candidates,
+                        model=SKEPTIC_MODEL, regression_probes=bool(guards))
                     trace.event(
                         stage="VERIFY", actor="checks.t2_advtests", event="advtest_batch",
                         variant=identity,

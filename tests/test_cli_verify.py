@@ -1041,7 +1041,7 @@ def _fake_advtests_and_judge(monkeypatch):
         lambda client, spec, sources, trace, guards=None: ((), testgen_io))
     monkeypatch.setattr(
         cli, "observe_advtests",
-        lambda spec, image_tag, repo_dir, pair, artifacts, candidates, model: advtests_report)
+        lambda spec, image_tag, repo_dir, pair, artifacts, candidates, model, regression_probes=False: advtests_report)
     monkeypatch.setattr(
         cli, "judge_diff", lambda client, diff_text, trace: (judge_report, judge_io))
     monkeypatch.setattr(anthropic, "Anthropic", lambda: object())

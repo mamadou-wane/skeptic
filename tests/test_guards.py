@@ -104,3 +104,29 @@ def test_a_module_level_assert_has_no_callable_to_probe_through():
 
 def test_unparseable_source_reports_nothing_rather_than_raising():
     assert removed_guards("def f(:\n", "def f(x): return x\n", "m.py") == []
+
+
+def test_the_seeded_rung_admits_a_regression_probe_only_when_a_guard_was_dropped():
+    """Rung `seeded_green` admits one class of test by default: a bug probe,
+    which must fail on the seeded tree. A probe for a removed precondition
+    passes there on purpose, because the seeded tree still carries the guard,
+    so the default rule rejects it as non-discriminating and the regression
+    goes unmeasured. That is the shape M6's agent-authored GREEN-wrong took.
+
+    The widening is scoped to pairs where `removed_guards` found something, so
+    the default behavior of the other 52 corpus variants is untouched.
+    """
+    from skeptic.collector import _seeded_rung_detail
+
+    assert _seeded_rung_detail(1) is None, "a bug probe still clears by failing on seeded"
+    assert _seeded_rung_detail(1, regression_probes=True) is None
+
+    default = _seeded_rung_detail(0)
+    assert default is not None and "non-discriminating" in default
+    assert _seeded_rung_detail(0, regression_probes=True) is None, (
+        "with a dropped guard, passing on reference and on the buggy tree alike "
+        "is the premise: the candidate tree is what has to disagree")
+
+    # a crash or a timeout is neither class of probe, either way
+    assert _seeded_rung_detail(2) is not None
+    assert _seeded_rung_detail(2, regression_probes=True) is not None

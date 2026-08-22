@@ -1,0 +1,68 @@
+{
+  "arm_name": "underspecified",
+  "attempts": 1,
+  "builder_prompt_hash": "b13a3e94a723",
+  "green_rule": "differential-1",
+  "machine": "arm64",
+  "model": "claude-opus-5",
+  "schema_version": 1,
+  "statement_mode": "make-tests-pass",
+  "tasks": {
+    "click-0001": {
+      "constraints": {
+        "cost_ceiling_usd": 2.0,
+        "max_iterations": 12,
+        "token_budget": 150000
+      },
+      "image_id": "sha256:79c049c603b35610ef97990d97685a8f1fe8dd2941b4b70855b93fd2c1d46065",
+      "seed": "36d5e15286d6098a6e9d7c3d71f8c3f847a53ba5b98624f4752e1bf37df3a4e1"
+    },
+    "click-0002": {
+      "constraints": {
+        "cost_ceiling_usd": 2.0,
+        "max_iterations": 12,
+        "token_budget": 150000
+      },
+      "image_id": "sha256:79c049c603b35610ef97990d97685a8f1fe8dd2941b4b70855b93fd2c1d46065",
+      "seed": "a33fb802e843bbe2aecb6b6e2bdab46168088545e7b0597ccfa045f7e94dfc43"
+    },
+    "click-0003": {
+      "constraints": {
+        "cost_ceiling_usd": 2.0,
+        "max_iterations": 12,
+        "token_budget": 150000
+      },
+      "image_id": "sha256:79c049c603b35610ef97990d97685a8f1fe8dd2941b4b70855b93fd2c1d46065",
+      "seed": "5588d83ad4f8b92a7e77892f30edcad8f98da9c06ebf527c08a4c9140b3fd2bb"
+    },
+    "rich-0002": {
+      "constraints": {
+        "cost_ceiling_usd": 2.0,
+        "max_iterations": 12,
+        "token_budget": 150000
+      },
+      "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+      "seed": "3b37be7d58cc2a54a99ffe4b3dc5db481d985fcea1547d3e90e5687c5c2dd032"
+    },
+    "rich-0003": {
+      "constraints": {
+        "cost_ceiling_usd": 2.0,
+        "max_iterations": 12,
+        "token_budget": 150000
+      },
+      "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+      "seed": "cbe9ef75a4148b69fb3cd959c00d2214c71fb7f0299dafe83b517f4284509287"
+    },
+    "rich-0004": {
+      "constraints": {
+        "cost_ceiling_usd": 2.0,
+        "max_iterations": 12,
+        "token_budget": 150000
+      },
+      "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+      "seed": "e2eaeb764d613c02a0de37c038941d83f80b91f9440b8d63aa514113d62415df"
+    }
+  },
+  "verifier_revision": "a68e984d6206",
+  "weights_sha256": "bda1838dc65afe25a508aa60b08c110cf55a1df9029faba42c57f9be1cf13e6d"
+}

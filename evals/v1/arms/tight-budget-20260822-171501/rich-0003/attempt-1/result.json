@@ -1,0 +1,33 @@
+{
+  "stop_reason": "iteration_cap",
+  "iterations": 4,
+  "in_tokens": 8,
+  "out_tokens": 956,
+  "usd": 0.0239,
+  "green": false,
+  "usd_cache_gap": 0.0633,
+  "cache_read_tokens": 6790,
+  "cache_creation_tokens": 9580,
+  "green_rule": "differential-1",
+  "baseline_seed_red": [
+    "tests/test_segment.py::test_split_cells_mixed[segment0]",
+    "tests/test_segment.py::test_split_cells_mixed[segment1]",
+    "tests/test_segment.py::test_split_cells_mixed[segment2]",
+    "tests/test_segment.py::test_split_cells_mixed[segment3]",
+    "tests/test_segment.py::test_split_cells_mixed[segment4]",
+    "tests/test_segment.py::test_split_cells_mixed[segment5]",
+    "tests/test_segment.py::test_split_cells_mixed[segment6]",
+    "tests/test_segment.py::test_split_cells_mixed[segment7]"
+  ],
+  "baseline_environmental_red": [],
+  "baseline_total": 981,
+  "baseline_collection_errors": 0,
+  "candidate": "rich-0003/build/candidate.diff",
+  "changed_files": [
+    "rich/segment.py"
+  ],
+  "out_of_scope": [],
+  "is_empty": false,
+  "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+  "image_tag": "skeptic-repo-rich:9d8f9a372cc5-1ed41059"
+}

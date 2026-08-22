@@ -1,0 +1,13 @@
+{
+  "attempt": 1,
+  "cache_creation_tokens": 8352,
+  "cache_read_tokens": 6650,
+  "classification": "RED",
+  "estimated": false,
+  "iterations": 3,
+  "replayed": false,
+  "stop_reason": "token_budget",
+  "task_id": "rich-0004",
+  "usd": 0.0263,
+  "usd_cache_gap": 0.0555
+}

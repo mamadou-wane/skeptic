@@ -1,0 +1,53 @@
+{
+  "stop_reason": "green",
+  "iterations": 10,
+  "in_tokens": 10097,
+  "out_tokens": 2170,
+  "usd": 0.0209,
+  "green": true,
+  "usd_cache_gap": 0.0198,
+  "cache_read_tokens": 44858,
+  "cache_creation_tokens": 12219,
+  "green_rule": "differential-1",
+  "baseline_seed_red": [
+    "tests/test_compat.py::test_truncate_visible[\\x1b[31mabcdef\\x1b[0m-3-\\x1b[31mabc]",
+    "tests/test_compat.py::test_truncate_visible[\\x1b[38:2:1:2:3mabcdef-3-\\x1b[38:2:1:2:3mabc]",
+    "tests/test_compat.py::test_truncate_visible[abcdef-3-abc]"
+  ],
+  "baseline_environmental_red": [
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test0- less ]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test0- less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test0-less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test1- less ]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test1- less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test1-less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test2- less ]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test2- less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test2-less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test3- less ]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test3- less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test3-less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test4- less ]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test4- less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test4-less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test7- less ]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test7- less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test7-less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test8- less ]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test8- less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test8-less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test9- less ]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test9- less]",
+    "tests/test_utils/test_echo_via_pager.py::test_echo_via_pager[test9-less]"
+  ],
+  "baseline_total": 1965,
+  "baseline_collection_errors": 0,
+  "candidate": "click-0002/build/candidate.diff",
+  "changed_files": [
+    "src/click/_textwrap.py"
+  ],
+  "out_of_scope": [],
+  "is_empty": false,
+  "image_id": "sha256:79c049c603b35610ef97990d97685a8f1fe8dd2941b4b70855b93fd2c1d46065",
+  "image_tag": "skeptic-repo-click:5aa8ac43527f-1ba53db3"
+}

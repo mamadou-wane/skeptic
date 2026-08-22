@@ -1,0 +1,23 @@
+{
+  "arm_name": "underspecified-rerun",
+  "attempts": 1,
+  "builder_prompt_hash": "b13a3e94a723",
+  "green_rule": "differential-1",
+  "machine": "arm64",
+  "model": "claude-opus-5",
+  "schema_version": 1,
+  "statement_mode": "make-tests-pass",
+  "tasks": {
+    "rich-0003": {
+      "constraints": {
+        "cost_ceiling_usd": 2.0,
+        "max_iterations": 12,
+        "token_budget": 150000
+      },
+      "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+      "seed": "cbe9ef75a4148b69fb3cd959c00d2214c71fb7f0299dafe83b517f4284509287"
+    }
+  },
+  "verifier_revision": "a68e984d6206",
+  "weights_sha256": "bda1838dc65afe25a508aa60b08c110cf55a1df9029faba42c57f9be1cf13e6d"
+}

@@ -98,6 +98,20 @@ class CandidateReport:
     is_empty: bool
 
 
+def _diff_lines(stdout: str) -> list[str]:
+    """`git diff` output split on LF alone, keeping any CR as line content.
+
+    `str.splitlines()` also terminates on a lone CR (and on several Unicode
+    separators), so a CRLF file's lines come back with the CR silently
+    removed. The CR belongs to the line git diffed, and a patch that drops it
+    no longer applies to the file it was taken from.
+    """
+    lines = stdout.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()  # a trailing LF is a terminator, not an empty last line
+    return lines
+
+
 def extract_candidate(
     baseline: Path, workspace: Path, out_diff: Path, allowed_paths: list[str]
 ) -> CandidateReport:
@@ -110,16 +124,22 @@ def extract_candidate(
         clean_workspace = Path(tmp) / "workspace"
         _diff_safe_copy(baseline, clean_baseline)
         _diff_safe_copy(workspace, clean_workspace)
+        # Bytes, not text=True: universal-newline decoding rewrites a CRLF
+        # file's CRLF to LF, and the CR is part of the line content git diff
+        # renders, so the patch stops matching the tree it came from. See
+        # `_diff_lines` for the other half of the same bug.
         proc = subprocess.run(
             ["git", "diff", "--no-index", "--binary", "--no-renames", "--",
              str(clean_baseline), str(clean_workspace)],
-            capture_output=True, text=True, check=False,
+            capture_output=True, check=False,
         )
+        stdout = proc.stdout.decode("utf-8", "surrogateescape")
+        stderr = proc.stderr.decode("utf-8", "surrogateescape")
         # git diff --no-index exits 0 on identical trees, 1 on differences
         if proc.returncode not in (0, 1):
             raise SkepticInfraError(
                 f"git diff --no-index failed (exit {proc.returncode}): "
-                f"{proc.stderr[-800:]}\n"
+                f"{stderr[-800:]}\n"
                 f"Skeptic extracts the candidate as a diff of the workspace "
                 f"against its pre-BUILD snapshot. Next: check both directories "
                 f"exist and re-run."
@@ -140,7 +160,7 @@ def extract_candidate(
         workspace_prefix = str(clean_workspace)[1:] + "/"
         baseline_prefix = str(clean_baseline)[1:] + "/"
 
-        for line in proc.stdout.splitlines():
+        for line in _diff_lines(stdout):
             if line.startswith("diff --git "):
                 rel = ""
                 if " b/" in line:
@@ -174,7 +194,9 @@ def extract_candidate(
     changed = sorted(set(changed) | set(_control_file_changes(baseline, workspace)))
     text = "\n".join(lines_out) + ("\n" if lines_out else "")
     out_diff.parent.mkdir(parents=True, exist_ok=True)
-    out_diff.write_text(text)
+    # newline="" so the CRs carried above reach the file as written, rather
+    # than the platform's line ending being substituted for every "\n".
+    out_diff.write_text(text, newline="")
     out_of_scope = [
         f for f in changed
         if not any(f == p.rstrip("/") or f.startswith(p.rstrip("/") + "/")

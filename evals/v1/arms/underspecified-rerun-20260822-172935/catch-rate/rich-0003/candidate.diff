@@ -1,0 +1,69 @@
+diff --git a/rich/segment.py b/rich/segment.py
+index 4894807..d02479d 100644
+--- a/rich/segment.py
++++ b/rich/segment.py
+@@ -126,31 +126,32 @@ class Segment(NamedTuple):
+ 
+         cell_size = get_character_cell_size
+ 
+-        pos = int((cut / cell_length) * len(text))
++        # Guess the position of the cut, then adjust it until it is correct.
++        pos = int((cut / cell_length) * (len(text) - 1))
++        cell_pos = cell_len(text[:pos])
+ 
+-        while True:
+-            before = text[:pos]
+-            cell_pos = cell_len(before)
+-            out_by = cell_pos - cut
+-            if not out_by:
+-                return (
+-                    _Segment(before, style, control),
+-                    _Segment(text[pos:], style, control),
+-                )
+-            if out_by == -1 and cell_size(text[pos]) == 2:
+-                return (
+-                    _Segment(text[:pos] + " ", style, control),
+-                    _Segment(" " + text[pos + 1 :], style, control),
+-                )
+-            if out_by == +1 and cell_size(text[pos - 1]) == 2:
+-                return (
+-                    _Segment(text[: pos - 1] + " ", style, control),
+-                    _Segment(" " + text[pos:], style, control),
+-                )
+-            if cell_pos < cut:
+-                pos += 1
+-            else:
+-                pos -= 1
++        # The guess may have overshot, in which case step back
++        while cell_pos > cut:
++            pos -= 1
++            cell_pos -= cell_size(text[pos])
++
++        # Step forwards until we reach (or pass) the cut point
++        while cell_pos < cut and pos < len(text):
++            cell_pos += cell_size(text[pos])
++            pos += 1
++
++        if cell_pos == cut:
++            return (
++                _Segment(text[:pos], style, control),
++                _Segment(text[pos:], style, control),
++            )
++
++        # The cut landed in the middle of a double width character,
++        # which is replaced with two spaces to preserve the width
++        return (
++            _Segment(text[: pos - 1] + " ", style, control),
++            _Segment(" " + text[pos:], style, control),
++        )
+ 
+     def split_cells(self, cut: int) -> Tuple["Segment", "Segment"]:
+         """Split segment in to two segments at the specified column.
+@@ -165,7 +166,6 @@ class Segment(NamedTuple):
+             Tuple[Segment, Segment]: Two segments.
+         """
+         text, style, control = self
+-        assert cut > 0
+ 
+         if _is_single_cell_widths(text):
+             # Fast path with all 1 cell characters

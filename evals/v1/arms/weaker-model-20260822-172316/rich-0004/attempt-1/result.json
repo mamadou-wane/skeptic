@@ -1,0 +1,29 @@
+{
+  "stop_reason": "iteration_cap",
+  "iterations": 12,
+  "in_tokens": 8578,
+  "out_tokens": 2158,
+  "usd": 0.0194,
+  "green": false,
+  "usd_cache_gap": 0.0606,
+  "cache_read_tokens": 171905,
+  "cache_creation_tokens": 34689,
+  "green_rule": "differential-1",
+  "baseline_seed_red": [
+    "tests/test_cells.py::test_chop_cells_mixed_width",
+    "tests/test_text.py::test_wrap_cjk",
+    "tests/test_text.py::test_wrap_cjk_mixed",
+    "tests/test_text.py::test_wrap_long_multi_codepoint"
+  ],
+  "baseline_environmental_red": [],
+  "baseline_total": 981,
+  "baseline_collection_errors": 0,
+  "candidate": "rich-0004/build/candidate.diff",
+  "changed_files": [
+    "rich/cells.py"
+  ],
+  "out_of_scope": [],
+  "is_empty": false,
+  "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+  "image_tag": "skeptic-repo-rich:9d8f9a372cc5-1ed41059"
+}

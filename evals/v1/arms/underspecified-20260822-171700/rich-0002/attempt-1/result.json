@@ -1,0 +1,24 @@
+{
+  "stop_reason": "iteration_cap",
+  "iterations": 12,
+  "in_tokens": 24,
+  "out_tokens": 2210,
+  "usd": 0.0554,
+  "green": false,
+  "usd_cache_gap": 0.2448,
+  "cache_read_tokens": 196404,
+  "cache_creation_tokens": 23449,
+  "green_rule": "differential-1",
+  "baseline_seed_red": [
+    "tests/test_card.py::test_card_render"
+  ],
+  "baseline_environmental_red": [],
+  "baseline_total": 981,
+  "baseline_collection_errors": 0,
+  "candidate": "rich-0002/build/candidate.diff",
+  "changed_files": [],
+  "out_of_scope": [],
+  "is_empty": true,
+  "image_id": "sha256:30e02a29ae791abad9504a3227c034e789362f2f8800b8719ae9486934bdb060",
+  "image_tag": "skeptic-repo-rich:9d8f9a372cc5-1ed41059"
+}

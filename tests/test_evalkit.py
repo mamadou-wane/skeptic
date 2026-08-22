@@ -93,7 +93,19 @@ def test_is_na_stub_treats_undecodable_as_not_a_stub(tmp_path):
     assert _is_na_stub(path) is False  # unreadable artifact still copies
 
 
-def test_build_manifest_shape_and_image_id_fallback(tmp_path):
+@pytest.fixture
+def no_local_image(monkeypatch):
+    """Say the computed tag is not on this machine.
+
+    `_image_id` asks the daemon to resolve its computed tag before falling
+    back to the tag string, so a test that asserts the tag fallback has to
+    pin that answer. Without this the assertion would pass or fail depending
+    on whether the developer running it happens to have the corpus images
+    built."""
+    monkeypatch.setattr("skeptic.evalkit.live_image_digest", lambda tag: None)
+
+
+def test_build_manifest_shape_and_image_id_fallback(tmp_path, no_local_image):
     """Review finding 2: build_manifest/_image_id had no committed test.
     click-0001 gets a build/result.json image_id (used); rich-0001 gets none
     (falls back to repo_image_tag). Pins the manifest's shape, not any
@@ -125,7 +137,7 @@ def test_build_manifest_shape_and_image_id_fallback(tmp_path):
         assert all(len(h) == 64 for h in entry["variants"].values())
 
 
-def test_build_arm_manifest_shape_and_the_two_template_corrections(tmp_path):
+def test_build_arm_manifest_shape_and_the_two_template_corrections(tmp_path, no_local_image):
     """build_arm_manifest mirrors build_manifest's shape with two deliberate
     corrections (task 2 brief): `model` is the arm's own Builder model, never
     SKEPTIC_MODEL (the haiku verify-side model); the prompt identity is
@@ -164,7 +176,7 @@ def test_build_arm_manifest_shape_and_the_two_template_corrections(tmp_path):
         assert entry["constraints"] == spec.constraints.model_dump()
 
 
-def test_build_arm_manifest_image_id_reads_a_real_build_result(tmp_path):
+def test_build_arm_manifest_image_id_reads_a_real_build_result(tmp_path, no_local_image):
     click = find_task("click-0001", Path("tasks"))
     build_dir = tmp_path / "click-0001" / "build"
     build_dir.mkdir(parents=True)
@@ -933,7 +945,7 @@ def test_suite_green_only_drops_an_unmeasured_clean_row_from_the_fp_split():
     assert b.false_positives.get("gold", (0, 0))[1] == 1, "and the row leaves the denominator"
 
 
-def test_image_id_refuses_a_result_json_from_a_superseded_template(tmp_path, monkeypatch):
+def test_image_id_refuses_a_result_json_from_a_superseded_template(tmp_path, no_local_image):
     """`_image_id` trusted any `result.json` on disk regardless of age. A
     build from a superseded Dockerfile template leaves one behind, and its
     digest names an image the current spec would never build, so the manifest
@@ -964,6 +976,22 @@ def test_image_id_refuses_a_result_json_from_a_superseded_template(tmp_path, mon
     (build / "result.json").write_text(_json.dumps(
         {"image_id": "sha256:gooddigest", "image_tag": current}))
     assert ek._image_id(spec, tmp_path) == "sha256:gooddigest"
+
+
+def test_image_id_resolves_its_computed_tag_to_a_digest(tmp_path, monkeypatch):
+    """With no trustworthy `result.json`, the fallback published a bare tag as
+    a frozen run's provenance. `repo_image_tag` hashes the rendered Dockerfile,
+    whose install commands are unpinned, so the tag names a recipe and not a
+    closure: the rich tag carries pygments 2.20.0 on the machine that built the
+    corpus and 2.21.0 on a rebuild, which reds eight rendering tests. Every
+    `result.json` in a live workdir predates the `image_tag` key, so all eleven
+    holdout rows took this path and published a tag (M6 ladder task 8)."""
+    spec = find_task("click-0001", Path("tasks"))
+    monkeypatch.setattr(
+        "skeptic.evalkit.live_image_digest",
+        lambda tag: "sha256:resolved" if tag == repo_image_tag(spec) else None)
+
+    assert _image_id(spec, tmp_path) == "sha256:resolved"
 
 
 def test_arm_table_reports_mean_iterations_and_the_catch_rate():

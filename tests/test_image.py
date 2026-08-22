@@ -2,7 +2,12 @@ import subprocess
 
 import pytest
 
-from skeptic.image import BASE_IMAGE, render_dockerfile, repo_image_tag
+from skeptic.image import (
+    BASE_IMAGE,
+    live_image_digest,
+    render_dockerfile,
+    repo_image_tag,
+)
 from tests.helpers import make_task_spec  # reuse the existing spec-builder helper
 
 
@@ -147,3 +152,26 @@ def test_corpus_image_tags_are_unchanged_by_slug_sanitization():
             for spec in list_tasks(Path(__file__).parent.parent / "tasks")}
     assert tags["click-0001"] == "skeptic-repo-click:5aa8ac43527f-1ba53db3"
     assert tags["rich-0001"] == "skeptic-repo-rich:9d8f9a372cc5-1ed41059"
+
+
+def test_live_image_digest_reads_the_daemon_and_survives_its_absence(monkeypatch):
+    """`_image_id` calls this on every manifest build, and the fast lane runs
+    on machines with no docker installed, so a missing binary has to read as
+    "cannot answer" rather than raise. An unknown tag exits non-zero and reads
+    the same way; only a clean exit yields a digest."""
+    def fake_run(argv, **kwargs):
+        assert argv[:4] == ["docker", "image", "inspect", "--format"]
+        return subprocess.CompletedProcess(argv, 0, stdout="sha256:abc123\n", stderr="")
+
+    monkeypatch.setattr("skeptic.image.subprocess.run", fake_run)
+    assert live_image_digest("skeptic-repo-click:tag") == "sha256:abc123"
+
+    monkeypatch.setattr("skeptic.image.subprocess.run", lambda argv, **kw:
+                        subprocess.CompletedProcess(argv, 1, stdout="", stderr="No such image"))
+    assert live_image_digest("skeptic-repo-click:missing") is None
+
+    def no_binary(*args, **kwargs):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr("skeptic.image.subprocess.run", no_binary)
+    assert live_image_digest("skeptic-repo-click:tag") is None

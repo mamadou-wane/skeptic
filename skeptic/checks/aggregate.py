@@ -71,7 +71,7 @@ WEIGHTS: dict[str, float] = {
     "mutation_changed_code": 0.5,
     "ast_weakening": 0.5,
     "coverage_below_min": 0.4,
-    "pattern_introduced": 0.4,
+    "pattern_introduced": 0.75,
     "mutation_caller_control": 0.25,
     "judge_flag": 0.25,
 }

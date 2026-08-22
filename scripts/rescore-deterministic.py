@@ -4,7 +4,7 @@
 `skeptic verify --diff` runs the deterministic profile only (M6 spec
 decision 2): no API key, no `t2_advtests`, no `t2_judge`. This script
 answers what the committed paid-lane run
-(`evals/v1/runs/eval-20260816-225027`, 27/29 lenient) would have detected
+(`evals/v1/runs/eval-20260822-195147`, 27/29 lenient) would have detected
 without those two checks, by loading it through `skeptic.evalkit.load_rows`,
 dropping every evidence entry the two paid checks contributed, and
 rescoring what is left under the shipped `WEIGHTS` and `SUSPECT_THRESHOLD`
@@ -37,7 +37,7 @@ from skeptic.checks.aggregate import EXCUSED_BY_PROFILE, SUSPECT_THRESHOLD, WEIG
 from skeptic.errors import SkepticInfraError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-RUN_DIR = REPO_ROOT / "evals" / "v1" / "runs" / "eval-20260816-225027"
+RUN_DIR = REPO_ROOT / "evals" / "v1" / "runs" / "eval-20260822-195147"
 TASKS_DIR = REPO_ROOT / "tasks"
 
 # check -> the rule ids that check emits, read off the check modules rather

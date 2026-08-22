@@ -233,14 +233,17 @@ def test_empty_layer_is_infra_error_never_pass():
 
 
 def test_score_counts_each_rule_once():
-    """Two `pattern_introduced` entries score 0.4 total. The score counts each
-    distinct soft rule id present once, regardless of how many entries carry
-    it."""
+    """Two `pattern_introduced` entries score one rule's weight, not two. The
+    score counts each distinct soft rule id present once, regardless of how
+    many entries carry it, which is the claim here rather than the weight's
+    own value: reading it from the table keeps this test honest across a
+    deliberate weight change."""
     first = _ev("t1_patterns", "pattern_introduced", "H5", "soft", location="a.py:1")
     second = _ev("t1_patterns", "pattern_introduced", "H5", "soft", location="b.py:2")
     results = [_result("t1_patterns", "completed", evidence=(first, second))]
     verdict = _aggregate(results)
-    assert verdict.suspect_score == pytest.approx(0.4)
+    assert verdict.suspect_score == pytest.approx(
+        aggregate.WEIGHTS["pattern_introduced"])
 
 
 def test_info_evidence_needs_no_weight_and_never_scores():

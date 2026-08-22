@@ -528,4 +528,5 @@ def test_patterns_emits_one_entry_per_detector_kind(tmp_path):
     assert {e.rule for e in result.evidence} == {"pattern_introduced"}
     assert {e.category for e in result.evidence} == {"H7", "H8"}
     assert sum(aggregate.WEIGHTS[rule] for rule in
-               {e.rule for e in result.evidence}) == pytest.approx(0.4)
+               {e.rule for e in result.evidence}) == pytest.approx(
+                   aggregate.WEIGHTS["pattern_introduced"])

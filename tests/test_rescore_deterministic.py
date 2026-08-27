@@ -1,9 +1,9 @@
 """`scripts/rescore-deterministic.py` against the committed published run,
 checked two ways: its own fixed shape (task 4 brief's expected-answer
 cross-check, the adversarial panel's independent 16/29 rescore) and against
-the figures README.md's "CI patch audit" section cites, so the two cannot
-drift apart silently. Pure offline rescoring of a committed snapshot: no
-live network, no Docker, no API key."""
+the figures docs/evaluation.md's "CI patch audit" section and the README's
+CI summary cite, so none of the three can drift apart silently. Pure offline
+rescoring of a committed snapshot: no live network, no Docker, no API key."""
 import re
 import subprocess
 import sys
@@ -42,11 +42,11 @@ def _parse_script_output(output: str) -> tuple[str, str, dict[str, str]]:
     return lenient, strict, categories
 
 
-def _ci_section() -> str:
-    readme = (REPO_ROOT / "README.md").read_text()
-    start = readme.index("## CI patch audit")
-    end = readme.index("\n## ", start + 1)
-    return readme[start:end]
+def _ci_section(path: str = "docs/evaluation.md") -> str:
+    doc = (REPO_ROOT / path).read_text()
+    start = doc.index("## CI patch audit")
+    end = doc.index("\n## ", start + 1)
+    return doc[start:end]
 
 
 def test_rescore_matches_the_expected_answer_cross_check():
@@ -56,17 +56,17 @@ def test_rescore_matches_the_expected_answer_cross_check():
     assert categories == EXPECTED_CATEGORIES
 
 
-def test_readme_ci_section_cites_the_scripts_own_output_verbatim():
-    """README and script cannot drift: every figure the script prints for
-    this run must appear in the README's CI patch audit section, and the
-    section must still name the paid lane's own detection figures for
+def test_evaldoc_ci_section_cites_the_scripts_own_output_verbatim():
+    """docs/evaluation.md and script cannot drift: every figure the script
+    prints for this run must appear in the doc's CI patch audit section, and
+    the section must still name the paid lane's own detection figures for
     contrast, derived here rather than pinned as a literal (finding r1#13)."""
     output = _run_script()
     section = _ci_section()
 
     assert output.strip() in section, (
-        "the rescore script's output is not quoted verbatim in the README's "
-        "CI patch audit section"
+        "the rescore script's output is not quoted verbatim in "
+        "docs/evaluation.md's CI patch audit section"
     )
 
     paid_rows = evalkit.load_rows(RUN_DIR, TASKS_DIR)
@@ -75,7 +75,21 @@ def test_readme_ci_section_cites_the_scripts_own_output_verbatim():
     paid_lenient = f"{paid_lenient_hits}/{paid_lenient_n}"
     paid_strict = f"{paid_strict_hits}/{paid_strict_n}"
     assert paid_lenient in section
-    # the README claims deterministic and paid strict detection match;
+    # the doc claims deterministic and paid strict detection match;
     # verified here rather than assumed.
     assert paid_strict == EXPECTED_STRICT
     assert paid_strict in section
+
+
+def test_readme_ci_summary_cites_the_scripts_figures():
+    """The README keeps a one-sentence summary of the lane comparison; its
+    figures are derived here from the script and the run, never pinned, so
+    the front page cannot drift from either."""
+    lenient, strict, _ = _parse_script_output(_run_script())
+    section = _ci_section("README.md")
+    assert lenient in section
+    assert strict in section
+
+    paid_rows = evalkit.load_rows(RUN_DIR, TASKS_DIR)
+    paid_lenient_hits, paid_lenient_n = evalkit.detection(paid_rows)
+    assert f"{paid_lenient_hits}/{paid_lenient_n}" in section

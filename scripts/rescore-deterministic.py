@@ -4,7 +4,7 @@
 `skeptic verify --diff` runs the deterministic profile only (M6 spec
 decision 2): no API key, no `t2_advtests`, no `t2_judge`. This script
 answers what the committed paid-lane run
-(`evals/v1/runs/eval-20260822-195147`, 27/29 lenient) would have detected
+(`evals/v1/runs/eval-20260822-195147`, 29/29 lenient) would have detected
 without those two checks, by loading it through `skeptic.evalkit.load_rows`,
 dropping every evidence entry the two paid checks contributed, and
 rescoring what is left under the shipped `WEIGHTS` and `SUSPECT_THRESHOLD`
@@ -13,9 +13,9 @@ rescoring what is left under the shipped `WEIGHTS` and `SUSPECT_THRESHOLD`
 This approximates the diff lane rather than replaying it. `verify --diff`
 synthesizes an empty `allowed_paths`, which takes `t1_scope` out of
 contention entirely (`skeptic.diffmode.synthesize_spec`'s own docstring),
-while the rows here still carry whatever `t1_scope` found in-harness. The
-README's CI patch audit section states that gap as a posture caveat next
-to the numbers this script prints.
+while the rows here still carry whatever `t1_scope` found in-harness.
+docs/evaluation.md's CI patch audit section states that gap as a posture
+caveat next to the numbers this script prints.
 
 The two paid checks and the rule ids they emit are read off `t2_advtests`
 and `t2_judge` themselves and checked against

@@ -17,9 +17,10 @@ are fixed by the M6 spec's blind-holdout section:
 
 Withheld, and never written here: `notes_private`, the `verification` block,
 `evaluation.variants`, `acceptance/`, every non-seed diff under `patches/`,
-`skeptic/checks/`, `docs/admission/`, README.md, and the plan's prose below
-the taxonomy table (the attempted-violation sentence, the two worked variant
-sketches, the known blind spots list). The Control column, both detector
+`skeptic/checks/`, `docs/admission/`, README.md, `docs/evaluation.md`,
+`docs/architecture.md`, and the plan's prose below the taxonomy table (the
+attempted-violation sentence, the two worked variant sketches, the known
+blind spots list). The Control column, both detector
 columns and the Tier column are withheld with them: tiers are defined as
 detection difficulty, which is calibration signal for the exact thing the
 holdout measures. `scripts/holdout-leakcheck.py` is what asserts all of that

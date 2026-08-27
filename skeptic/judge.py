@@ -19,7 +19,8 @@ None, ...)` rather than raising or guessing. This is the injection bound:
 text inside the diff cannot make this check emit evidence for a category
 that does not exist, and the worst a hostile diff can do to the judge is
 talk it out of flagging (a missed detection, bounded by design per the
-spec's own README-limits language), never talk it into fabricating one.
+spec's own limits language, now docs/architecture.md's Limits), never talk
+it into fabricating one.
 """
 from __future__ import annotations
 

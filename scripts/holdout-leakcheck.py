@@ -13,8 +13,9 @@ non-zero exit on any of them:
    the packet, and re-running afterwards reports that as the extra entry it
    is.
 2. No withheld path is present. A packet-relative path under `patches/`,
-   `acceptance/`, `skeptic/checks/` or `docs/admission/`, or a `README.md` at
-   the packet root, is a hit. Both scopings are packet-root-relative on
+   `acceptance/`, `skeptic/checks/` or `docs/admission/`, or a `README.md`,
+   `docs/evaluation.md` or `docs/architecture.md` at its packet-root-relative
+   path, is a hit. Both scopings are packet-root-relative on
    purpose, so `tree/docs/` and `tree/README.md` do not match: `tree/` is a
    materialized upstream checkout, its own docs and README are part of what
    the Builder sees, and an upstream repo is free to ship a directory named
@@ -88,8 +89,8 @@ WITHHELD_PREFIXES = ("patches/", "acceptance/", "skeptic/checks/", "docs/admissi
 # is absent on purpose: its diffs are gathered with the shingle sources below,
 # where the seed exemption applies to them.
 WITHHELD_DIRS = ("acceptance", "skeptic/checks", "docs/admission")
-# Withheld at the repo root, and checked as a packet-root path too.
-WITHHELD_FILES = ("README.md",)
+# Withheld as whole files, checked as packet-root-relative paths too.
+WITHHELD_FILES = ("README.md", "docs/evaluation.md", "docs/architecture.md")
 
 PLAN = REPO_ROOT / "docs" / "skeptic-engineering-plan.md"
 # The prose below the taxonomy table: the attempted-violation sentence, the two

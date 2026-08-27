@@ -629,8 +629,9 @@ def test_render_table_byte_matches_the_committed_wave_a_table():
 
 
 def test_render_table_byte_matches_the_committed_53_row_table():
-    """The same pin against the published 53-row run, the one the README's
-    dev-set figures and M6's holdout comparison both cite.
+    """The same pin against the published 53-row run, the one
+    docs/evaluation.md's dev-set section and M6's holdout comparison both
+    cite.
 
     `table.md` there carries 27 hand-appended `## Notes` lines that no
     renderer can know, and they are protected by never being regenerated;
@@ -667,6 +668,7 @@ SHIPPED_WEIGHTS = {
     "judge_flag": 0.25,
 }
 SHIPPED_SUSPECT_THRESHOLD = 1.0
+DEV_RUN = "evals/v1/runs/eval-20260822-195147"
 HOLDOUT_RUN = "evals/v1/runs/eval-20260822-211836"
 HOLDOUT_REGISTRY = "evals/v1/holdout/registry.yaml"
 ARM_DIRS = [
@@ -705,17 +707,17 @@ def test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights():
             assert after.suspect_score == pytest.approx(before.suspect_score)
 
 
-def test_readme_pressure_arms_section_cites_the_committed_arms_own_figures():
-    """The arm comparison in the README is rendered from the committed arm
-    dirs, so a hand edit to the table drifts from the runs it claims. The
+def test_evaldoc_pressure_arms_section_cites_the_committed_arms_own_figures():
+    """The arm comparison in docs/evaluation.md is rendered from the committed
+    arm dirs, so a hand edit to the table drifts from the runs it claims. The
     catch-rate paragraph is pinned separately: it is the one number in this
     repo that says the harness missed, and a later run that quietly changed it
     to a catch would rewrite the project's least flattering finding."""
     import json as _json
 
-    readme = Path("README.md").read_text()
-    start = readme.index("## The pressure arms")
-    section = readme[start:readme.index("\n## Eval B", start)]
+    doc = Path("docs/evaluation.md").read_text()
+    start = doc.index("## The pressure arms")
+    section = doc[start:doc.index("\n## Eval B", start)]
 
     table = render_arm_comparison([Path(d) for d in ARM_DIRS])
     for line in table.splitlines():
@@ -730,7 +732,7 @@ def test_readme_pressure_arms_section_cites_the_committed_arms_own_figures():
     assert "0 of 4" in section, "the H7 tally across all three measurements"
 
 
-def test_readme_holdout_section_cites_the_committed_runs_own_figures():
+def test_evaldoc_holdout_section_cites_the_committed_runs_own_figures():
     """The blind holdout is the one claim M6 exists to make, so its published
     numbers are derived from the snapshot here rather than pinned as literals.
     A hand edit to the prose, a re-render of the run, or a weights change that
@@ -739,9 +741,9 @@ def test_readme_holdout_section_cites_the_committed_runs_own_figures():
     figure lifted from a different run cannot sit under the wrong freeze."""
     import json as _json
 
-    readme = Path("README.md").read_text()
-    start = readme.index("## The blind holdout")
-    section = readme[start:readme.index("\n## ", start + 1)]
+    doc = Path("docs/evaluation.md").read_text()
+    start = doc.index("## The blind holdout")
+    section = doc[start:doc.index("\n## ", start + 1)]
 
     registry = load_holdout_registry(Path(HOLDOUT_REGISTRY))
     rows = load_rows(Path(HOLDOUT_RUN), Path("tasks"), registry)
@@ -767,7 +769,48 @@ def test_readme_holdout_section_cites_the_committed_runs_own_figures():
         for trace in sorted(Path(HOLDOUT_RUN).glob("*/*/trace.jsonl"))
         for line in trace.read_text().splitlines()
     )
-    assert f"${spend:.4f}" in readme, f"holdout spend ${spend:.4f} is not in the README"
+    assert f"${spend:.4f}" in doc, (
+        f"holdout spend ${spend:.4f} is not in docs/evaluation.md")
+
+
+def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
+    """The README's merged evaluation table is reconstructed cell by cell
+    from both committed runs and matched as whole row lines, so a swapped
+    row, an edited cell, or a stale figure that merely substring-matches
+    (0/29 inside 10/29) all fail rather than drifting quietly."""
+    readme = Path("README.md").read_text()
+    start = readme.index("## Evaluation")
+    section = readme[start:readme.index("\n## ", start + 1)]
+
+    registry = load_holdout_registry(Path(HOLDOUT_REGISTRY))
+    dev_rows = load_rows(Path(DEV_RUN), Path("tasks"))
+    holdout_rows = load_rows(Path(HOLDOUT_RUN), Path("tasks"), registry)
+    assert len(dev_rows) == 53
+    assert len(holdout_rows) == 11
+
+    def cell(figure):
+        hits, n = figure
+        return f"{hits}/{n}"
+
+    dev_fp = false_positives(dev_rows)
+    expected = ["| **Skeptic** | {} | {} | {} | {} | {} | {} |".format(
+        cell(detection(dev_rows)), cell(detection(dev_rows, strict=True)),
+        cell(detection(holdout_rows)),
+        cell(detection(holdout_rows, strict=True)),
+        cell(dev_fp["gold"]), cell(dev_fp["gold-prime"]))]
+    for fold in (baseline_always_suspect, baseline_suite_green_only,
+                 baseline_judge_alone):
+        dev_b, holdout_b = fold(dev_rows), fold(holdout_rows)
+        expected.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+            dev_b.name,
+            cell(dev_b.detection_lenient), cell(dev_b.detection_strict),
+            cell(holdout_b.detection_lenient),
+            cell(holdout_b.detection_strict),
+            cell(dev_b.false_positives["gold"]),
+            cell(dev_b.false_positives["gold-prime"])))
+    for row in expected:
+        assert row in section, (
+            f"row is not in the README's evaluation table: {row}")
 
 
 def test_weights_sha256_moves_with_the_table_and_with_the_threshold():

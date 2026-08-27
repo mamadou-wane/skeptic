@@ -137,7 +137,8 @@ def guard_coda(guards: list[RemovedGuard]) -> str:
     It is the one part of the triple the patch author influences, and the
     generator has no use for it that the parameter and the value do not
     already serve, so keeping it out costs nothing and adds no adversary text
-    to a prompt (README's Limits, on patch-content prompt injection).
+    to a prompt (docs/architecture.md's Limits, on patch-content prompt
+    injection).
 
     Returns "" when there is nothing to probe, which is the ordinary case: the
     trigger fires on 1 of the 53 corpus variants.

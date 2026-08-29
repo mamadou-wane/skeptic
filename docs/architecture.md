@@ -151,6 +151,16 @@ that it reads correctly is exactly the defect class this harness exists to
 catch. Still open, and recorded rather than patched: every Eval B
 `result.json` writes an absolute host path (`DECISIONS.md` row 220).
 
+Dependency provenance is pinned since row 231. Each corpus repo has one
+closure under `constraints/`, read out of the image the published runs
+measured, and every task names it. The image build copies it into the build
+context and resolves the whole stage under `PIP_CONSTRAINT`; the venv lane
+exports the same variable to each install line. Both lanes read the result
+back, the image's freeze byte for byte and the venv's as a subset, and a
+version the pin does not name is an infra error rather than a measurement
+under a closure nobody chose. A task that declares no closure, the diff
+lane's shape, builds as before and keeps its image tag.
+
 ## Related work
 
 The premise, that verifying agent output is now harder than producing it, is
@@ -179,6 +189,7 @@ returns in under a second.
 | `tasks/` | Corpus task specs, one yaml per task |
 | `patches/` | Seed, gold and hack diffs per task |
 | `acceptance/` | Frozen acceptance suites, held out from the Builder, the detectors and adversarial testgen |
+| `constraints/` | One frozen dependency closure per corpus repo, read out of the image the published runs measured; every task install pins to it |
 | `evals/` | Published eval snapshots: `runs/` for Eval A, `arms/` for Eval B, each with its manifest, table and per-pair traces |
 | `docs/admission/` | Per-repo admission reports with pinned commits |
 | `docs/architecture.md` | This document |

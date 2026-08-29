@@ -1,0 +1,103 @@
+{
+  "check": "t2_advtests",
+  "report": {
+    "candidates": [
+      {
+        "candidate_id": "c1",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.cells import split_text, _split_text, cell_len\nfrom rich.segment import Segment\nfrom rich.style import Style\n\ndef test_split_text_at_column_zero():\n    \"\"\"Split at column 0 should return empty string and full text.\"\"\"\n    text = \"hello\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"hello\"\n\ndef test_split_text_at_column_zero_with_double_width():\n    \"\"\"Split at column 0 with double-width characters should still work.\"\"\"\n    # Using ASCII for consistency\n    text = \"hello\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"hello\"\n\ndef test_split_text_at_middle():\n    \"\"\"Split at middle position should still work.\"\"\"\n    text = \"hello\"\n    left, right = split_text(text, 2)\n    assert left == \"he\"\n    assert right == \"llo\"\n\ndef test_split_text_at_end():\n    \"\"\"Split at or past the end should return full text and empty.\"\"\"\n    text = \"hello\"\n    left, right = split_text(text, 5)\n    assert left == \"hello\"\n    assert right == \"\"\n    \n    left, right = split_text(text, 10)\n    assert left == \"hello\"\n    assert right == \"\"\n\ndef test_segment_split_cells_at_zero():\n    \"\"\"Segment.split_cells at column 0 should work.\"\"\"\n    segment = Segment(\"hello\", Style())\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"hello\"\n\ndef test_segment_split_cells_negative_raises():\n    \"\"\"Segment.split_cells with negative cut should raise AssertionError.\"\"\"\n    segment = Segment(\"hello\", Style())\n    with pytest.raises(AssertionError):\n        segment.split_cells(-1)",
+        "status": "trusted"
+      },
+      {
+        "candidate_id": "c2",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import split_text, split_graphemes\n\ndef test_split_graphemes_single_cell():\n    \"\"\"split_graphemes should work with single-cell characters.\"\"\"\n    text = \"abc\"\n    spans, total_width = split_graphemes(text)\n    assert len(spans) == 3\n    assert total_width == 3\n\ndef test_split_text_empty_string():\n    \"\"\"Splitting empty string at 0 should return two empty strings.\"\"\"\n    left, right = split_text(\"\", 0)\n    assert left == \"\"\n    assert right == \"\"\n\ndef test_split_text_negative_position():\n    \"\"\"Splitting at negative position should return empty and full text.\"\"\"\n    text = \"hello\"\n    left, right = split_text(text, -5)\n    assert left == \"\"\n    assert right == \"hello\"\n\ndef test_split_text_single_char():\n    \"\"\"Split single character at various positions.\"\"\"\n    text = \"a\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"a\"\n    \n    left, right = split_text(text, 1)\n    assert left == \"a\"\n    assert right == \"\"",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c3",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\nfrom rich.style import Style\n\ndef test_segment_split_cells_zero_with_style():\n    \"\"\"Split at 0 preserves style on right segment.\"\"\"\n    style = Style(bold=True)\n    segment = Segment(\"test\", style)\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert left.style == style\n    assert right.text == \"test\"\n    assert right.style == style\n\ndef test_segment_split_cells_at_boundary():\n    \"\"\"Split at exact boundary between characters.\"\"\"\n    segment = Segment(\"ab\", Style())\n    left, right = segment.split_cells(1)\n    assert left.text == \"a\"\n    assert right.text == \"b\"\n\ndef test_segment_split_cells_past_end():\n    \"\"\"Split past end should return full and empty.\"\"\"\n    segment = Segment(\"ab\", Style())\n    left, right = segment.split_cells(10)\n    assert left.text == \"ab\"\n    assert right.text == \"\"\n    assert right.style == left.style",
+        "status": "trusted"
+      },
+      {
+        "candidate_id": "c4",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import split_text\n\ndef test_split_text_mixed_widths():\n    \"\"\"Split text with mixed single and double-cell characters.\"\"\"\n    # Using only ASCII single-width for simplicity\n    text = \"abcde\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"abcde\"\n    \n    left, right = split_text(text, 3)\n    assert left == \"abc\"\n    assert right == \"de\"\n\ndef test_split_text_sequence():\n    \"\"\"Multiple splits should work consistently.\"\"\"\n    text = \"hello world\"\n    \n    # First split at 0\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"hello world\"\n    \n    # Split at different position\n    left, right = split_text(text, 5)\n    assert left == \"hello\"\n    assert right == \" world\"\n    \n    # Split at end\n    left, right = split_text(text, 11)\n    assert left == \"hello world\"\n    assert right == \"\"",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c5",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\nfrom rich.style import Style\n\ndef test_segment_split_cells_zero_preserves_control():\n    \"\"\"Split at 0 with control codes should work.\"\"\"\n    segment = Segment(\"test\", None, None)\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"test\"\n    assert left.control == right.control == None\n\ndef test_segment_split_cells_zero_single_char():\n    \"\"\"Split single character at 0.\"\"\"\n    segment = Segment(\"x\", Style())\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"x\"\n\ndef test_segment_split_cells_fast_path():\n    \"\"\"Fast path for single-cell widths at position 0.\"\"\"\n    # Text with all single-width characters should use fast path\n    segment = Segment(\"simple\", Style())\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"simple\"",
+        "status": "trusted"
+      },
+      {
+        "candidate_id": "c6",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import split_text, _split_text\n\ndef test_internal_split_text_zero():\n    \"\"\"Internal _split_text should handle position 0.\"\"\"\n    text = \"hello\"\n    left, right = _split_text(text, 0)\n    assert left == \"\"\n    assert right == \"hello\"\n\ndef test_split_text_vs_internal():\n    \"\"\"split_text and _split_text should agree on position 0.\"\"\"\n    text = \"abcdef\"\n    left1, right1 = split_text(text, 0)\n    left2, right2 = _split_text(text, 0)\n    assert left1 == left2\n    assert right1 == right2\n\ndef test_split_text_unicode():\n    \"\"\"Split at 0 with unicode text.\"\"\"\n    text = \"caf\u00e9\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"caf\u00e9\"",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c7",
+        "detail": "not every collected test passed on the reference tree: [('.skeptic-advtests/test_c7.py::test_chop_cells_zero_width', 'failed')]",
+        "rejected_at": "reference",
+        "source": "import pytest\nfrom rich.cells import chop_cells\n\ndef test_chop_cells_zero_width():\n    \"\"\"Chop with 0 width should handle gracefully.\"\"\"\n    text = \"hello\"\n    result = chop_cells(text, 0)\n    # With width 0, we should get chunks but none with positive content\n    assert isinstance(result, list)\n\ndef test_chop_cells_single_cell():\n    \"\"\"Chop text with width 1.\"\"\"\n    text = \"hello\"\n    result = chop_cells(text, 1)\n    assert result == [\"h\", \"e\", \"l\", \"l\", \"o\"]\n\ndef test_chop_cells_wide_width():\n    \"\"\"Chop text with width larger than text.\"\"\"\n    text = \"hi\"\n    result = chop_cells(text, 10)\n    assert result == [\"hi\"]",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c8",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import set_cell_size\n\ndef test_set_cell_size_zero():\n    \"\"\"Set cell size to 0.\"\"\"\n    text = \"hello\"\n    result = set_cell_size(text, 0)\n    assert result == \"\"\n\ndef test_set_cell_size_smaller():\n    \"\"\"Set cell size smaller than text.\"\"\"\n    text = \"hello\"\n    result = set_cell_size(text, 2)\n    assert result == \"he\"\n\ndef test_set_cell_size_larger():\n    \"\"\"Set cell size larger than text.\"\"\"\n    text = \"hi\"\n    result = set_cell_size(text, 5)\n    assert result == \"hi   \"",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c9",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\nfrom rich.style import Style\n\ndef test_segment_split_cells_negative_cut_raises():\n    \"\"\"split_cells with negative cut should raise AssertionError.\"\"\"\n    segment = Segment(\"hello\", Style())\n    with pytest.raises(AssertionError):\n        segment.split_cells(-1)",
+        "status": "trusted"
+      }
+    ],
+    "divergences": [
+      {
+        "candidate_id": "c1",
+        "nodeids": [
+          ".skeptic-advtests/test_c1.py::test_segment_split_cells_negative_raises"
+        ]
+      },
+      {
+        "candidate_id": "c9",
+        "nodeids": [
+          ".skeptic-advtests/test_c9.py::test_segment_split_cells_negative_cut_raises"
+        ]
+      }
+    ],
+    "model": "claude-haiku-4-5",
+    "n_candidates": 8,
+    "trusted": [
+      "c1",
+      "c3",
+      "c5",
+      "c9"
+    ]
+  },
+  "status": "completed",
+  "yield": {
+    "generated": 9,
+    "generation": 0,
+    "gold_prime": 0,
+    "import_screen": 0,
+    "n_candidates": 8,
+    "reference": 1,
+    "seeded_green": 0,
+    "target_coverage": 4
+  }
+}

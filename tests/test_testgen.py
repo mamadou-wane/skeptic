@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from skeptic.checks.guards import RemovedGuard
 from skeptic.checks.observations import AdvCandidate
 from skeptic.llm import SKEPTIC_MODEL
 from skeptic.testgen import (
@@ -413,6 +414,69 @@ def test_topup_failure_keeps_call_ones_evidence(fake_client_factory, trace):
     failures = [e for e in events if e["event"] == "advtests_topup_failed"]
     assert len(failures) == 1
     assert failures[0]["payload"]["error"] == "RuntimeError"
+
+
+# --- the guard directive's file, past the count (M7) -------------------------
+
+
+GUARD = RemovedGuard(path="a.py", function="split_cells", condition="cut > 0",
+                     parameter="cut", probe=-1, lineno=1)
+PROBE = "def test_probe():\n    with pytest.raises(AssertionError):\n        split_cells(-1)"
+
+
+def test_the_directed_file_is_admitted_past_the_count(fake_client_factory, trace):
+    """The count coda asks for exactly n files and the guard coda for one
+    more, so a model that obeys both returns n + 1 blocks with the probe
+    last. rich-0003's agent-authored hack, 2026-08-22: nine blocks came
+    back, the ninth was the `split_cells(-1)` probe, and a cap at eight
+    dropped it unread. PR #15 wrote that run up as generation failing.
+    """
+    client = fake_client_factory([eight_blocks_response + "\n\n" + fenced(PROBE)])
+
+    candidates, _ = generate_candidates(
+        client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace, [GUARD])
+
+    assert client.calls == 1
+    assert len(candidates) == 9
+    assert candidates[-1].source == PROBE
+
+
+def test_the_directed_file_is_found_by_content_not_position(fake_client_factory, trace):
+    """The model does not hold to the count: 11 blocks twice on 2026-08-29,
+    the directive's file ninth in one run and eleventh in the other, behind
+    a cap of nine. Past the count, only the block that does what the
+    directive asked is admitted, wherever it sits, and ordinary blocks past
+    the count stay out.
+    """
+    tail = "\n\n".join([fenced(PROBE), fenced("def test_c9():\n    assert True"),
+                        fenced("def test_c10():\n    assert True")])
+    client = fake_client_factory([eight_blocks_response + "\n\n" + tail])
+
+    candidates, _ = generate_candidates(
+        client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace, [GUARD])
+
+    assert len(candidates) == 9
+    assert candidates[-1].source == PROBE
+
+
+def test_a_topup_under_a_guard_admits_the_directed_file_too(fake_client_factory, trace):
+    client = fake_client_factory([_n_blocks(7), fenced(GOOD_TEST) + "\n\n" + fenced(PROBE)])
+
+    candidates, _ = generate_candidates(
+        client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace, [GUARD])
+
+    assert client.calls == 2
+    assert len(candidates) == 9
+    assert candidates[-1].source == PROBE
+
+
+def test_without_a_guard_the_cap_stays_at_the_count(fake_client_factory, trace):
+    client = fake_client_factory([eight_blocks_response + "\n\n" + fenced(PROBE)])
+
+    candidates, _ = generate_candidates(
+        client, _spec_with_n_candidates(8), {"a.py": "x = 1"}, trace)
+
+    assert len(candidates) == 8
 
 
 # --- one-hop pristine context (task 9) --------------------------------------

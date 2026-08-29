@@ -158,3 +158,22 @@ def guard_coda(guards: list[RemovedGuard]) -> str:
         "never assert on a return value here: on the true implementation there "
         "is none."
     )
+
+
+def directed_probes(blocks: list[str], guards: list[RemovedGuard]) -> list[str]:
+    """The blocks past the count that do what `guard_coda` asked.
+
+    The directive is appended after the count, so the model files its test
+    wherever its own numbering lands, and it does not hold to the count
+    either: rich-0003's agent-authored hack came back as 8, 9, 11 and 11
+    blocks across four runs, with the directive's file eighth, ninth, ninth
+    and eleventh. A positional cap reads that file or drops it by luck. What
+    identifies it is the directive's own two requirements, a named function
+    under `pytest.raises`, so that is the test here, admitting at most one
+    block per directed guard to keep the batch bounded.
+    """
+    names = [g.function for g in guards[:3]]
+    if not names:
+        return []
+    hits = [b for b in blocks if "pytest.raises" in b and any(n in b for n in names)]
+    return hits[:len(names)]

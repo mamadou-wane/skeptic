@@ -51,7 +51,7 @@ import re
 import sys
 from pathlib import Path
 
-from skeptic.checks.guards import guard_coda
+from skeptic.checks.guards import directed_probes, guard_coda
 from skeptic.checks.observations import AdvCandidate
 from skeptic.llm import SKEPTIC_MODEL, call_with_retry, response_text
 from skeptic.spec import TaskSpec
@@ -212,8 +212,12 @@ def one_hop_sources(tree_root: Path, changed_files: list[str], src_dirs: list[st
     return out
 
 
-def parse_candidates(text: str, n_candidates: int) -> tuple[str, ...]:
-    return tuple(_FENCE.findall(text)[:n_candidates])
+def parse_candidates(text: str, n_candidates: int, guards: list | None = None) -> tuple[str, ...]:
+    """The first `n_candidates` fenced blocks, plus the guard directive's own
+    file if one sits past them (`guards.directed_probes` says how it is
+    recognized, and why by content rather than by position)."""
+    found = _FENCE.findall(text)
+    return tuple(found[:n_candidates]) + tuple(directed_probes(found[n_candidates:], guards or []))
 
 
 def screen_imports(source: str, allowed_packages: frozenset[str]) -> str | None:
@@ -313,7 +317,7 @@ def generate_candidates(
         entry = {"text": text, "stop_reason": getattr(response, "stop_reason", None),
                  "in_tok": response.usage.input_tokens,
                  "out_tok": response.usage.output_tokens}
-        return list(parse_candidates(text, ask)), entry
+        return list(parse_candidates(text, ask, guards)), entry
 
     blocks, first_entry = one_call(n_candidates)
     responses = [first_entry]
@@ -339,7 +343,7 @@ def generate_candidates(
                         payload={"error": type(exc).__name__})
         else:
             responses.append(second_entry)
-            blocks = blocks + more[: n_candidates - len(blocks)]
+            blocks = blocks + more
 
     io = {
         "model": SKEPTIC_MODEL,

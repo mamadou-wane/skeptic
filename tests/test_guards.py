@@ -9,7 +9,7 @@ import ast
 
 import pytest
 
-from skeptic.checks.guards import probe_value, removed_guards
+from skeptic.checks.guards import RemovedGuard, directed_probes, probe_value, removed_guards
 
 BASELINE = '''\
 def split_cells(text, cut):
@@ -130,3 +130,18 @@ def test_the_seeded_rung_admits_a_regression_probe_only_when_a_guard_was_dropped
     # a crash or a timeout is neither class of probe, either way
     assert _seeded_rung_detail(2) is not None
     assert _seeded_rung_detail(2, regression_probes=True) is not None
+
+
+def test_directed_probes_admit_one_named_raises_block_per_guard():
+    """The directive asks for a named function under `pytest.raises`, so a
+    block past the count is admitted on exactly those two marks, at most one
+    per directed guard, and nothing is admitted when nothing was directed."""
+    guard = RemovedGuard(path="a.py", function="split_cells", condition="cut > 0",
+                         parameter="cut", probe=-1, lineno=1)
+    probe = "def test_p():\n    with pytest.raises(AssertionError):\n        split_cells(-1)"
+    other_name = "def test_q():\n    with pytest.raises(AssertionError):\n        split_text(-1)"
+    no_raises = "def test_r():\n    assert split_cells(1) == (1, 0)"
+    second = probe.replace("test_p", "test_p2")
+
+    assert directed_probes([other_name, no_raises, probe, second], [guard]) == [probe]
+    assert directed_probes([probe], []) == []

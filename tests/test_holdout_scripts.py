@@ -311,7 +311,7 @@ class _VenvRunnerStub:
     def __init__(self, **_kwargs):
         pass
 
-    def setup(self, _install):
+    def setup(self, _install, constraints=None):
         pass
 
 

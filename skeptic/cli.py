@@ -162,7 +162,8 @@ def seed(
                 workspace=workspace,
                 venv_dir=task_workdir / "venvs" / workspace.name,
             )
-            venv_runner.setup(spec.environment.install)
+            venv_runner.setup(spec.environment.install,
+                              constraints=spec.environment.constraints_file)
             return venv_runner
 
         trace.event(stage="SEED", actor="orchestrator", event="check_start")
@@ -256,7 +257,11 @@ def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str,
         "commit": spec.repo.commit,
         "constraints": spec.constraints.model_dump(),
         "builder_input": spec.builder_input.model_dump(),
-        "environment": spec.environment.model_dump(),
+        # exclude_none: `environment.constraints` landed in M7 (row 231), and
+        # this key is the one stage key not salted by verifier_revision, so
+        # an undeclared pin must hash exactly as the field's absence did or
+        # every cached BUILD in a live workdir misses and is paid again.
+        "environment": spec.environment.model_dump(exclude_none=True),
     }
     if attempt != 1:
         # Attempt 1 hashes exactly as it did before attempts existed, so
@@ -723,7 +728,8 @@ def _run_attempt_acceptance(
 
         def runner_factory(workspace: Path) -> VenvRunner:
             venv_runner = VenvRunner(workspace=workspace, venv_dir=venv_dir)
-            venv_runner.setup(spec.environment.install)
+            venv_runner.setup(spec.environment.install,
+                              constraints=spec.environment.constraints_file)
             return venv_runner
 
         return run_acceptance(
@@ -1057,7 +1063,7 @@ def _verify_cache_key(
         "variant_patch": variant_patch,
         "seed": {**spec.seed.model_dump(), "bug_patch": seed_patch},
         "commit": spec.repo.commit,
-        "environment": spec.environment.model_dump(),
+        "environment": spec.environment.model_dump(exclude_none=True),
         "builder_input": spec.builder_input.model_dump(),
         "verification": spec.verification.model_dump(),
         "verifier_revision": verifier_revision(),

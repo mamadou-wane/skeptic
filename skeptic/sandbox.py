@@ -226,7 +226,8 @@ class VenvRunner:
     def _python(self) -> Path:
         return self.venv_dir / "bin" / "python"
 
-    def setup(self, install_cmds: list[str], python: str = "python3.12") -> None:
+    def setup(self, install_cmds: list[str], python: str = "python3.12",
+              constraints: Path | None = None) -> None:
         if not self.venv_dir.exists():
             resolved = shutil.which(python)
             if resolved is None:
@@ -252,8 +253,12 @@ class VenvRunner:
                     f"fix repo.python in the task spec, then re-run "
                     f"`skeptic seed --task <id> --check`."
                 )
+        # The install lines run verbatim, so the pin reaches pip the one way
+        # that covers every command as written: its environment. Absent a
+        # pin, no key is set and the install resolves as it always did.
+        pin_env = {"PIP_CONSTRAINT": str(constraints.resolve())} if constraints else None
         for cmd in install_cmds:
-            result = self.exec(cmd, timeout_s=900)
+            result = self.exec(cmd, timeout_s=900, env=pin_env)
             if result.exit_code != 0:
                 raise SkepticInfraError(
                     f"Install command failed in venv runner: {cmd!r} "
@@ -261,6 +266,23 @@ class VenvRunner:
                     f"Skeptic needs the target repo installed to run its tests. "
                     f"Next: fix the environment.install commands in the task spec, "
                     f"then re-run `skeptic seed --task <id> --check`."
+                )
+        if constraints is not None:
+            # Read the closure back, as the image build does: a constraint pip
+            # did not honor is silent otherwise. The venv installs a subset of
+            # the pin (no build backends, no harness tooling), so the check is
+            # that every version present is one the pin names.
+            frozen = self.exec("pip freeze --exclude-editable", timeout_s=120)
+            named = set(constraints.read_text().splitlines())
+            off = [line for line in frozen.stdout.splitlines() if line and line not in named]
+            if frozen.exit_code != 0 or off:
+                raise SkepticInfraError(
+                    f"the venv at {self.venv_dir} resolved versions the pin "
+                    f"{constraints} does not name: {', '.join(off[:8]) or frozen.stderr[-300:]}.\n"
+                    f"Skeptic pins task installs so a fresh machine measures "
+                    f"what the corpus measured. Next: rewrite the pin from a "
+                    f"closure you stand behind and record the move in "
+                    f"DECISIONS.md, or fix the install lines the pin does not cover."
                 )
 
     def exec(self, cmd: str, timeout_s: int, env: dict[str, str] | None = None) -> ExecResult:

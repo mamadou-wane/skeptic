@@ -24,10 +24,17 @@ _BUILD_BACKENDS = "flit_core poetry-core setuptools hatchling wheel"
 # VERIFY container, and that container runs with --network none, so it
 # cannot be installed after the image is built. It belongs in the image
 # template rather than a task's environment.install, since the repo under
-# test has no opinion about it. Installed unpinned in the resolve stage,
-# before the freeze, so `pip freeze` pins the resolved version into
-# constraints.txt alongside the repo's own dependencies (DECISIONS.md #82).
+# test has no opinion about it. Installed in the resolve stage before the
+# freeze, under the task's pin when one is declared, so `pip freeze` carries
+# its version in constraints.txt alongside the repo's own dependencies
+# (DECISIONS.md #82, #231).
 _HARNESS_TOOLS = "coverage"
+
+# Where a task's committed closure lands in the build context, and so under
+# /src in the resolve stage. Host-side only: `ensure_repo_image` writes it
+# beside the pristine export before the build and removes it after, and the
+# resolve stage's layers never reach the final image.
+CONSTRAINTS_IN_CONTEXT = ".skeptic-constraints.txt"
 
 # What a docker tag's name component accepts, per the registry's own grammar.
 _TAG_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._-")
@@ -59,6 +66,29 @@ def tag_slug(name: str) -> str:
     return re.sub(r"-{2,}", "-", subbed).strip("._-") or "repo"
 
 
+def pinned_closure(spec: TaskSpec) -> str | None:
+    """The task's committed closure as text, or None when it declares none.
+
+    A declared file that is not there is an infra error rather than an
+    unpinned build: the whole point of the pin is that a fresh checkout
+    resolves the same closure the corpus measured, and a build that silently
+    ran without it would carry the corpus tag over a different closure.
+    """
+    path = spec.environment.constraints_file
+    if path is None:
+        return None
+    try:
+        return path.read_text()
+    except OSError as exc:
+        raise SkepticInfraError(
+            f"environment.constraints names {path}, which cannot be read "
+            f"({exc.strerror}). Skeptic pins every task install to a committed "
+            f"closure so a fresh machine measures what the corpus measured. "
+            f"Next: restore the file from git, or drop the field to build "
+            f"unpinned on purpose."
+        ) from exc
+
+
 def repo_image_tag(spec: TaskSpec) -> str:
     slug = tag_slug(spec.repo.url.rstrip("/").rsplit("/", 1)[-1])
     # The tag hashes the rendered Dockerfile, not just the install commands:
@@ -67,12 +97,24 @@ def repo_image_tag(spec: TaskSpec) -> str:
     # image (2026-07-26 review finding 1: a commit-only tag would survive
     # either change, and ensure_repo_image would then skip the build and the
     # stage cache would serve the previous result under the unchanged tag).
-    env_hash = config_hash({"dockerfile": render_dockerfile(spec)})[:8]
+    # The closure's bytes ride in the same hash: the render only names the
+    # file, and a moved pin is a different image.
+    keyed: dict[str, str] = {"dockerfile": render_dockerfile(spec)}
+    pinned = pinned_closure(spec)
+    if pinned is not None:
+        keyed["constraints"] = pinned
+    env_hash = config_hash(keyed)[:8]
     return f"skeptic-repo-{slug}:{spec.repo.commit[:12]}-{env_hash}"
 
 
 def render_dockerfile(spec: TaskSpec) -> str:
     install_lines = "\n".join(f"RUN {cmd}" for cmd in spec.environment.install)
+    # PIP_CONSTRAINT reaches every pip call of the stage, the task's own
+    # install lines and the backend and harness installs below alike. Set
+    # only when a closure is declared, so an undeclared task renders the
+    # pre-M7 text byte for byte and its tag stays put.
+    if spec.environment.constraints:
+        install_lines = f"ENV PIP_CONSTRAINT=/src/{CONSTRAINTS_IN_CONTEXT}\n" + install_lines
     return f"""\
 # Stage 1 resolves the dependency closure against the pristine tree. Its
 # layers never reach the final image, so no repo source ships in the image
@@ -106,12 +148,13 @@ def live_image_digest(tag: str) -> str | None:
     cannot answer: no docker binary (the fast test lane runs without one) or
     the tag absent locally.
 
-    A tag is not a lock. `repo_image_tag` hashes the rendered Dockerfile, and
-    the install commands inside it are unpinned, so one tag names a different
-    dependency closure depending on when it was built: the rich image on this
-    machine carries pygments 2.20.0, where a rebuild today resolves 2.21.0 and
-    reds eight rendering tests on any tree. Anything recording provenance wants
-    the digest, and the tag it computed is the only handle it has to ask for.
+    A tag is not a digest. `repo_image_tag` hashes the rendered Dockerfile and,
+    for a pinned task, the closure's bytes; an unpinned spec, the diff lane's
+    shape, still names a different dependency closure depending on when it was
+    built, which is how the rich image once carried pygments 2.20.0 where a
+    rebuild resolved 2.21.0 and reds eight rendering tests on any tree (row
+    225). Anything recording provenance wants the digest, and the tag it
+    computed is the only handle it has to ask for.
     """
     try:
         inspect = _docker(["image", "inspect", "--format", "{{.Id}}", tag], timeout_s=30)
@@ -130,13 +173,22 @@ def ensure_repo_image(spec: TaskSpec, pristine_dir: Path, workdir: Path) -> Imag
     the build; the final image contains the frozen constraints and no source.
     """
     tag = repo_image_tag(spec)
+    pinned = pinned_closure(spec)
     constraints_path = workdir / "constraints.txt"
     inspect = _docker(["image", "inspect", "--format", "{{.Id}}", tag], timeout_s=30)
-    if inspect.returncode != 0:
+    built = inspect.returncode != 0
+    if built:
         workdir.mkdir(parents=True, exist_ok=True)
         dockerfile = workdir / "Dockerfile"
         dockerfile.write_text(render_dockerfile(spec))
-        build = _docker(["build", "-t", tag, "-f", str(dockerfile), str(pristine_dir)])
+        context_pin = pristine_dir / CONSTRAINTS_IN_CONTEXT
+        if pinned is not None:
+            context_pin.write_text(pinned)
+        try:
+            build = _docker(["build", "-t", tag, "-f", str(dockerfile), str(pristine_dir)])
+        finally:
+            if pinned is not None:
+                context_pin.unlink(missing_ok=True)
         if build.returncode != 0:
             raise SkepticInfraError(
                 f"docker build failed for {tag} (exit {build.returncode}).\n"
@@ -156,7 +208,10 @@ def ensure_repo_image(spec: TaskSpec, pristine_dir: Path, workdir: Path) -> Imag
                 f"reproducibility. Next: run `docker image inspect {tag}` "
                 f"by hand."
             )
-    if not constraints_path.is_file():
+    # A fresh build always reads its freeze back, so a tag that moved (a new
+    # pin, a template edit) refreshes constraints.txt instead of leaving the
+    # previous image's closure on disk under the new tag.
+    if built or not constraints_path.is_file():
         cat = _docker(["run", "--rm", "--network", "none", tag,
                        "cat", "/opt/constraints.txt"], timeout_s=120)
         if cat.returncode != 0:
@@ -166,6 +221,22 @@ def ensure_repo_image(spec: TaskSpec, pristine_dir: Path, workdir: Path) -> Imag
                 f"Skeptic commits the frozen dependency closure as the "
                 f"reproducibility lock. Next: rebuild the image "
                 f"(`docker rmi {tag}`, then re-run)."
+            )
+        if pinned is not None and cat.stdout != pinned:
+            pin_path = spec.environment.constraints_file
+            drift = sorted(set(cat.stdout.splitlines()) ^ set(pinned.splitlines()))
+            raise SkepticInfraError(
+                f"the closure {tag} resolved differs from the committed pin "
+                f"{pin_path}: {', '.join(drift[:8])}"
+                f"{', ...' if len(drift) > 8 else ''}.\n"
+                f"Skeptic pins task installs so a fresh machine measures what "
+                f"the corpus measured, and a pin the resolver did not honor "
+                f"is not a pin, and the same build drifts the same way every "
+                f"time. Next: if the closure should move, write this image's "
+                f"freeze over the pin (`docker run --rm {tag} cat "
+                f"/opt/constraints.txt > {pin_path}`) and record the move in "
+                f"DECISIONS.md; otherwise fix the install lines the pin does "
+                f"not cover."
             )
         workdir.mkdir(parents=True, exist_ok=True)
         constraints_path.write_text(cat.stdout)

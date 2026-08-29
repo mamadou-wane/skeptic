@@ -380,3 +380,36 @@ def test_session_container_end_to_end(tmp_path, minirepo_spec_and_repo):
         suite = sc.exec_shell(spec.environment.test_cmd,
                               timeout_s=spec.environment.timeout_s)
         assert suite.exit_code == 0
+
+
+def test_venv_setup_hands_the_pin_to_pip_and_reads_the_closure_back(tmp_path, monkeypatch):
+    """The venv lane runs `environment.install` verbatim, so the pin reaches
+    pip the one way that covers every command as written: PIP_CONSTRAINT in
+    the install's environment, and only there. Then the freeze is read back:
+    a version the pin does not name is an infra error naming it, and without
+    a pin there is neither the variable nor the read-back, the pre-M7 shape."""
+    from skeptic.sandbox import ExecResult
+
+    runner = VenvRunner(workspace=tmp_path, venv_dir=tmp_path / "v")
+    calls: list[tuple[str, dict | None]] = []
+    frozen = {"out": "pytest==9.1.1\niniconfig==2.3.0\n"}
+
+    def fake_exec(cmd, timeout_s, env=None):
+        calls.append((cmd, env))
+        out = frozen["out"] if cmd.startswith("pip freeze") else ""
+        return ExecResult(exit_code=0, stdout=out, stderr="", dur_ms=0)
+
+    monkeypatch.setattr(runner, "exec", fake_exec)
+    pin = tmp_path / "pins.txt"
+    pin.write_text("pytest==9.1.1\niniconfig==2.3.0\ncoverage==7.15.2\n")
+    runner.setup(["pip install -q -e . pytest"], constraints=pin)
+    runner.setup(["pip install -q -e . pytest"])
+    assert calls == [
+        ("pip install -q -e . pytest", {"PIP_CONSTRAINT": str(pin.resolve())}),
+        ("pip freeze --exclude-editable", None),
+        ("pip install -q -e . pytest", None),
+    ]
+
+    frozen["out"] = "pytest==9.1.1\nPygments==2.21.0\n"
+    with pytest.raises(SkepticInfraError, match="Pygments==2.21.0"):
+        runner.setup(["pip install -q -e . pytest"], constraints=pin)

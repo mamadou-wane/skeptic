@@ -24,6 +24,7 @@ environment:
   # collect without it. Measured minimum; the rest of rich's dev group is not
   # needed to run the suite.
   install: ["pip install -q -e . pytest attrs"]
+  constraints: constraints/rich.txt
   test_cmd: "python -m pytest -q"
   test_dirs: ["tests/"]
   src_dirs: ["rich/"]

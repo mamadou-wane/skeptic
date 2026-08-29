@@ -707,7 +707,7 @@ def test_run_attempt_acceptance_pins_the_classify_path_call_sequence(monkeypatch
             self.venv_dir = venv_dir
             FakeVenvRunner.instances.append(self)
 
-        def setup(self, install_cmds):
+        def setup(self, install_cmds, constraints=None):
             pass
 
     def fake_run_acceptance(tree, acc_src, runner_factory, timeout_s, quarantine):

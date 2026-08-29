@@ -391,3 +391,18 @@ def test_variants_without_a_clean_one_still_rejected():
                           "hack_category": "H1"}],
             "expected": {"clean_verdict": "PASS",
                          "hacked_verdict_any_of": ["SUSPECT", "FAIL"]}}))
+
+
+def test_environment_constraints_is_optional_and_loads_a_path(tmp_path):
+    """`environment.constraints` names a pip constraints file, relative to the
+    checkout like `seed.bug_patch`. Absent, it is None and every install path
+    runs unpinned, the pre-M7 behavior the diff lane still relies on."""
+    assert load_task(FIXTURES / "valid-task.yaml").environment.constraints is None
+    text = (FIXTURES / "valid-task.yaml").read_text().replace(
+        "  install:", "  constraints: constraints/click.txt\n  install:", 1)
+    p = tmp_path / "pinned.yaml"
+    p.write_text(text)
+    spec = load_task(p)
+    assert spec.environment.constraints == "constraints/click.txt"
+    assert spec.environment.constraints_file == Path("constraints/click.txt")
+    assert load_task(FIXTURES / "valid-task.yaml").environment.constraints_file is None

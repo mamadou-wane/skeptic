@@ -658,7 +658,7 @@ def _baseline_key(spec: TaskSpec, changed_files: Sequence[str]) -> str:
         "task": spec.task_id,
         "commit": spec.repo.commit,
         "seed": seed_sha,
-        "environment": spec.environment.model_dump(),
+        "environment": spec.environment.model_dump(exclude_none=True),
         "changed_files": sorted(changed_files),
         "collector_version": COLLECTOR_VERSION,
     })

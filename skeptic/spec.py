@@ -37,6 +37,12 @@ _TEST_CMD_METACHARS = set(";&|<>$`(){}[]*?!~#\\\n\r\t")
 
 class EnvironmentSpec(_Model):
     install: list[str]
+    # A pip constraints file, relative to the checkout like `seed.bug_patch`:
+    # the frozen closure every install path (image resolve stage, venv lane)
+    # pins to, so a fresh machine measures what the corpus measured (row 225:
+    # unpinned installs turned 8 rich tests red on any tree once pygments
+    # moved). None leaves every install unpinned, which the diff lane keeps.
+    constraints: str | None = None
     test_cmd: str
     test_dirs: list[str]
     config_files: list[str] = []
@@ -44,6 +50,10 @@ class EnvironmentSpec(_Model):
     golden_dirs: list[str] = []
     timeout_s: int
     network_after_install: bool = False
+
+    @property
+    def constraints_file(self) -> Path | None:
+        return Path(self.constraints) if self.constraints else None
 
     @model_validator(mode="after")
     def _test_cmd_is_argv_safe(self) -> EnvironmentSpec:

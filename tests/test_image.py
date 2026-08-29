@@ -138,7 +138,7 @@ def test_tag_slug_emits_a_legal_tag_name_component():
     assert tag_slug("!!!") == "repo"
 
 
-def test_corpus_image_tags_are_unchanged_by_slug_sanitization():
+def test_corpus_image_tags_are_unchanged_by_slug_sanitization(monkeypatch):
     """The slug rule landed for the diff lane's arbitrary repo names. Both
     corpus slugs are already tag-safe, so no cached image moves and no
     corpus measurement rebuilds. These two values pin that: a future change
@@ -148,10 +148,14 @@ def test_corpus_image_tags_are_unchanged_by_slug_sanitization():
 
     from skeptic.spec import list_tasks
 
-    tags = {spec.task_id: repo_image_tag(spec)
-            for spec in list_tasks(Path(__file__).parent.parent / "tasks")}
-    assert tags["click-0001"] == "skeptic-repo-click:5aa8ac43527f-1ba53db3"
-    assert tags["rich-0001"] == "skeptic-repo-rich:9d8f9a372cc5-1ed41059"
+    root = Path(__file__).parent.parent
+    monkeypatch.chdir(root)   # the pin is read off cwd, like seed.bug_patch
+    tags = {spec.task_id: repo_image_tag(spec) for spec in list_tasks(root / "tasks")}
+    # Moved once, on purpose: the M7 pin (DECISIONS row 231) put a committed
+    # closure into the render and the tag, so both corpus images rebuilt to
+    # the same closure the published runs measured.
+    assert tags["click-0001"] == "skeptic-repo-click:5aa8ac43527f-5093884b"
+    assert tags["rich-0001"] == "skeptic-repo-rich:9d8f9a372cc5-9e95a840"
 
 
 def test_live_image_digest_reads_the_daemon_and_survives_its_absence(monkeypatch):
@@ -175,3 +179,105 @@ def test_live_image_digest_reads_the_daemon_and_survives_its_absence(monkeypatch
 
     monkeypatch.setattr("skeptic.image.subprocess.run", no_binary)
     assert live_image_digest("skeptic-repo-click:tag") is None
+
+
+# --- the committed closure (M7, DECISIONS row 231) ---------------------------
+
+
+def _pinned(spec, path):
+    return spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"constraints": str(path)})})
+
+
+def test_render_dockerfile_pins_the_resolve_stage_only_when_constraints_are_declared(tmp_path):
+    """A declared closure reaches every pip call of the resolve stage through
+    PIP_CONSTRAINT, set before the first install line; the freeze and the
+    final stage are untouched. An undeclared one renders the pre-M7 text
+    byte for byte, so the diff lane's and the minirepo's tags do not move."""
+    from skeptic.image import CONSTRAINTS_IN_CONTEXT
+
+    spec = make_task_spec()
+    plain = render_dockerfile(spec)
+    assert "PIP_CONSTRAINT" not in plain
+
+    pin = tmp_path / "pins.txt"
+    pin.write_text("pytest==9.1.1\n")
+    pinned = render_dockerfile(_pinned(spec, pin))
+    resolve, final = pinned.split("FROM " + BASE_IMAGE)[1:]
+    env_line = f"ENV PIP_CONSTRAINT=/src/{CONSTRAINTS_IN_CONTEXT}"
+    assert env_line in resolve
+    assert resolve.index(env_line) < resolve.index(spec.environment.install[0])
+    assert "PIP_CONSTRAINT" not in final
+    assert "pip freeze --exclude-editable" in resolve
+
+
+def test_repo_image_tag_keys_on_the_closure_text(tmp_path):
+    """The tag hashes the closure's bytes, not its path: a moved pin is a
+    different image, and a missing pin is an infra error naming the path
+    rather than a build that silently runs unpinned."""
+    from skeptic.errors import SkepticInfraError
+
+    spec = make_task_spec()
+    pin = tmp_path / "pins.txt"
+    pin.write_text("pytest==9.1.1\n")
+    pinned = repo_image_tag(_pinned(spec, pin))
+    assert pinned != repo_image_tag(spec)
+    pin.write_text("pytest==9.1.0\n")
+    assert repo_image_tag(_pinned(spec, pin)) != pinned
+    with pytest.raises(SkepticInfraError, match="missing.txt"):
+        repo_image_tag(_pinned(spec, tmp_path / "missing.txt"))
+
+
+def test_every_corpus_task_declares_a_committed_closure():
+    """Row 225: the venv lane is not reproducible on a fresh machine until the
+    task installs pin their transitive deps. One closure per repo, read out of
+    the exact image the published runs measured, and every task names it."""
+    from pathlib import Path
+
+    from skeptic.spec import list_tasks
+
+    root = Path(__file__).parent.parent
+    by_repo: dict[str, set[str]] = {}
+    for spec in list_tasks(root / "tasks"):
+        assert spec.environment.constraints, f"{spec.task_id} declares no closure"
+        pin = root / spec.environment.constraints
+        assert pin.is_file() and pin.read_text().strip(), f"{pin} is missing or empty"
+        by_repo.setdefault(spec.repo.url, set()).add(spec.environment.constraints)
+    assert by_repo == {
+        "https://github.com/pallets/click": {"constraints/click.txt"},
+        "https://github.com/Textualize/rich": {"constraints/rich.txt"},
+    }
+    for pin in ("constraints/click.txt", "constraints/rich.txt"):
+        lines = (root / pin).read_text().splitlines()
+        assert all("==" in line for line in lines), f"{pin} carries an unpinned line"
+        assert lines == sorted(lines, key=str.lower), f"{pin} is not in pip freeze order"
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_ensure_repo_image_installs_the_pin_and_refuses_drift(tmp_path, minirepo_spec_and_repo):
+    """Built under the pin, the image's freeze equals the pin byte for byte
+    and is written back as constraints.txt. A pin that does not cover the
+    closure (here, missing the harness's own `coverage`) is drift, and drift
+    is an infra error naming the file, never a quiet rebuild under a
+    different closure."""
+    from skeptic.errors import SkepticInfraError
+    from skeptic.image import ensure_repo_image
+    from skeptic.workspace import materialize
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pristine = tmp_path / "pristine"
+    materialize(repo_dir, spec.repo.commit, pristine)
+    frozen = ensure_repo_image(spec, pristine, tmp_path / "img").constraints_path.read_text()
+
+    pin = tmp_path / "pin.txt"
+    pin.write_text(frozen)
+    ref = ensure_repo_image(_pinned(spec, pin), pristine, tmp_path / "img-pinned")
+    assert ref.constraints_path.read_text() == frozen
+    assert not (pristine / ".skeptic-constraints.txt").exists(), "the context copy is cleaned up"
+
+    short = tmp_path / "short.txt"
+    short.write_text("".join(line for line in frozen.splitlines(keepends=True)
+                             if not line.startswith("coverage==")))
+    with pytest.raises(SkepticInfraError, match="short.txt"):
+        ensure_repo_image(_pinned(spec, short), pristine, tmp_path / "img-short")

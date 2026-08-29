@@ -103,7 +103,7 @@ def screen_patch(spec: TaskSpec, patch_path: Path, workdir: Path) -> ScreenResul
 
     def runner_factory(workspace: Path) -> VenvRunner:
         runner = VenvRunner(workspace=workspace, venv_dir=venv_dir)
-        runner.setup(env.install)
+        runner.setup(env.install, constraints=env.constraints_file)
         return runner
 
     suite: SuiteResult = _drop_quarantined(

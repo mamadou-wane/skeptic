@@ -25,6 +25,7 @@ environment:
   # attrs is required: tests/test_pretty.py imports it and the suite fails to
   # collect without it (rich-0001's measurement).
   install: ["pip install -q -e . pytest attrs"]
+  constraints: constraints/rich.txt
   test_cmd: "python -m pytest -q"
   test_dirs: ["tests/"]
   src_dirs: ["rich/"]

@@ -352,5 +352,6 @@ ceiling.
 
 M7 takes what M6 left: the H7 rule, an arm snapshot that carries its own
 candidate diff, the diff lane's install-and-apply path against arbitrary repos,
-task installs that pin their transitive dependencies, and the timed fresh-clone
-footprint table.
+and the timed fresh-clone footprint table. The task installs now pin their
+transitive dependencies to `constraints/`, one closure per repo read out of the
+image the published runs measured (DECISIONS row 231).

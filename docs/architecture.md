@@ -175,11 +175,17 @@ Skeptic's contribution is narrower than any of them: a reproducible harness
 that seeds the bug itself, so the oracle is free, and publishes a per-rule
 evidence trail with its false-positive rate split by clean-variant kind.
 
-Footprint anchor: SWE-bench's official harness needs roughly 120 GB of disk and
-15 to 50 minutes to a first eval. Skeptic's own measured footprint and
-cold-start table land at M7. Until then the comparison on offer is the demo
-in the [README](../README.md), which needs neither Docker nor a network and
-returns in under a second.
+Footprint anchor: SWE-bench's README says "We recommend running on an
+`x86_64` machine with at least 120GB of free storage, 16GB of RAM, and 8 CPU
+cores" ([README at bdfcdd8](https://github.com/SWE-bench/SWE-bench/blob/bdfcdd8c2372a4442d469435faaac2353d87911f/README.md), read 2026-08-29), sized for the
+full benchmark's instance images. It states no time to a first eval; the 15
+to 50 minutes this page used to cite had no source and is withdrawn. Skeptic,
+measured 2026-08-29 from a fresh public clone on an Apple M4 Pro, for one
+task of a two-repo corpus: 11 s to the demo's two verdicts with no Docker and
+no key, 67 s to the first real verdict with the base image already pulled
+and the build cache pruned, 124 MB of files across the checkout, venv and
+workdir, and a 55 MB task image whose content includes the 43 MB base.
+The table and what it excludes are in [docs/evaluation.md](evaluation.md).
 
 ## Layout
 

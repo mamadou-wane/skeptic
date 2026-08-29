@@ -1,0 +1,70 @@
+{
+  "base_image": {
+    "download_bytes": 43465493,
+    "platform": "linux/arm64",
+    "pull_timed": false,
+    "ref": "python@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de"
+  },
+  "build_cache": "pruned",
+  "machine": {
+    "arch": "arm64",
+    "cpu": "Apple M4 Pro",
+    "cpus": 14,
+    "docker": "29.7.2",
+    "memory_bytes": 25769803776,
+    "os": "Darwin 26.6.2",
+    "pip_config": "",
+    "python": "3.12.13"
+  },
+  "measured_at": "2026-08-29T22:39:55Z",
+  "ref": "bc82e34f8233de3b872197a73f95d22456073d35",
+  "repo": "https://github.com/mamadou-wane/skeptic",
+  "schema_version": 1,
+  "sizes_bytes": {
+    "base_image": 43483285,
+    "checkout": 10980612,
+    "task_image": 55187181,
+    "venv": 74549334,
+    "workdir": 38331168
+  },
+  "steps": {
+    "clone": {
+      "seconds": 0.9
+    },
+    "cold": {
+      "exit": 0,
+      "seconds": 57.3,
+      "verdict": "VERDICT PASS"
+    },
+    "demo": {
+      "exit": 0,
+      "seconds": 1.4,
+      "verdicts": [
+        "VERDICT PASS",
+        "VERDICT FAIL"
+      ]
+    },
+    "doctor": {
+      "api_key": "absent",
+      "exit": 3,
+      "seconds": 0.6
+    },
+    "install": {
+      "pip_cache": "off",
+      "seconds": 8.5
+    },
+    "warm": {
+      "exit": 0,
+      "seconds": 0.2,
+      "verdict": "VERDICT PASS (cached)"
+    }
+  },
+  "task": "click-0001",
+  "task_image_removed": true,
+  "task_image_tag": "skeptic-repo-click:5aa8ac43527f-5093884b",
+  "totals": {
+    "clone_to_demo_s": 10.8,
+    "clone_to_first_verdict_s": 66.7
+  },
+  "variant": "gold"
+}

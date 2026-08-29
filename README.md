@@ -30,6 +30,8 @@ unreachable from inside the sandbox.
 ## Getting started
 
 ```bash
+git clone https://github.com/mamadou-wane/skeptic && cd skeptic
+python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]" -c requirements-dev.lock
 skeptic demo
 ```
@@ -51,7 +53,9 @@ t1_scope · scope_violation · scope · hard · tests/test_golden.py · t1_scope
 The full lanes need more: Python 3.12 everywhere, Docker for `verify`,
 `build` and `eval`, and `ANTHROPIC_API_KEY` for the paid profile and any
 Builder run. `skeptic doctor` checks each one and prints the exact next
-command per failure.
+command per failure. Measured from a fresh clone on 2026-08-29: 11 s to the
+demo, 67 s to the first real Docker verdict with the build cache pruned
+and the base image pull excluded ([the table](docs/evaluation.md#the-lanes)).
 
 ## How it works
 

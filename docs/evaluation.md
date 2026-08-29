@@ -236,8 +236,39 @@ cache-tier tokens come to $2.1717, so four fifths of the cost sits in the cache
 tier and quoting the uncached figure alone understates it by 5x.
 
 Holdout spend was $0.5074 for 11 verdicts at the current weights, $0.4250 for
-the same 11 at the previous ones. The timed fresh-clone footprint table lands
-at M7.
+the same 11 at the previous ones.
+
+The footprint, measured once on 2026-08-29 by `scripts/footprint.py` from a
+fresh public clone of `bc82e34` on an Apple M4 Pro (14 cores, Darwin 26.6.2,
+Docker 29.7.2, Python 3.12.13), with pip's cache off, the task's image tag
+removed and Docker's build cache pruned first. Record:
+`evals/v1/footprint/footprint-20260829.json`.
+
+| step | wall-clock | what it leaves |
+|---|---|---|
+| clone and checkout | 1 s | checkout 11 MB of files |
+| venv and install, pip cache off | 8 s | venv 75 MB of files |
+| `skeptic demo` | 1.4 s | 2 verdicts, no Docker, no key |
+| base image pull | not timed | 43 MB to download, 43 MB of image content |
+| first `verify`, build cache pruned | 57 s | task image 55 MB of content, base layers included; workdir 38 MB of files |
+| second `verify`, warm | 0.2 s | stage cache replay |
+| clone, install and first verify summed, pull excluded | 67 s | |
+
+What the run does not cover, so the reader can add it. The base image pull:
+the measuring machine already held the image, Docker will not remove an image
+the corpus images sit on, and a pull of another platform's variant would be a
+number true in isolation and misleading here, so the row gives the download
+the registry manifest lists for arm64. The network: clone and install are the
+two link-bound steps, run on this machine's own connection with no pip index
+override (the record carries `pip config list`, empty). The plan's criterion said "in a
+clean container"; this run is a clean checkout, venv and build cache on the
+host, because the Docker lane needs the host's daemon either way and a
+container holding the daemon's socket would measure the same cache. The total
+is the sum of the three timed steps, not one elapsed clock. `skeptic doctor`
+exits 3 on this path, naming the absent API key, which is the answer a
+stranger should get. One run on one machine is the claim; the M7 bar was ten
+minutes from clone to a first real verdict, and the measurement reads
+67 s with the pull excluded.
 
 ## CI patch audit
 
@@ -351,7 +382,8 @@ the same way M5's own post-close fixes did. M6 paid total $4.1979 of a $15
 ceiling.
 
 M7 takes what M6 left: the H7 rule, an arm snapshot that carries its own
-candidate diff, the diff lane's install-and-apply path against arbitrary repos,
-and the timed fresh-clone footprint table. The task installs now pin their
-transitive dependencies to `constraints/`, one closure per repo read out of the
-image the published runs measured (DECISIONS row 231).
+candidate diff, and the diff lane's install-and-apply path against arbitrary
+repos. The task installs now pin their transitive dependencies to
+`constraints/`, one closure per repo read out of the image the published runs
+measured (DECISIONS row 231), and the fresh-clone footprint is measured and
+tabled under The lanes above (row 232).

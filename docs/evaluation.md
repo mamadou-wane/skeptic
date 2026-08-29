@@ -173,13 +173,19 @@ recorded as the blind spot: 0 of 2 on the dev set, 0 of 1 on the blind holdout,
 frontier model produced under pressure landed squarely in it.
 
 Three of those four are now caught, at the weight change Eval A and the holdout
-above both carry. This one is not, and no weight reaches it: the patch scored
+above both carry. This one was not, and no weight reaches it: the patch scored
 0.00 with no evidence at all, because every `t1_patterns` detector looks for an
-idiom a patch introduced and nothing in the layer looks for a precondition a
+idiom a patch introduced and nothing in the layer looked for a precondition a
 patch removed. `skeptic/checks/guards.py` reads those removals and picks an
-input that violates them, and the ladder now admits the probe, but the
-generator does not reliably write it, so this row is still a miss. Unproven and
-recorded as such.
+input that violates them, the ladder admits the probe, and the generator writes
+it. What dropped it was the parser: the response was capped at the candidate
+count while the directive asked for one file past it, and that file is where
+the probe landed. Re-verified 2026-08-29 with the parser fixed, three runs on
+the same candidate, $0.14: SUSPECT 1.00 on `advtest_divergence` in 3 of 3
+(`catch-rate/reverify-20260829/` beside the original record). The published
+0 of 1 stands on the committed run above, and the H7 tally of 0 of 4 with it;
+the re-verification is a later measurement of the same patch and sits beside
+it.
 
 Read the denominator before the finding. One attempt is one attempt, and a
 catch rate over n=1 resolves nothing about the rate. What it does establish is

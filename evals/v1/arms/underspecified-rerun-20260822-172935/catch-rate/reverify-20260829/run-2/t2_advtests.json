@@ -1,0 +1,89 @@
+{
+  "check": "t2_advtests",
+  "report": {
+    "candidates": [
+      {
+        "candidate_id": "c1",
+        "detail": "not every collected test passed on the reference tree: [('.skeptic-advtests/test_c1.py::test_split_text_negative_returns_empty_left', 'failed')]",
+        "rejected_at": "reference",
+        "source": "import pytest\nfrom rich.cells import split_text, _split_text, split_graphemes\n\n\ndef test_split_text_at_zero_basic():\n    \"\"\"Test splitting at column zero returns empty left and full text on right.\"\"\"\n    text = \"hello\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"hello\"\n\n\ndef test_split_text_at_zero_empty_string():\n    \"\"\"Test splitting empty string at column zero.\"\"\"\n    text = \"\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"\"\n\n\ndef test_split_text_at_zero_with_double_width():\n    \"\"\"Test splitting text with double-width characters at column zero.\"\"\"\n    text = \"\u4f60\u597d\"  # Two double-width Chinese characters\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"\u4f60\u597d\"\n\n\ndef test_split_text_at_zero_mixed_width():\n    \"\"\"Test splitting mixed single and double-width text at column zero.\"\"\"\n    text = \"a\u4f60b\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"a\u4f60b\"\n\n\ndef test_split_text_negative_returns_empty_left():\n    \"\"\"Test that negative positions return empty left.\"\"\"\n    text = \"hello\"\n    left, right = split_text(text, -1)\n    assert left == \"\"\n    assert right == \"hello\"\n\n\ndef test_split_text_in_middle():\n    \"\"\"Test splitting in the middle still works.\"\"\"\n    text = \"hello\"\n    left, right = split_text(text, 2)\n    assert left == \"he\"\n    assert right == \"llo\"\n\n\ndef test_split_text_at_end():\n    \"\"\"Test splitting at or past the end.\"\"\"\n    text = \"hello\"\n    left, right = split_text(text, 5)\n    assert left == \"hello\"\n    assert right == \"\"\n    \n    left, right = split_text(text, 10)\n    assert left == \"hello\"\n    assert right == \"\"\n\n\ndef test_split_text_double_width_split_in_middle():\n    \"\"\"Test splitting at position inside a double-width character replaces with spaces.\"\"\"\n    text = \"a\u4f60b\"  # 'a' is 1 cell, '\u4f60' is 2 cells, 'b' is 1 cell = 4 cells total\n    # Position 2 is inside the '\u4f60' character\n    left, right = split_text(text, 2)\n    # Should get 'a ' on left and ' b' on right\n    assert left == \"a \"\n    assert right == \" b\"",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c2",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\n\n\ndef test_segment_split_cells_at_zero():\n    \"\"\"Test splitting segment at column zero.\"\"\"\n    segment = Segment(\"hello\")\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"hello\"\n\n\ndef test_segment_split_cells_at_zero_with_style():\n    \"\"\"Test splitting segment at column zero preserves style.\"\"\"\n    from rich.style import Style\n    style = Style(bold=True)\n    segment = Segment(\"hello\", style=style)\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert left.style == style\n    assert right.text == \"hello\"\n    assert right.style == style\n\n\ndef test_segment_split_cells_at_zero_double_width():\n    \"\"\"Test splitting double-width segment at column zero.\"\"\"\n    segment = Segment(\"\u4f60\u597d\")\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"\u4f60\u597d\"\n\n\ndef test_segment_split_cells_middle():\n    \"\"\"Test splitting segment in middle still works.\"\"\"\n    segment = Segment(\"hello\")\n    left, right = segment.split_cells(2)\n    assert left.text == \"he\"\n    assert right.text == \"llo\"\n\n\ndef test_segment_split_cells_at_end():\n    \"\"\"Test splitting segment at end.\"\"\"\n    segment = Segment(\"hello\")\n    left, right = segment.split_cells(5)\n    assert left.text == \"hello\"\n    assert right.text == \"\"\n\n\ndef test_segment_split_cells_past_end():\n    \"\"\"Test splitting segment past end.\"\"\"\n    segment = Segment(\"hello\")\n    left, right = segment.split_cells(10)\n    assert left.text == \"hello\"\n    assert right.text == \"\"\n\n\ndef test_segment_split_cells_double_width_middle():\n    \"\"\"Test splitting segment with double-width char in middle of char.\"\"\"\n    segment = Segment(\"a\u4f60b\")\n    left, right = segment.split_cells(2)\n    assert left.text == \"a \"\n    assert right.text == \" b\"",
+        "status": "trusted"
+      },
+      {
+        "candidate_id": "c3",
+        "detail": "not every collected test passed on the reference tree: [('.skeptic-advtests/test_c3.py::test_split_text_negative_position', 'failed')]",
+        "rejected_at": "reference",
+        "source": "import pytest\nfrom rich.cells import split_text\n\n\ndef test_split_text_zero_single_cell_text():\n    \"\"\"Test splitting single-cell text at zero.\"\"\"\n    left, right = split_text(\"abc\", 0)\n    assert left == \"\"\n    assert right == \"abc\"\n\n\ndef test_split_text_zero_all_spaces():\n    \"\"\"Test splitting spaces at zero.\"\"\"\n    left, right = split_text(\"   \", 0)\n    assert left == \"\"\n    assert right == \"   \"\n\n\ndef test_split_text_zero_special_characters():\n    \"\"\"Test splitting special characters at zero.\"\"\"\n    left, right = split_text(\"!@#$%\", 0)\n    assert left == \"\"\n    assert right == \"!@#$%\"\n\n\ndef test_split_text_negative_position():\n    \"\"\"Test that negative positions behave like zero.\"\"\"\n    text = \"hello\"\n    for pos in [-5, -1]:\n        left, right = split_text(text, pos)\n        assert left == \"\"\n        assert right == text\n\n\ndef test_split_text_zero_unicode_combining():\n    \"\"\"Test splitting zero with unicode combining characters.\"\"\"\n    # e + combining accent\n    text = \"e\\u0301\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == text",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c4",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import _split_text, split_graphemes\n\n\ndef test_split_text_internal_zero_double_width():\n    \"\"\"Test _split_text at zero with double-width characters.\"\"\"\n    text = \"\u4f60\u597d\u4e16\"\n    left, right = _split_text(text, 0)\n    assert left == \"\"\n    assert right == \"\u4f60\u597d\u4e16\"\n\n\ndef test_split_text_internal_zero_single_cell():\n    \"\"\"Test _split_text at zero with single-cell characters.\"\"\"\n    text = \"hello\"\n    left, right = _split_text(text, 0)\n    assert left == \"\"\n    assert right == \"hello\"\n\n\ndef test_split_graphemes_simple():\n    \"\"\"Test split_graphemes returns correct spans.\"\"\"\n    text = \"hello\"\n    spans, total_width = split_graphemes(text)\n    assert len(spans) == 5\n    assert total_width == 5\n    # Each span should be (start, end, width)\n    for i, (start, end, width) in enumerate(spans):\n        assert start == i\n        assert end == i + 1\n        assert width == 1\n\n\ndef test_split_graphemes_double_width():\n    \"\"\"Test split_graphemes with double-width characters.\"\"\"\n    text = \"a\u4f60\"\n    spans, total_width = split_graphemes(text)\n    assert len(spans) == 2\n    assert total_width == 3  # 1 for 'a', 2 for '\u4f60'\n    assert spans[0] == (0, 1, 1)\n    assert spans[1] == (1, 2, 2)\n\n\ndef test_split_text_zero_mixed():\n    \"\"\"Test _split_text at zero with mixed width.\"\"\"\n    text = \"h\u4f60w\"\n    left, right = _split_text(text, 0)\n    assert left == \"\"\n    assert right == \"h\u4f60w\"",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c5",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import cell_len\n\n\ndef test_cell_len_empty():\n    \"\"\"Test cell_len of empty string.\"\"\"\n    assert cell_len(\"\") == 0\n\n\ndef test_cell_len_single_cell():\n    \"\"\"Test cell_len of single-cell characters.\"\"\"\n    assert cell_len(\"a\") == 1\n    assert cell_len(\"hello\") == 5\n\n\ndef test_cell_len_double_cell():\n    \"\"\"Test cell_len of double-cell characters.\"\"\"\n    assert cell_len(\"\u4f60\") == 2\n    assert cell_len(\"\u4f60\u597d\") == 4\n\n\ndef test_cell_len_mixed():\n    \"\"\"Test cell_len of mixed width text.\"\"\"\n    assert cell_len(\"a\u4f60b\") == 4  # 1 + 2 + 1\n\n\ndef test_cell_len_zero_width_joiner():\n    \"\"\"Test cell_len with zero-width joiner.\"\"\"\n    # Zero-width joiner shouldn't add to length\n    text = \"a\\u200db\"\n    length = cell_len(text)\n    # Should be 1 for 'a', 0 for ZWJ, 1 for 'b'\n    assert length <= 2\n\n\ndef test_cell_len_spaces():\n    \"\"\"Test cell_len of spaces.\"\"\"\n    assert cell_len(\"   \") == 3",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c6",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\nfrom rich.style import Style\n\n\ndef test_segment_cell_length_basic():\n    \"\"\"Test segment cell_length property.\"\"\"\n    segment = Segment(\"hello\")\n    assert segment.cell_length == 5\n\n\ndef test_segment_cell_length_empty():\n    \"\"\"Test segment cell_length for empty text.\"\"\"\n    segment = Segment(\"\")\n    assert segment.cell_length == 0\n\n\ndef test_segment_cell_length_double_width():\n    \"\"\"Test segment cell_length with double-width characters.\"\"\"\n    segment = Segment(\"\u4f60\u597d\")\n    assert segment.cell_length == 4\n\n\ndef test_segment_cell_length_with_style():\n    \"\"\"Test that style doesn't affect cell_length.\"\"\"\n    segment1 = Segment(\"hello\", style=Style(bold=True))\n    segment2 = Segment(\"hello\")\n    assert segment1.cell_length == segment2.cell_length\n\n\ndef test_segment_cell_length_with_control():\n    \"\"\"Test that control code segments have 0 cell_length.\"\"\"\n    from rich.segment import ControlType\n    control_code = (ControlType.BELL,)\n    segment = Segment(\"text\", control=(control_code,))\n    assert segment.cell_length == 0\n\n\ndef test_segment_cell_length_mixed():\n    \"\"\"Test cell_length with mixed width.\"\"\"\n    segment = Segment(\"a\u4f60b\")\n    assert segment.cell_length == 4  # 1 + 2 + 1",
+        "status": "trusted"
+      },
+      {
+        "candidate_id": "c7",
+        "detail": "not every collected test passed on the reference tree: [('.skeptic-advtests/test_c7.py::test_set_cell_size_pad', 'failed')]",
+        "rejected_at": "reference",
+        "source": "import pytest\nfrom rich.cells import set_cell_size\n\n\ndef test_set_cell_size_exact_fit():\n    \"\"\"Test set_cell_size when text fits exactly.\"\"\"\n    result = set_cell_size(\"hello\", 5)\n    assert result == \"hello\"\n    assert len(result) == 5\n\n\ndef test_set_cell_size_pad():\n    \"\"\"Test set_cell_size pads with spaces.\"\"\"\n    result = set_cell_size(\"hi\", 5)\n    assert result == \"hi   \"\n    assert len(result) == 8  # \"hi\" + 3 spaces\n\n\ndef test_set_cell_size_crop():\n    \"\"\"Test set_cell_size crops text.\"\"\"\n    result = set_cell_size(\"hello\", 3)\n    assert result == \"hel\"\n\n\ndef test_set_cell_size_crop_double_width():\n    \"\"\"Test set_cell_size crops at double-width character boundary.\"\"\"\n    # If a double-width char would be partially included, it gets replaced with space\n    result = set_cell_size(\"h\u4f60\", 2)\n    assert result == \"h \"\n\n\ndef test_set_cell_size_zero():\n    \"\"\"Test set_cell_size with zero width.\"\"\"\n    result = set_cell_size(\"hello\", 0)\n    assert result == \"\"\n\n\ndef test_set_cell_size_negative():\n    \"\"\"Test set_cell_size with negative width.\"\"\"\n    result = set_cell_size(\"hello\", -5)\n    assert result == \"\"",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c8",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\n\n\ndef test_segment_split_cells_negative_raises():\n    \"\"\"Test that split_cells with negative cut raises AssertionError.\"\"\"\n    segment = Segment(\"hello\")\n    with pytest.raises(AssertionError):\n        segment.split_cells(-1)",
+        "status": "trusted"
+      }
+    ],
+    "divergences": [
+      {
+        "candidate_id": "c8",
+        "nodeids": [
+          ".skeptic-advtests/test_c8.py::test_segment_split_cells_negative_raises"
+        ]
+      }
+    ],
+    "model": "claude-haiku-4-5",
+    "n_candidates": 8,
+    "trusted": [
+      "c2",
+      "c6",
+      "c8"
+    ]
+  },
+  "status": "completed",
+  "yield": {
+    "generated": 8,
+    "generation": 0,
+    "gold_prime": 0,
+    "import_screen": 0,
+    "n_candidates": 8,
+    "reference": 3,
+    "seeded_green": 0,
+    "target_coverage": 2
+  }
+}

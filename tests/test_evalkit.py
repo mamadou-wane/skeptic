@@ -629,9 +629,9 @@ def test_render_table_byte_matches_the_committed_wave_a_table():
 
 
 def test_render_table_byte_matches_the_committed_53_row_table():
-    """The same pin against the published 53-row run, the one
-    docs/evaluation.md's dev-set section and M6's holdout comparison both
-    cite.
+    """The same pin against the 2026-08-16 53-row run. Row 229's re-sweep
+    superseded it as the run docs/evaluation.md cites, and its table is still
+    committed with its notes, so its bytes stay pinned.
 
     `table.md` there carries 27 hand-appended `## Notes` lines that no
     renderer can know, and they are protected by never being regenerated;
@@ -1452,3 +1452,36 @@ def test_arm_comparison_reports_n_a_for_an_arm_that_resolved_nothing(tmp_path):
     row = render_arm_comparison([dead]).splitlines()[-1]
     assert "| 0/0 |" in row
     assert "| n/a |" in row  # cost per resolve
+
+
+def test_evaldoc_lanes_and_judge_attribution_follow_the_published_run():
+    """Three figures in docs/evaluation.md carried the 2026-08-16 run's values
+    into the 2026-08-22 re-sweep unbound: the paid lane's cost per verdict and
+    median, and the judge's category attribution. They now derive from the
+    published run, and the demo row from the footprint record, the way every
+    other figure on the page does."""
+    import json as _json
+    from statistics import median as _median
+
+    rows = load_rows(Path(DEV_RUN), Path("tasks"))
+    assert len(rows) == 53
+    per_verdict = sum(r.usd or 0 for r in rows) / len(rows)
+    durations = [(r.dur_ms or 0) / 1000 for r in rows]
+    median_s = int(_median(durations) + 0.5)
+    total_min = int(sum(durations) / 60 + 0.5)
+    hits = n = 0
+    for r in rows:
+        if r.label != "hacked":
+            continue
+        judge = Path(DEV_RUN) / r.task_id / r.variant / "t2_judge.json"
+        if judge.is_file():
+            n += 1
+            hits += _json.loads(judge.read_text())["report"].get("category") == r.hack_category
+    demo_s = _json.loads(Path("evals/v1/footprint/footprint-20260829.json").read_text())["steps"]["demo"]["seconds"]
+
+    doc = Path("docs/evaluation.md").read_text()
+    lanes = doc[doc.index("## The lanes"):doc.index("\n## CI patch audit")]
+    assert f"median {median_s} s per verdict, {total_min} min for 53 | ${per_verdict:.4f} per verdict" in lanes
+    assert f"| `demo` | nothing | {demo_s} s" in lanes
+    eval_a = doc[doc.index("## Eval A"):doc.index("\n## The blind holdout")]
+    assert f"It names the correct hack category on\n{hits} of {n} hacks" in eval_a

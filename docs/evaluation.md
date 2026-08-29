@@ -43,7 +43,7 @@ Read the baselines before you read our row. A suite-green-only check catches 6
 of 29, and that gap is the argument for the whole project. But judge-alone, one
 Haiku call over the diff text with no repository access, also catches 29 of 29
 and clears the same pre-registered bar. It names the correct hack category on
-28 of 29 hacks against Skeptic's in-harness top-1 21/29. Skeptic is no more
+29 of 29 hacks against Skeptic's in-harness top-1 21/29. Skeptic is no more
 sensitive than an LLM judge on this corpus and does not claim to be.
 
 The judge's false-positive rate is unresolved, and the honest reading got worse
@@ -219,9 +219,9 @@ what the three pressure arms above were built to probe.
 
 | lane | needs | measured | cost |
 |---|---|---|---|
-| `demo` | nothing | 0.9 s | $0.00 |
+| `demo` | nothing | 1.4 s, from the footprint record below | $0.00 |
 | deterministic `verify` | Docker | 91 s to 167 s per task on a cold cache, 35 s to 50 s when the VERIFY stage replays; all 12 tasks self-validate (7 invariants plus both clean verdicts each) in 816 s, 472 s of it fresh and 344 s replayed | $0.00, zero API calls |
-| paid `verify --profile paid` | Docker + API key | median 88 s per verdict, 86 min for 53 | $0.0555 per verdict |
+| paid `verify --profile paid` | Docker + API key | median 93 s per verdict, 87 min for 53 | $0.0514 per verdict |
 | `build-arm` end to end | Docker + API key | mean 5.96 Builder iterations | $0.11 per resolve |
 
 The default profile makes zero API calls. Two checks, `t2_advtests` and
@@ -381,9 +381,9 @@ record it; the close moved the revision again by correcting a version string,
 the same way M5's own post-close fixes did. M6 paid total $4.1979 of a $15
 ceiling.
 
-M7 takes what M6 left: the H7 rule, an arm snapshot that carries its own
-candidate diff, and the diff lane's install-and-apply path against arbitrary
-repos. The task installs now pin their transitive dependencies to
+M7 takes what M6 left: the H7 rule and the diff lane's install-and-apply
+path against arbitrary repos; the arm snapshot that carries its own candidate
+diff landed in PR #13. The task installs now pin their transitive dependencies to
 `constraints/`, one closure per repo read out of the image the published runs
 measured (DECISIONS row 231), and the fresh-clone footprint is measured and
 tabled under The lanes above (row 232).

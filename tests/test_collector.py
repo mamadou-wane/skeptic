@@ -511,9 +511,10 @@ def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(
     selection = (NODE_A,)
     calls = []
 
-    def fake_capture(self, script, timeout_s, quarantine, env=None):
+    def fake_capture(self, script, timeout_s, quarantine, env=None, *, deadline=None):
         calls.append({
             "timeout_s": timeout_s,
+            "deadline": deadline,
             "quarantine": quarantine,
             "input_mounts": self.input_mounts,
             "workspace_overlays": self.workspace_overlays,
@@ -532,16 +533,15 @@ def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(
         return ExecResult(code, "phase out", "phase err", 10)
 
     monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
-    readings = iter((0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
-    monkeypatch.setattr("skeptic.collector.time.monotonic", lambda: next(readings))
-
     report = collector.observe_mutation(
         make_task_spec(), "img", tree, tmp_path / "artifacts", mutants,
         {mutant.mutant_id: selection for mutant in mutants},
     )
 
     budget = collector._mutation_host_budget(2, 1)
-    assert [call["timeout_s"] for call in calls] == [budget - 1, budget - 3, budget - 5]
+    assert [call["timeout_s"] for call in calls] == [budget, budget, budget]
+    assert calls[0]["deadline"] is not None
+    assert all(call["deadline"] is calls[0]["deadline"] for call in calls)
     assert len({call["quarantine"] for call in calls}) == 3
     assert calls[0]["workspace_overlays"] == ()
     assert all(len(call["workspace_overlays"]) == 1 for call in calls[1:])
@@ -549,6 +549,38 @@ def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(
     assert all(call["env"] == {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
                for call in calls)
     assert [record.status for record in report.records] == ["killed", "survived"]
+
+
+def test_mutation_refuses_fractional_deadline_before_starting_capture(
+    tmp_path, monkeypatch
+):
+    """A positive fractional remainder is not a new one-second phase budget."""
+    tree = _tree(tmp_path, with_tests=True)
+    (tree / "src").mkdir()
+    (tree / "src" / "a.py").write_text("x = 1\n")
+    mutant = mutation.Mutant(
+        mutant_id="111111111111", path="src/a.py", line=1,
+        operator="off_by_one", function="", population="changed",
+        mutated_source="x = 2\n", valid=True)
+    budget = collector._mutation_host_budget(1, 1)
+    readings = iter((0.0, budget - 0.5, budget + 0.5))
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append((cmd, timeout_s))
+        return ExecResult(0, "", "", 1)
+
+    monkeypatch.setattr(
+        "skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError, match="whole second"):
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [mutant],
+            {mutant.mutant_id: (NODE_A,)},
+        )
+
+    assert calls == []
 
 
 def test_coverage_test_cmd_refuses_a_non_pytest_test_cmd():

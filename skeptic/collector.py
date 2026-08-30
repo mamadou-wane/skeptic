@@ -78,7 +78,7 @@ from skeptic.checks.observations import (
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ensure_repo_image
 from skeptic.mutation import FULL_SUITE, Mutant
-from skeptic.sandbox import ExecResult, RunContainer
+from skeptic.sandbox import ExecResult, HostDeadline, RunContainer
 from skeptic.seedcheck import parse_junit, parse_junit_bytes
 from skeptic.spec import ProbeEntrypoint, TaskSpec
 from skeptic.testgen import screen_imports
@@ -316,22 +316,39 @@ def _run_private_phase(*, container: RunContainer, script: str,
                        quarantine: Path, sealed: Path,
                        output_specs: Sequence[ArtifactSpec], timeout_s: int,
                        output_prefix: str,
-                       env: dict[str, str] | None = None) -> ExecResult:
+                       env: dict[str, str] | None = None,
+                       deadline: HostDeadline | None = None) -> ExecResult:
     """Capture and seal one private execution before another can start."""
-    result = container.run_capture(script, timeout_s, quarantine, env)
+    if deadline is None:
+        result = container.run_capture(script, timeout_s, quarantine, env)
+    else:
+        result = container.run_capture(
+            script, timeout_s, quarantine, env, deadline=deadline)
+
+    def require_active(operation: str) -> None:
+        if deadline is not None:
+            deadline.require_active(operation)
+
+    require_active("private capture install-marker admission")
     install_marker = read_artifact_bytes(
         quarantine, _INSTALL_OK, CONTROL_MAX, required=False)
+    require_active("private capture declared-artifact admission")
     admit_artifacts(quarantine, sealed, output_specs)
     if install_marker is not None:
+        require_active("private capture install-marker publication")
         publish_artifact_bytes(
             sealed, f"{output_prefix}{_INSTALL_OK}", install_marker, CONTROL_MAX)
+    require_active("private capture stdout publication")
     publish_artifact_bytes(
         sealed, f"{output_prefix}out", result.stdout.encode(), TEXT_MAX)
+    require_active("private capture stderr publication")
     publish_artifact_bytes(
         sealed, f"{output_prefix}err", result.stderr.encode(), TEXT_MAX)
+    require_active("private capture exit publication")
     publish_artifact_bytes(
         sealed, f"{output_prefix}exit", f"{result.exit_code}\n".encode(), CONTROL_MAX)
     shutil.rmtree(quarantine)
+    require_active("private capture evidence return")
     return result
 
 
@@ -1181,7 +1198,7 @@ def observe_mutation(
         selected = {m.mutant_id: selections[m.mutant_id] for m in runnable}
         distinct = sorted({selected[m.mutant_id] for m in runnable})
         budget_s = _mutation_host_budget(len(runnable), len(distinct))
-        deadline = time.monotonic() + budget_s
+        deadline = HostDeadline.after(budget_s)
 
         input_root = artifacts.parent / f".{artifacts.name}-mutation-inputs"
         quarantine_root = artifacts.parent / f".{artifacts.name}-mutation-quarantine"
@@ -1195,30 +1212,17 @@ def observe_mutation(
               + tuple(spec.environment.config_files)
               + tuple(spec.environment.golden_dirs))
 
-        def remaining(phase: str) -> int:
-            left = deadline - time.monotonic()
-            if left <= 0:
-                raise SkepticInfraError(
-                    f"The mutation {phase} execution could not start before the "
-                    f"shared {budget_s}s host deadline expired. That budget is the "
-                    f"worst case of all {len(runnable)} runnable mutant(s) and "
-                    f"{len(distinct)} calibration(s) hitting 60s, plus "
-                    f"{_MUT_SLACK_S}s slack. This is an infra failure, never "
-                    f"evidence. Next: inspect Docker daemon health, then re-run "
-                    f"the pair."
-                )
-            return max(1, int(left))
-
         def run_phase(*, label: str, container: RunContainer, script: str,
                       quarantine: Path, sealed: Path,
                       output_specs: Sequence[ArtifactSpec]) -> ExecResult:
             result = _run_private_phase(
                 container=container, script=script, quarantine=quarantine,
                 sealed=sealed, output_specs=output_specs,
-                timeout_s=remaining(label), output_prefix="",
+                timeout_s=budget_s, output_prefix="",
                 env={"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"},
+                deadline=deadline,
             )
-            if result.exit_code == -1 or time.monotonic() > deadline:
+            if result.exit_code == -1:
                 raise SkepticInfraError(
                     f"The mutation {label} execution timed out under the shared "
                     f"{budget_s}s host deadline. Its private output was sealed at "

@@ -24,6 +24,40 @@ class ExecResult:
     dur_ms: int
 
 
+@dataclass(frozen=True)
+class HostDeadline:
+    """One monotonic authority for a multi-command host operation."""
+
+    expires_at: float
+
+    @classmethod
+    def after(cls, timeout_s: int) -> Self:
+        return cls(expires_at=time.monotonic() + timeout_s)
+
+    def remaining_timeout_s(self, operation: str) -> int:
+        """Return a safe whole-second timeout or refuse to start an operation."""
+        left = self.expires_at - time.monotonic()
+        timeout_s = int(left)
+        if timeout_s < 1:
+            raise SkepticInfraError(
+                f"{operation} cannot start before its shared host deadline: "
+                f"only {max(0.0, left):.3f}s remains, less than one whole second "
+                f"the subprocess timeout can represent safely. This is an infra "
+                f"failure, never evidence. Next: re-run after checking host and "
+                f"Docker daemon load."
+            )
+        return timeout_s
+
+    def require_active(self, operation: str) -> None:
+        """Refuse evidence work once the shared monotonic deadline has expired."""
+        if time.monotonic() >= self.expires_at:
+            raise SkepticInfraError(
+                f"{operation} cannot continue because its shared host deadline "
+                f"expired. This is an infra failure, never evidence. Next: re-run "
+                f"after checking host and Docker daemon load."
+            )
+
+
 def _run(cmd: list[str], cwd: Path, timeout_s: int, env: dict[str, str] | None) -> ExecResult:
     start = time.monotonic()
     try:
@@ -548,8 +582,16 @@ class RunContainer:
         return _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
 
     def run_capture(self, script: str, timeout_s: int, quarantine: Path,
-                    env: dict[str, str] | None = None) -> ExecResult:
-        """Run with container-private output, then copy it into quarantine."""
+                    env: dict[str, str] | None = None, *,
+                    deadline: HostDeadline | None = None) -> ExecResult:
+        """Run with private output and copy it under one optional host deadline."""
+        def bounded_timeout(cap_s: int, operation: str) -> int:
+            if deadline is None:
+                return cap_s
+            return min(cap_s, deadline.remaining_timeout_s(operation))
+
+        primary_timeout_s = bounded_timeout(
+            timeout_s, "capture primary Docker run")
         try:
             quarantine.mkdir(mode=0o700)
         except FileExistsError as exc:
@@ -586,10 +628,13 @@ class RunContainer:
         full = args + ["sh", "-c", prepared]
 
         try:
-            primary = _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
+            primary = _run(
+                full, cwd=self.workspace, timeout_s=primary_timeout_s, env=None)
             if primary.exit_code == -1:
+                stop_timeout_s = bounded_timeout(
+                    30, "capture timeout-stop confirmation")
                 stopped = _run(["docker", "stop", name], cwd=self.workspace,
-                               timeout_s=30, env=None)
+                               timeout_s=stop_timeout_s, env=None)
                 if stopped.exit_code != 0:
                     raise SkepticInfraError(
                         f"capture container {name} could not be confirmed stopped "
@@ -600,12 +645,21 @@ class RunContainer:
                         f"code may still be writing it. Next: inspect Docker daemon "
                         f"health and remove the container if it remains."
                     )
+            copy_timeout_s = bounded_timeout(
+                60, "capture private-output copy")
             copied = _run(
                 ["docker", "cp", f"{name}:/tmp/skeptic-artifacts/.", str(quarantine)],
                 cwd=self.workspace,
-                timeout_s=60,
+                timeout_s=copy_timeout_s,
                 env=None,
             )
+            if deadline is not None and copied.exit_code == -1:
+                raise SkepticInfraError(
+                    f"container-private output copy for {name} timed out under "
+                    f"the shared host deadline. Skeptic cannot admit an incomplete "
+                    f"copy. This is an infra failure, never evidence. Next: inspect "
+                    f"Docker storage and retry the verification."
+                )
             if copied.exit_code != 0 and primary.exit_code == 0:
                 raise SkepticInfraError(
                     f"container-private output copy failed for {name} "
@@ -614,10 +668,12 @@ class RunContainer:
                     f"container boundary. Next: inspect Docker storage and "
                     f"retry the verification."
                 )
-            return primary
         finally:
             _run(["docker", "rm", "-f", name], cwd=self.workspace,
                  timeout_s=30, env=None)
+        if deadline is not None:
+            deadline.require_active("capture evidence admission")
+        return primary
 
 
 class SessionContainer:

@@ -167,7 +167,7 @@ def fake_mutation_run(
     """Answer each private calibration/mutant capture at its real boundary."""
     calls: list[dict[str, object]] = []
 
-    def fake_capture(self, script, timeout_s, quarantine, env=None):
+    def fake_capture(self, script, timeout_s, quarantine, env=None, *, deadline=None):
         calls.append({
             "script": script,
             "timeout_s": timeout_s,
@@ -176,6 +176,7 @@ def fake_mutation_run(
             "workspace_overlays": self.workspace_overlays,
             "extra_mounts": self.extra_mounts,
             "env": env,
+            "deadline": deadline,
         })
         quarantine.mkdir(mode=0o700)
         if not install_ok:

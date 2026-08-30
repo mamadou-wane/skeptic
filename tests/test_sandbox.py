@@ -214,6 +214,144 @@ def _fixed_capture_name(monkeypatch):
     return "skeptic-4242-0123456789abcdef"
 
 
+def test_run_capture_refuses_fractional_deadline_before_docker_run(
+    tmp_path, monkeypatch
+):
+    """A sub-second remainder cannot be rounded into a new one-second run."""
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    calls = _record_run(monkeypatch)
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: 9.5)
+
+    with pytest.raises(SkepticInfraError, match="whole second"):
+        RunContainer("img", workspace).run_capture(
+            "echo unreachable", 60, quarantine,
+            deadline=sandbox_module.HostDeadline(expires_at=10.0),
+        )
+
+    assert calls == []
+
+
+def test_run_capture_does_not_start_copy_after_deadline(tmp_path, monkeypatch):
+    """A completed primary run cannot start evidence copy after expiry."""
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    _fixed_capture_name(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append((cmd, timeout_s))
+        return ExecResult(0, "", "", 1)
+
+    readings = iter((5.0, 10.0))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError, match="deadline"):
+        RunContainer("img", workspace).run_capture(
+            "echo ok", 60, quarantine,
+            deadline=sandbox_module.HostDeadline(expires_at=10.0),
+        )
+
+    assert [(cmd[:2], timeout_s) for cmd, timeout_s in calls] == [
+        (["docker", "run"], 5),
+        (["docker", "rm"], 30),
+    ]
+
+
+def test_run_capture_does_not_start_timeout_stop_after_deadline(
+    tmp_path, monkeypatch
+):
+    """A primary timeout at expiry cannot start a separately budgeted stop."""
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    _fixed_capture_name(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append((cmd, timeout_s))
+        if cmd[:2] == ["docker", "run"]:
+            return ExecResult(-1, "partial", "timed out", 5000)
+        return ExecResult(0, "", "", 1)
+
+    readings = iter((5.0, 10.0))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError, match="deadline"):
+        RunContainer("img", workspace).run_capture(
+            "sleep 30", 60, quarantine,
+            deadline=sandbox_module.HostDeadline(expires_at=10.0),
+        )
+
+    assert [(cmd[:2], timeout_s) for cmd, timeout_s in calls] == [
+        (["docker", "run"], 5),
+        (["docker", "rm"], 30),
+    ]
+
+
+def test_run_capture_refuses_admission_when_cleanup_crosses_deadline(
+    tmp_path, monkeypatch
+):
+    """Post-copy cleanup may continue, but cannot return evidence after expiry."""
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    _fixed_capture_name(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append((cmd, timeout_s))
+        return ExecResult(0, "", "", 1)
+
+    readings = iter((5.0, 7.0, 10.2))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError, match="deadline"):
+        RunContainer("img", workspace).run_capture(
+            "echo ok", 60, quarantine,
+            deadline=sandbox_module.HostDeadline(expires_at=10.0),
+        )
+
+    assert [(cmd[:2], timeout_s) for cmd, timeout_s in calls] == [
+        (["docker", "run"], 5),
+        (["docker", "cp"], 3),
+        (["docker", "rm"], 30),
+    ]
+
+
+def test_run_capture_bounds_timeout_stop_and_copy_by_one_deadline(
+    tmp_path, monkeypatch
+):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    _fixed_capture_name(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append((cmd, timeout_s))
+        if cmd[:2] == ["docker", "run"]:
+            return ExecResult(-1, "partial", "timed out", 7000)
+        return ExecResult(0, "", "", 1)
+
+    readings = iter((1.0, 2.0, 3.0, 4.0))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    result = RunContainer("img", workspace).run_capture(
+        "sleep 30", 7, quarantine,
+        deadline=sandbox_module.HostDeadline(expires_at=10.0),
+    )
+
+    assert result.exit_code == -1
+    assert [(cmd[:2], timeout_s) for cmd, timeout_s in calls] == [
+        (["docker", "run"], 7),
+        (["docker", "stop"], 8),
+        (["docker", "cp"], 7),
+        (["docker", "rm"], 30),
+    ]
+
+
 def test_run_capture_never_mounts_quarantine(tmp_path, monkeypatch):
     workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
     workspace.mkdir()

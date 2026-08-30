@@ -582,3 +582,16 @@ def test_unknown_profile_excuses_only_the_paid_checks():
     that ran the execution-heavy checks on a typo'd profile would spend
     money rather than fail closed."""
     assert aggregate._excused("some-typo") == aggregate.PAID_ONLY_CHECKS
+
+
+def test_infra_detail_carries_the_exception_text_whatever_the_verdict():
+    """`checks_infra` names the check that raised; `infra_detail` says why,
+    so a FAIL beside one infra check (lp-to-jira#16, `t1_coverage`) can be
+    read from verdict.json alone. Empty when nothing raised."""
+    hard = _ev("t1_collect", "collect_shrinkage", "H1", "hard")
+    results = [_result("t1_collect", "completed", evidence=(hard,))]
+    infra = {"t1_coverage": "SkepticInfraError: coverage infra failure: x"}
+    verdict = _aggregate(results, infra)
+    assert verdict.verdict == "FAIL"
+    assert verdict.infra_detail == infra
+    assert _aggregate(results, {}).infra_detail == {}

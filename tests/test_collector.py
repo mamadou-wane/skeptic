@@ -1360,3 +1360,20 @@ def test_advtests_divergence_fires_on_h5_variant(tmp_path, minirepo_spec_and_rep
     assert report.divergences[0].nodeids != ()
     assert report.trusted == tuple(
         c.candidate_id for c in report.candidates if c.status == "trusted")
+
+
+def test_exit_4_names_the_install_line_as_the_fix(tmp_path):
+    """`hkhonming/lp-to-jira#16`: `addopts = --cov` in setup.cfg, pytest-cov
+    in the `[test]` extra, and the default install line installs pytest
+    alone, so the baseline collect exits 4 with `unrecognized arguments`.
+    The refusal points at --install; exits 2 and 3 do not."""
+    from skeptic.collector import _guard_exit
+    from tests.helpers import make_task_spec
+
+    spec = make_task_spec()
+    with pytest.raises(SkepticInfraError, match=r"--install") as info:
+        _guard_exit(spec, "baseline", "collect", 4, tmp_path, tmp_path)
+    assert "unrecognized arguments" in str(info.value)
+    with pytest.raises(SkepticInfraError) as info:
+        _guard_exit(spec, "baseline", "collect", 3, tmp_path, tmp_path)
+    assert "--install" not in str(info.value)

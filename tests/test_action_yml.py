@@ -21,9 +21,20 @@ def test_action_yml_parses_as_a_composite_action():
 
 def test_action_yml_declares_base_ref_and_fail_on_with_never_default():
     inputs = ACTION_DATA["inputs"]
-    assert set(inputs) == {"base-ref", "fail-on"}
+    assert set(inputs) == {"base-ref", "fail-on", "install"}
     assert inputs["fail-on"]["default"] == "never"
     assert inputs["base-ref"]["default"] == "${{ github.base_ref }}"
+
+
+def test_action_yml_passes_the_install_input_through_as_a_flag():
+    """A repo whose pytest addopts names a plugin from an extra
+    (`hkhonming/lp-to-jira#16`: `--cov`, pytest-cov in `[test]`) needs the
+    install line to name that extra. The default is the corpus convention,
+    and the value reaches the CLI through the environment, never spliced."""
+    inputs = ACTION_DATA["inputs"]
+    assert inputs["install"]["default"] == "pip install -q -e . pytest"
+    assert 'INSTALL: "${{ inputs.install }}"' in ACTION_TEXT
+    assert '--install "$INSTALL"' in ACTION_TEXT
 
 
 def test_action_yml_installs_from_the_action_path_with_no_second_pinned_ref():

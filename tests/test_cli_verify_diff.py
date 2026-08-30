@@ -24,6 +24,7 @@ from skeptic.cli import app
 from skeptic.diffmode import (
     DEFAULT_INSTALL,
     DEFAULT_TEST_CMD,
+    assert_python_project,
     assert_supported_backend,
     backend_of,
     infer_environment,
@@ -342,6 +343,25 @@ def test_the_other_baked_backends_pass(tmp_path, backend):
     assert assert_supported_backend(tmp_path) == backend
 
 
+def test_a_tree_pip_would_not_install_is_refused_by_name(tmp_path):
+    """The supported boundary, stated where pip states it: a root with neither
+    `pyproject.toml` nor `setup.py` is not a project pip can install, and the
+    overlay install at session start needs one. `setup.cfg` alone does not
+    count, for pip's own reason; beside `setup.py` it is the shape
+    `hkhonming/lp-to-jira#16` has and is supported."""
+    with pytest.raises(SkepticInfraError, match="pyproject.toml.*setup.py") as info:
+        assert_python_project(tmp_path)
+    assert "requirements.txt" not in str(info.value) or "Next:" in str(info.value)
+    (tmp_path / "setup.cfg").write_text("[metadata]\nname = x\n")
+    with pytest.raises(SkepticInfraError, match="setup.cfg"):
+        assert_python_project(tmp_path)
+    (tmp_path / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+    assert assert_python_project(tmp_path) == "setup.py"
+    (tmp_path / "setup.py").unlink()
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n')
+    assert assert_python_project(tmp_path) == "pyproject.toml"
+
+
 def test_unparseable_pyproject_refused(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[build-system\n")
     with pytest.raises(SkepticInfraError, match="TOML"):
@@ -408,6 +428,33 @@ def test_backend_gate_refuses_before_docker(tmp_path, monkeypatch):
 
     assert result.exit_code == 3, result.output
     assert "pdm.backend" in result.output
+    assert calls == []
+
+
+def test_project_gate_refuses_before_docker_and_names_the_boundary(tmp_path, monkeypatch):
+    """`AlexanderAlcazar/nexus_student_hub#1`'s shape: `requirements.txt`,
+    `src/`, `tests/`, no package metadata. The refusal names what is missing
+    and the boundary, and costs no image build."""
+    calls = []
+
+    def probe():
+        calls.append(1)
+        return DockerDiagnosis("ok", "")
+
+    monkeypatch.setattr(cli, "_docker_diagnosis", probe)
+    repo = make_clone(tmp_path)
+    (repo / "pyproject.toml").unlink()
+    (repo / "requirements.txt").write_text("pytest\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "no metadata")
+    patch = author_diff(repo, {"minirepo.py": branchy_clamp(repo)}, tmp_path / "p.diff")
+
+    result = runner.invoke(app, ["verify", "--diff", str(patch), "--repo", str(repo),
+                                 "--workdir", str(tmp_path / "workdir")])
+
+    assert result.exit_code == 3, result.output
+    assert "pyproject.toml" in result.output and "setup.py" in result.output
+    assert "pytest-based Python repositories" in result.output
     assert calls == []
 
 
@@ -517,3 +564,29 @@ def test_verify_diff_fails_a_patch_that_deletes_a_test_file(tmp_path):
     assert result.exit_code == 2, result.output
     assert "VERDICT FAIL" in result.output
     assert "t1_collect" in result.output or "collect_shrinkage" in result.output
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_verify_diff_audits_a_setup_cfg_package_end_to_end(tmp_path):
+    """`hkhonming/lp-to-jira#16`'s packaging shape: a bare `setup.py` and the
+    metadata in `setup.cfg`, no `pyproject.toml`. Before `--use-pep517` on
+    the overlay install, pip took its legacy editable path here, setuptools'
+    `develop` shim re-invoked pip without the offline flags, and the nested
+    install died under `--network none` before any check ran."""
+    repo = make_clone(tmp_path)
+    (repo / "pyproject.toml").unlink()
+    (repo / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+    (repo / "setup.cfg").write_text(
+        "[metadata]\nname = minirepo\nversion = 0.1\n[options]\npy_modules = minirepo\n"
+        "[tool:pytest]\ntestpaths = tests\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "setup.cfg packaging")
+    patch = author_diff(repo, {"minirepo.py": branchy_clamp(repo)}, tmp_path / "p.diff")
+    workdir = (tmp_path / "workdir").resolve()
+
+    result = runner.invoke(app, ["verify", "--diff", str(patch), "--repo", str(repo),
+                                 "--workdir", str(workdir)])
+
+    assert result.exit_code == 0, result.output
+    assert "VERDICT PASS" in result.output

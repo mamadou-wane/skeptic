@@ -158,6 +158,40 @@ def backend_of(tree: Path) -> str:
     return table.get("build-backend", _DEFAULT_BACKEND)
 
 
+def assert_python_project(tree: Path) -> str:
+    """The metadata file pip installs the tree by, or a refusal naming the
+    boundary.
+
+    pip's own rule: a directory with neither `pyproject.toml` nor `setup.py`
+    "does not appear to be a Python project", and the audit's session-start
+    overlay install (`sandbox.overlay_install_cmd`) needs pip to install the
+    tree. `setup.cfg` alone is not enough for pip and so not enough here. A
+    repo outside this boundary (`AlexanderAlcazar/nexus_student_hub#1`:
+    `requirements.txt`, `src/`, `tests/`, nothing pip can install) is
+    refused before an image is built, with the boundary stated, rather than
+    failing inside the resolve stage with pip's message buried in a build
+    log. Dependency discovery for such repos is out of scope on purpose
+    (DECISIONS row 235).
+    """
+    for name in ("pyproject.toml", "setup.py"):
+        if (tree / name).is_file():
+            return name
+    beside = " `setup.cfg` alone is not one: pip needs one of the two beside it." \
+        if (tree / "setup.cfg").is_file() else ""
+    raise SkepticInfraError(
+        f"Unsupported project: the base commit has no pyproject.toml and no "
+        f"setup.py at the repo root, so pip does not consider it a Python "
+        f"project and Skeptic cannot install it into the audit image.{beside} "
+        f"Skeptic audits pytest-based Python repositories with package "
+        f"metadata pip can install at the root (pyproject.toml or setup.py, "
+        f"on a setuptools, flit-core, poetry-core or hatchling backend). "
+        f"Next: add a pyproject.toml that installs the code under test (a "
+        f"[project] table with a name is enough for setuptools), commit it "
+        f"at the base, and re-run; a requirements.txt alone does not make the "
+        f"tree installable."
+    )
+
+
 def assert_supported_backend(tree: Path) -> str:
     """The tree's backend, refusing one the audit image cannot build with."""
     backend = backend_of(tree)

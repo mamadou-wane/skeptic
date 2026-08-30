@@ -1127,8 +1127,9 @@ def verify(
     runner: str = typer.Option("docker", "--runner", help="docker; venv verify is not wired yet."),
     yes: bool = typer.Option(False, "--yes", help="Skip the paid-profile cost confirmation."),
 ) -> None:
-    """Run the check layer against a task's variant, a candidate diff, or an
-    arbitrary local repo and patch (--diff)."""
+    """Run the check layer against a task's variant, a candidate diff, or a
+    local repo and patch (--diff): a pytest-based Python repository with
+    package metadata pip can install at its root."""
     import json
     import os
     import re
@@ -1144,6 +1145,7 @@ def verify(
     from skeptic.checks.t1_outcomes import compute_fix_verified
     from skeptic.collector import collect_pair, observe_mutation, observe_probe
     from skeptic.diffmode import (
+        assert_python_project,
         assert_supported_backend,
         assert_working_clone,
         infer_environment,
@@ -1171,8 +1173,9 @@ def verify(
                 f"--diff and --task are mutually exclusive (task={task!r}, "
                 f"diff={diff}). --task audits a corpus task, whose yaml "
                 f"carries the seed, the environment and the allowed paths; "
-                f"--diff audits an arbitrary local repo with no spec at all "
-                f"and synthesizes those from the repo itself. The two read "
+                f"--diff audits a local repo with no spec at all, a "
+                f"pytest-based Python package, and synthesizes those from "
+                f"the repo itself. The two read "
                 f"different worlds and Skeptic will not pick one silently. "
                 f"Next: drop whichever flag you did not mean."
             )
@@ -1284,6 +1287,7 @@ def verify(
             if inspect_tree.exists():
                 shutil.rmtree(inspect_tree)
             materialize(repo_path, base_sha, inspect_tree)
+            assert_python_project(inspect_tree)
             backend = assert_supported_backend(inspect_tree)
             environment, banner = infer_environment(
                 inspect_tree, install, test_cmd, src_dir, test_dir)

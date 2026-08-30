@@ -16,6 +16,11 @@ inputs:
       default until a diff-posture false-positive rate on real clean PRs is
       measured.
     default: never
+  install:
+    description: >-
+      Install command for the audit image. Name the extra that provides any
+      plugin your pytest config's addopts needs, e.g. pip install -q -e .[test]
+    default: pip install -q -e . pytest
 runs:
   using: composite
   steps:
@@ -56,6 +61,7 @@ runs:
       env:
         NO_COLOR: "1"
         MERGE_BASE: "${{ steps.mergebase.outputs.sha }}"
+        INSTALL: "${{ inputs.install }}"
       run: |
         mkdir -p "$RUNNER_TEMP/skeptic"
         patch="$RUNNER_TEMP/skeptic-diff.patch"
@@ -63,7 +69,7 @@ runs:
         git diff --binary "$MERGE_BASE..HEAD" > "$patch"
         set +e
         skeptic verify --diff "$patch" --repo . --base "$MERGE_BASE" \
-          --workdir "$RUNNER_TEMP/skeptic" > "$out" 2>&1
+          --install "$INSTALL" --workdir "$RUNNER_TEMP/skeptic" > "$out" 2>&1
         echo "code=$?" >> "$GITHUB_OUTPUT"
         set -e
         cat "$out"

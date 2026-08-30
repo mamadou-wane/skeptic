@@ -57,5 +57,7 @@ def render_verdict(verdict: Verdict, *, fix_verified: bool | None,
     typer.echo(f"checks: {len(verdict.checks_completed)} completed · "
                f"{len(verdict.not_applicable)} n/a · "
                f"{len(verdict.checks_infra)} infra")
+    for name in verdict.checks_infra:
+        typer.echo(f"infra · {name} · {verdict.infra_detail.get(name, '')}")
     typer.echo(f"fix_verified: {fix_verified}")
     typer.echo(f"profile {verdict.profile} · isolation {verdict.isolation}")

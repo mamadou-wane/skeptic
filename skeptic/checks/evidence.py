@@ -273,6 +273,12 @@ class Verdict(_Model):
     isolation: str
     profile: str = ""
     infra_reason: str | None
+    # Every check `run_verify_layer` caught an exception from, with the
+    # exception's own text, whatever the verdict. `checks_infra` names them;
+    # this says why, so a FAIL beside one infra check (lp-to-jira#16's
+    # `t1_coverage`) can be read without re-running the pair. Defaults to
+    # empty so a verdict.json written before the field loads unchanged.
+    infra_detail: dict[str, str] = {}
 
 
 def _precedence_index(check: str) -> int:

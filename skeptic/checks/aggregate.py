@@ -357,6 +357,7 @@ def aggregate(
         isolation=isolation,
         profile=profile,
         infra_reason=infra_reason,
+        infra_detail=dict(outcome.infra),
     )
 
 

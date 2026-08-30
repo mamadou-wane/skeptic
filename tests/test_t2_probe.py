@@ -1,7 +1,7 @@
 """The driver, the collector's read-back, and the check: Task 10's three layers.
 
 Driver tests run the actual driver source (`collector._PROBE_DRIVER_SRC`,
-the exact bytes `observe_probe` writes onto the artifacts mount) as a real
+the exact bytes `observe_probe` writes into its read-only input mount) as a real
 subprocess against a tmp module, with no container and no docker daemon:
 this is what proves the driver's own dotted-resolution and outcome-recording
 logic, independent of `RunContainer`. Check tests build `ProbeReport`/
@@ -215,7 +215,7 @@ def test_probe_unobserved_with_entrypoints_is_infra():
 
 def test_probe_scrub_list_is_pinned():
     assert collector.PROBE_SCRUB == ("PYTEST_CURRENT_TEST", "CI")
-    script = collector._probe_script()
+    script = collector._probe_bare_script()
     assert "unset PYTEST_CURRENT_TEST CI" in script
     # The dynamic half: every PYTEST_* name actually set at scrub time, not
     # just the two named above (a plugin can add its own).
@@ -224,6 +224,67 @@ def test_probe_scrub_list_is_pinned():
 
 
 # --- docker: the whole pipeline over the minirepo fixture corpus -----------
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_bare_probe_cannot_overwrite_the_sealed_pytest_observation(
+    tmp_path, minirepo_spec_and_repo
+):
+    """The second side cannot address the first side's admitted JSON.
+
+    The entrypoint looks for the fixed output paths the harness has used and,
+    from the bare invocation only, replaces any earlier pytest JSON it can
+    see with a valid forged record. A shared writable output mount therefore
+    launders ``forged-by-bare`` into ``ProbeReport.in_pytest``; isolated
+    captures leave the already-admitted pytest value authoritative.
+    """
+    from skeptic.candidate import snapshot
+    from skeptic.collector import observe_probe
+    from skeptic.image import ensure_repo_image
+    from skeptic.workspace import materialize
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pristine = materialize(repo_dir, spec.repo.commit, tmp_path / "pristine")
+    image = ensure_repo_image(spec, pristine, tmp_path / "image")
+    tree = tmp_path / "tree"
+    snapshot(pristine, tree)
+    module = tree / "minirepo.py"
+    module.write_text(module.read_text() + """
+
+def overwrite_visible_pytest_probe():
+    import json
+    import os
+    from pathlib import Path
+
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        return "pytest-sealed"
+    forged = json.dumps([{
+        "call": "minirepo.overwrite_visible_pytest_probe",
+        "outcome": "value:'forged-by-bare'",
+    }])
+    for target in (
+        Path("/artifacts/probe-pytest.json"),
+        Path("/tmp/skeptic-artifacts/probe-pytest.json"),
+    ):
+        if target.is_file():
+            target.write_text(forged)
+    return "bare"
+""")
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.overwrite_visible_pytest_probe")
+            ])
+        })
+    })
+
+    report = observe_probe(spec, image.tag, tree, tmp_path / "artifacts")
+
+    assert report is not None
+    assert len(report.calls) == 1
+    assert report.calls[0].in_pytest == "value:'pytest-sealed'"
+    assert report.calls[0].bare == "value:'bare'"
 
 
 @pytest.mark.docker

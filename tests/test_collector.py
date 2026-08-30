@@ -551,6 +551,73 @@ def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(
     assert [record.status for record in report.records] == ["killed", "survived"]
 
 
+def test_probe_admits_each_private_side_before_starting_the_next(
+    tmp_path, monkeypatch
+):
+    """Two fresh captures share inputs, never outputs or writable mounts."""
+    from skeptic.spec import ConsumerProbeSpec, ProbeEntrypoint
+
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.parse_range", args=["1-5"])
+            ])
+        })
+    })
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = tmp_path / "artifacts"
+    calls = []
+
+    def reject_shared_run(self, script, timeout_s, env=None):
+        raise AssertionError("consumer probe used one shared writable run")
+
+    def fake_capture(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        calls.append({
+            "script": script,
+            "quarantine": quarantine,
+            "input_mounts": self.input_mounts,
+            "input_names": tuple(
+                path.name for path in self.input_mounts[0][0].iterdir()),
+            "extra_mounts": self.extra_mounts,
+            "env": env,
+            "deadline": deadline,
+        })
+        quarantine.mkdir(mode=0o700)
+        (quarantine / "install.ok").write_text("ok\n")
+        if len(calls) == 1:
+            name, outcome = "probe-pytest.json", "value:(1, 5)"
+        else:
+            assert json.loads((artifacts / "probe-pytest.json").read_text()) == [{
+                "call": "minirepo.parse_range", "outcome": "value:(1, 5)"}]
+            name, outcome = "probe-bare.json", "value:(1, 4)"
+        (quarantine / name).write_text(json.dumps([{
+            "call": "minirepo.parse_range", "outcome": outcome}]))
+        return ExecResult(0, f"{name} out", f"{name} err", 10)
+
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run", reject_shared_run)
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
+
+    report = collector.observe_probe(spec, "img", tree, artifacts)
+
+    assert len(calls) == 2
+    assert len({call["quarantine"] for call in calls}) == 2
+    assert all(call["extra_mounts"] == () for call in calls)
+    assert all(call["env"] == {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
+               for call in calls)
+    assert calls[0]["deadline"] is not None
+    assert calls[1]["deadline"] is calls[0]["deadline"]
+    assert calls[0]["input_mounts"] == calls[1]["input_mounts"]
+    assert len(calls[0]["input_mounts"]) == 1
+    input_root, target = calls[0]["input_mounts"][0]
+    assert target == collector._OBSERVATION_INPUTS
+    assert set(calls[0]["input_names"]) == {
+        "probe_driver.py", "probe_test.py", "probe_entrypoints.json"}
+    assert not input_root.exists()
+    assert report.calls[0].in_pytest == "value:(1, 5)"
+    assert report.calls[0].bare == "value:(1, 4)"
+
+
 def test_mutation_refuses_fractional_deadline_before_starting_capture(
     tmp_path, monkeypatch
 ):

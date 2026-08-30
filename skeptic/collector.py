@@ -118,10 +118,10 @@ _MUT_CAP_CEILING_S = 60
 # timeout_s`, which bounds the T1 unit's own suite run rather than this batch.
 _MUT_SLACK_S = 120
 
-# The consumer probe's own artifact layout (Task 10): the driver, the
-# one-test wrapper, and the entrypoints they both read, all written once
-# before the container runs; the two steps' own out/err/exit/json files are
-# named from `_PROBE_PYTEST`/`_PROBE_BARE` below. See `observe_probe`.
+# The consumer probe's own layout (Task 10): the driver, one-test wrapper,
+# and entrypoints they both read are host-written inputs mounted read-only in
+# two captures; each capture privately writes one side's output, named from
+# `_PROBE_PYTEST`/`_PROBE_BARE` below, before host admission. See `observe_probe`.
 _PROBE_DRIVER = "probe_driver.py"
 _PROBE_TEST = "probe_test.py"
 _PROBE_ENTRYPOINTS = "probe_entrypoints.json"
@@ -131,7 +131,7 @@ _PROBE_BARE = "probe-bare"
 # Every environment name the bare step scrubs before running the driver
 # (DECISIONS row 116). `PYTEST_CURRENT_TEST` is h8-env-gated's own mechanism
 # and `CI` is the other name `t1_patterns._WATCHED_ENV_NAMES` already treats
-# as a test-detection signal; `_probe_script` additionally `unset`s every
+# as a test-detection signal; `_probe_bare_script` additionally `unset`s every
 # `PYTEST_*` name actually present at scrub time (a plugin's own variable,
 # not just these two), which this tuple does not enumerate because it cannot:
 # the set is whatever pytest and its plugins happened to set for this run.
@@ -1368,23 +1368,24 @@ def observe_mutation(
 
 
 # The consumer probe (Task 10, H8's primary detector). `observe_probe` writes
-# a driver and a one-test wrapper onto the artifacts mount, runs them in one
-# container (pytest first, then a scrubbed bare process), and reads the two
-# JSON outputs back into a `ProbeReport`. Literal filenames below
+# a driver and a one-test wrapper to one host input directory, mounts that
+# directory read-only into two fresh containers (pytest first, then a scrubbed
+# bare process), and seals each private JSON before the next side starts.
+# Literal filenames below
 # (`probe_entrypoints.json`, `probe-pytest.json`, `probe-bare.json`) are
-# harness-fixed constants the driver and the test wrapper both hardcode; they
+# harness-fixed constants used by the driver, wrapper, and launch scripts; they
 # have to agree byte-for-byte with `_PROBE_ENTRYPOINTS`/`_PROBE_PYTEST`/
-# `_PROBE_BARE` above, which is what the docker rows in `tests/test_t2_probe.py`
-# prove end to end.
+# `_PROBE_BARE` above, which the Docker rows in `tests/test_t2_probe.py` prove
+# end to end.
 #
 # Neither script ever imports `skeptic`: both run inside the corpus repo's own
 # container, whose image carries only that repo's dependency closure.
 _PROBE_DRIVER_SRC = """\
 \"\"\"Consumer probe driver: calls every spec entrypoint, records the outcome.
 
-Written onto the artifacts mount by skeptic.collector.observe_probe and run
-unmodified, twice: once under pytest (see probe_test.py, next to this file)
-and once as a bare process with the test environment scrubbed
+Written into a read-only input mount by skeptic.collector.observe_probe and
+imported under pytest (see probe_test.py, next to this file), then invoked as
+a bare process with a private output argument and the test environment scrubbed
 (skeptic.collector.PROBE_SCRUB). Divergence between the two runs is H8: the
 same entrypoint behaving differently depending on whether pytest is watching.
 
@@ -1397,6 +1398,7 @@ has nothing to do with H8, which is why every corpus entrypoint today
 import json
 import os
 import pkgutil
+import sys
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _ENTRYPOINTS_PATH = os.path.join(_DIR, "probe_entrypoints.json")
@@ -1443,7 +1445,11 @@ def run_probe(output_path):
 
 
 if __name__ == "__main__":
-    run_probe(os.path.join(_DIR, "probe-bare.json"))
+    output_path = (
+        sys.argv[1] if len(sys.argv) == 2
+        else os.path.join(_DIR, "probe-bare.json")
+    )
+    run_probe(output_path)
 """
 
 _PROBE_TEST_SRC = """\
@@ -1463,12 +1469,12 @@ import probe_driver  # noqa: E402
 
 def test_probe():
     probe_driver.run_probe(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "probe-pytest.json"))
+        "/tmp/skeptic-artifacts/probe-pytest.json")
 """
 
 
 def _write_probe_inputs(artifacts: Path, entrypoints: Sequence[ProbeEntrypoint]) -> None:
-    """Host-side layout for the probe: the driver, the test wrapper, and the
+    """Host input layout for the probe: the driver, the test wrapper, and the
     entrypoints, the last as JSON and never as text interpolated into either
     script (the carried Task 2 review note: args/kwargs get no element-level
     validation, so they travel as data on the mount, never as code)."""
@@ -1478,24 +1484,23 @@ def _write_probe_inputs(artifacts: Path, entrypoints: Sequence[ProbeEntrypoint])
     (artifacts / _PROBE_TEST).write_text(_PROBE_TEST_SRC)
 
 
-def _probe_script() -> str:
-    """The two-step contract: one exit/out/err triple
-    per step. Step 1 runs the one-test wrapper under pytest, writing
-    probe-pytest.json. Step 2 scrubs the test environment (`PROBE_SCRUB` plus
-    every `PYTEST_*` name actually set, since a plugin can add its own) and
-    runs the driver bare, writing probe-bare.json. The only text here that
-    did not originate in this function or `PROBE_SCRUB` is the two harness
-    filenames; the entrypoints themselves never reach this string.
+def _probe_pytest_script() -> str:
+    """Run the read-only wrapper; it writes only pytest's private JSON."""
+    return f"python -m pytest -q {_OBSERVATION_INPUTS}/{_PROBE_TEST}"
+
+
+def _probe_bare_script() -> str:
+    """Scrub the test environment and write only the bare private JSON.
+
+    `PROBE_SCRUB` plus every `PYTEST_*` name actually set is the exact scrub
+    the original paired script used. The entrypoints remain JSON data and
+    never reach this harness-composed shell string.
     """
     return "\n".join([
-        (f"python -m pytest -q {ARTIFACTS}/{_PROBE_TEST} "
-         f"> {ARTIFACTS}/{_PROBE_PYTEST}.out 2> {ARTIFACTS}/{_PROBE_PYTEST}.err"),
-        f"echo $? > {ARTIFACTS}/{_PROBE_PYTEST}.exit",
         f"unset {' '.join(PROBE_SCRUB)}",
         "for v in $(env | grep '^PYTEST_' | cut -d= -f1); do unset \"$v\"; done",
-        (f"python {ARTIFACTS}/{_PROBE_DRIVER} "
-         f"> {ARTIFACTS}/{_PROBE_BARE}.out 2> {ARTIFACTS}/{_PROBE_BARE}.err"),
-        f"echo $? > {ARTIFACTS}/{_PROBE_BARE}.exit",
+        (f"python {_OBSERVATION_INPUTS}/{_PROBE_DRIVER} "
+         f"{_PRIVATE_ARTIFACTS}/{_PROBE_BARE}.json"),
     ])
 
 
@@ -1537,8 +1542,8 @@ def _read_probe_step(artifacts: Path, step: str, expected: int) -> list[dict]:
             f"`run_probe` writes exactly one record per spec entrypoint, in "
             f"order, so a different shape means the driver and the spec "
             f"disagree about what ran. This is an infra failure, never "
-            f"evidence. Next: read {artifacts}/{_PROBE_ENTRYPOINTS} against "
-            f"{path} by hand."
+            f"evidence. Next: compare the task spec's consumer-probe "
+            f"entrypoints against {path} by hand."
         )
     for i, record in enumerate(records):
         if not isinstance(record, dict) or not isinstance(record.get("outcome"), str):
@@ -1603,11 +1608,13 @@ def observe_probe(
     `SkepticInfraError`, matching every other collector-side observation in
     this module: an unobserved probe is a harness question, never evidence.
 
-    One fresh container for both steps (row 72's sibling: one tree state,
-    the candidate's), the same `missing_ro="drop"` policy `observe_mutation`
-    uses, since this too only ever runs on the candidate side; the baseline
-    never runs the probe at all (the comparison is pytest-env versus bare on
-    one tree, distinct from baseline versus candidate).
+    One fresh private capture per side, both over the candidate's same tree
+    state. Host-authored inputs are shared read-only; outputs are never shared:
+    pytest's JSON is admitted to the host before the bare container starts and
+    that second container cannot address the sealed directory. Both sides keep
+    the same `missing_ro="drop"` policy `observe_mutation` uses, since the
+    baseline never runs the probe at all (the comparison is pytest-env versus
+    bare on one tree, distinct from baseline versus candidate).
     """
     entrypoints = spec.verification.consumer_probe.entrypoints
     if not entrypoints:
@@ -1615,25 +1622,48 @@ def observe_probe(
     if artifacts.exists():
         shutil.rmtree(artifacts)
     artifacts.mkdir(parents=True)
-    _write_probe_inputs(artifacts, entrypoints)
+    input_root = artifacts.parent / f".{artifacts.name}-probe-inputs"
+    quarantine_root = artifacts.parent / f".{artifacts.name}-probe-quarantine"
+    for private_root in (input_root, quarantine_root):
+        if private_root.exists():
+            shutil.rmtree(private_root)
+        private_root.mkdir(mode=0o700)
+    _write_probe_inputs(input_root, entrypoints)
     ro = (tuple(spec.environment.test_dirs)
           + tuple(spec.environment.config_files)
           + tuple(spec.environment.golden_dirs))
-    container = RunContainer(
-        image_tag, tree, ro_subpaths=ro,
-        extra_mounts=((artifacts, ARTIFACTS, "rw"),), missing_ro="drop")
-    result = container.run(_probe_script(), timeout_s=spec.environment.timeout_s)
-    if result.exit_code == -1:
-        raise SkepticInfraError(
-            f"The consumer-probe run timed out after "
-            f"{spec.environment.timeout_s}s. Both steps together are one "
-            f"pytest collection of a single test plus one bare python "
-            f"process, well under the budget an admitted task's own suite "
-            f"already runs inside, so reaching the timeout means the "
-            f"container itself stopped responding rather than any "
-            f"entrypoint hanging. This is an infra failure, never evidence. "
-            f"Next: `docker ps -a`, then re-run the pair."
+    deadline = HostDeadline.after(spec.environment.timeout_s)
+    input_mounts = ((input_root, _OBSERVATION_INPUTS),)
+    private_env = {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
+
+    for step, script in (
+        (_PROBE_PYTEST, _probe_pytest_script()),
+        (_PROBE_BARE, _probe_bare_script()),
+    ):
+        result = _run_private_phase(
+            container=RunContainer(
+                image_tag, tree, ro_subpaths=ro, input_mounts=input_mounts,
+                missing_ro="drop"),
+            script=script,
+            quarantine=quarantine_root / step,
+            sealed=artifacts,
+            output_specs=(
+                ArtifactSpec(f"{step}.json", STRUCTURED_MAX, required=False),),
+            timeout_s=spec.environment.timeout_s,
+            output_prefix=f"{step}.",
+            env=private_env,
+            deadline=deadline,
         )
+        if result.exit_code == -1:
+            raise SkepticInfraError(
+                f"The consumer-probe {step} side timed out under the shared "
+                f"{spec.environment.timeout_s}s host deadline. Its private "
+                f"output was sealed at {artifacts}; a partial probe is never "
+                f"evidence. Next: `docker ps -a`, then re-run the pair."
+            )
+
+    shutil.rmtree(input_root)
+    quarantine_root.rmdir()
     return _read_probe(artifacts, entrypoints)
 
 

@@ -1,6 +1,6 @@
 # 0024: three draws of the judge, and what they turned out to measure
 
-Date: 2026-08-30
+Date: 2026-08-29
 PR: #24 (10a8957, dbb0f68, merged d8937e0).
 Agent: Claude Code (Fable 5).
 Produced: `scripts/judge-alone.py`, the three run records under

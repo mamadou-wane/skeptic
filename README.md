@@ -142,7 +142,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }  # checkout's shallow default leaves no merge base to find
-      - uses: mamadou-wane/skeptic@v0.2.0  # pin to a release tag or commit sha
+      - uses: mamadou-wane/skeptic@v1.0.0  # pin to a release tag or commit sha
         with:
           fail-on: never  # optional; this is the default
           # install: pip install -q -e .[test]  # if your pytest addopts needs a plugin from an extra

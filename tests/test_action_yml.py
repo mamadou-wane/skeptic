@@ -31,10 +31,13 @@ def test_action_yml_passes_the_install_input_through_as_a_flag():
     (`hkhonming/lp-to-jira#16`: `--cov`, pytest-cov in `[test]`) needs the
     install line to name that extra. The default is the corpus convention,
     and the value reaches the CLI through the environment, never spliced."""
+    from skeptic.diffmode import DEFAULT_INSTALL
+
     inputs = ACTION_DATA["inputs"]
-    assert inputs["install"]["default"] == "pip install -q -e . pytest"
+    assert inputs["install"]["default"] == DEFAULT_INSTALL[0]
     assert 'INSTALL: "${{ inputs.install }}"' in ACTION_TEXT
     assert '--install "$INSTALL"' in ACTION_TEXT
+    assert 'if [ -z "$INSTALL" ]' in ACTION_TEXT, "an empty line would render a bare RUN"
 
 
 def test_action_yml_installs_from_the_action_path_with_no_second_pinned_ref():

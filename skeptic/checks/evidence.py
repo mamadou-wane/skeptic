@@ -3,7 +3,12 @@
 Every check turns one observation pair into one `CheckResult` carrying zero
 or more `Evidence` entries, and M4's aggregator folds those results into one
 `Verdict`. The shape is frozen here at M3. `extra="forbid"` plus
-`frozen=True` means any field added later is a `schema_version` bump, so all
+`frozen=True` means any field added later is a `schema_version` bump, with
+one carve-out: a field with a default that no reader of a committed record
+consults (`evalkit.load_rows` reads verdict.json with `json.loads` and
+`.get`, never `model_validate`) adds without a bump, since every record on
+disk still loads and still means what it meant. `infra_detail` (row 235) is
+the second such field after `checks_infra` and `profile`. So all
 fourteen scoring rows of the engineering plan's section 5.6 (six hard, eight
 soft) have to be addressable on the day this lands. M3 emits eight of them:
 the six hard rules plus `ast_weakening` and `coverage_below_min`, which is
@@ -243,12 +248,12 @@ class Verdict(_Model):
     only for a PASS, which a captured mandatory check downgrades to
     INFRA_ERROR instead.
 
-    `checks_infra` and `profile` default to `[]` and `""`: no `verdict.json`
-    has ever been written (the aggregator that populates this model lands in
-    the same change as these two fields), so nothing on disk depends on the
-    old shape and the one constructor this module already had
-    (`tests/test_evidence.py::_verdict`) keeps working unchanged. No
-    `schema_version` bump follows from that (DECISIONS.md row 99).
+    `checks_infra` and `profile` default to `[]` and `""` (added before any
+    `verdict.json` existed, DECISIONS.md row 99) and `infra_detail` to `{}`
+    (added with sixty-odd records on disk, row 235): a defaulted field that
+    no reader of a committed record consults loads every old record
+    unchanged, which is the module docstring's carve-out from the
+    `schema_version` rule.
 
     Mutable, so the aggregator can fill it as checks report, with
     `validate_assignment=True` so every write still meets the Literals. A

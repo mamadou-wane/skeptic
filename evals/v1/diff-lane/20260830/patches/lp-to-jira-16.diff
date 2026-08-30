@@ -1,0 +1,47 @@
+diff --git a/LpToJira/lp_to_jira.py b/LpToJira/lp_to_jira.py
+index 4a72370..437a8c5 100755
+--- a/LpToJira/lp_to_jira.py
++++ b/LpToJira/lp_to_jira.py
+@@ -305,6 +305,10 @@ def sync_milestone_to_jira(jira, bug, issue, project_id, dry_run=False, debug=Fa
+                 if current_versions:
+                     print(f"DEBUG: first version type = {type(current_versions[0])}")
+             
++            if milestone_name in current_version_names:
++                # Milestone already set; nothing to update
++                return
++            
+             new_versions = [{'name': milestone_name}]
+             issue.update(fields={'fixVersions': new_versions})
+             print(f"Updated {issue.key} with milestone '{milestone_name}'")
+diff --git a/tests/test_milestone_sync.py b/tests/test_milestone_sync.py
+index 107b61c..39032ff 100644
+--- a/tests/test_milestone_sync.py
++++ b/tests/test_milestone_sync.py
+@@ -217,8 +217,8 @@ def test_sync_milestone_to_jira_dry_run():
+     issue.update.assert_not_called()
+ 
+ 
+-def test_sync_milestone_to_jira_add_to_existing():
+-    """Test syncing milestone when issue has other versions"""
++def test_sync_milestone_to_jira_overwrite_existing():
++    """Test syncing milestone when issue already has a different version overwrites it"""
+     jira = Mock()
+     
+     # Setup bug with milestone
+@@ -244,14 +244,11 @@ def test_sync_milestone_to_jira_add_to_existing():
+     
+     sync_milestone_to_jira(jira, bug, issue, "TEST")
+     
+-    # Should add the new milestone while keeping existing ones
++    # Should overwrite with the new milestone only
+     issue.update.assert_called_once()
+     call_args = issue.update.call_args
+     fix_versions = call_args.kwargs['fields']['fixVersions']
+-    assert len(fix_versions) == 2
+-    # Both versions should be dictionaries for proper JSON serialization
+-    assert fix_versions[0] == {'name': 'ubuntu-20.04'}
+-    assert fix_versions[1] == {'name': 'ubuntu-22.04'}
++    assert fix_versions == [{'name': 'ubuntu-22.04'}]
+ 
+ 
+ def test_lp_to_jira_bug_milestone_disabled_by_default():

@@ -458,9 +458,10 @@ def _guard_exit(spec: TaskSpec, side: Side, step: str, exit_code: int,
     # install line, so the message says so.
     hint = ("" if exit_code != 4 else
             " If the error is `unrecognized arguments`, the repo's pytest config "
-            "names a plugin the install line did not install: pass --install "
-            "with the extra that provides it (`pip install -q -e .[test]`, for "
-            "example), or add it to environment.install in the task yaml.")
+            "names a plugin the install line did not install: add the extra that "
+            "provides it to environment.install in the task yaml, or for a diff "
+            "audit pass --install with it (`pip install -q -e .[test]`, for "
+            "example).")
     raise SkepticInfraError(
         f"The {side} {step} step exited {exit_code}. {why} This is an infra "
         f"failure, never evidence.{hint} Next: read {artifacts}/{step}.err and "

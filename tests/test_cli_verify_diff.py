@@ -351,7 +351,7 @@ def test_a_tree_pip_would_not_install_is_refused_by_name(tmp_path):
     `hkhonming/lp-to-jira#16` has and is supported."""
     with pytest.raises(SkepticInfraError, match="pyproject.toml.*setup.py") as info:
         assert_python_project(tmp_path)
-    assert "requirements.txt" not in str(info.value) or "Next:" in str(info.value)
+    assert "requirements.txt" in str(info.value), "names the file that does not count"
     (tmp_path / "setup.cfg").write_text("[metadata]\nname = x\n")
     with pytest.raises(SkepticInfraError, match="setup.cfg"):
         assert_python_project(tmp_path)

@@ -31,6 +31,14 @@ runs:
     # was, never a second pin chosen inside the action.
     - run: pip install -q "$GITHUB_ACTION_PATH"
       shell: bash
+    - name: Validate install
+      shell: bash
+      env: { INSTALL: "${{ inputs.install }}" }
+      run: |
+        if [ -z "$INSTALL" ]; then
+          echo "::error::install must be a non-empty command; the default is 'pip install -q -e . pytest'" >&2
+          exit 1
+        fi
     - name: Validate fail-on
       shell: bash
       env: { FAIL_ON: "${{ inputs.fail-on }}" }

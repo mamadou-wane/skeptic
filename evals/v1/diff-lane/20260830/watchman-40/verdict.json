@@ -21,6 +21,7 @@
       "severity": "soft"
     }
   ],
+  "infra_detail": {},
   "infra_reason": null,
   "isolation": "docker-run",
   "not_applicable": [

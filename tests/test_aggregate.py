@@ -595,3 +595,17 @@ def test_infra_detail_carries_the_exception_text_whatever_the_verdict():
     assert verdict.verdict == "FAIL"
     assert verdict.infra_detail == infra
     assert _aggregate(results, {}).infra_detail == {}
+
+
+def test_relative_to_run_strips_the_runs_own_root_only():
+    """The text a check raises names absolute artifact paths for stderr;
+    verdict.json is committed and shown in PR summaries, so the run's root
+    goes (row 220's defect class) and paths outside it stay as they are."""
+    from pathlib import Path as _P
+
+    from skeptic.checks.aggregate import relative_to_run
+
+    run = _P("/private/tmp/user-x/workdir/diff/lp-abc")
+    text = f"check {run}/collect/artifacts/candidate/coveragerc and /usr/bin/python"
+    assert relative_to_run(text, run) == (
+        "check collect/artifacts/candidate/coveragerc and /usr/bin/python")

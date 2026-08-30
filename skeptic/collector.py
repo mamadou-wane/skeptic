@@ -1,4 +1,4 @@
-"""VERIFY's executing half: two fresh trees, one throwaway container each.
+"""VERIFY's executing half: two fresh trees, one fresh container per phase.
 
 `collect_pair` is the only place VERIFY runs anything. It hands back one
 `ObservationPair`, and every check downstream is a pure function over it.
@@ -39,11 +39,25 @@ import re
 import shlex
 import shutil
 import sqlite3
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Literal
 
+from skeptic.artifacts import (
+    CONTROL_MAX,
+    COVERAGE_DATA_MAX,
+    COVERAGE_JSON_MAX,
+    STRUCTURED_MAX,
+    TEXT_MAX,
+    ArtifactSpec,
+    admit_artifacts,
+    publish_artifact_bytes,
+    read_artifact_bytes,
+    read_artifact_text,
+    validate_artifact_path,
+)
 from skeptic.candidate import CandidateReport, snapshot
 from skeptic.checks.observations import (
     AdvCandidate,
@@ -64,17 +78,19 @@ from skeptic.checks.observations import (
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ensure_repo_image
 from skeptic.mutation import FULL_SUITE, Mutant
-from skeptic.sandbox import RunContainer
-from skeptic.seedcheck import parse_junit
+from skeptic.sandbox import ExecResult, RunContainer
+from skeptic.seedcheck import parse_junit, parse_junit_bytes
 from skeptic.spec import ProbeEntrypoint, TaskSpec
 from skeptic.testgen import screen_imports
 from skeptic.trace import config_hash
 from skeptic.workspace import apply_candidate, apply_patch, materialize
 
-# The artifacts directory mounts here, outside /workspace. Everything a unit
-# produces is written through this path, so nothing the harness measures with
-# lands inside the tree it is measuring.
+# Legacy multi-output collectors still mount their artifact root here. T1 uses
+# container-private output plus host sealing instead; its two fixed paths below
+# separate writable private output from individually mounted read-only inputs.
 ARTIFACTS = "/artifacts"
+_PRIVATE_ARTIFACTS = "/tmp/skeptic-artifacts"
+_OBSERVATION_INPUTS = "/opt/skeptic-observation-inputs"
 _INSTALL_OK = "install.ok"
 _JUNIT = "junit.xml"
 _DROPPED = "dropped-ro-subpaths.txt"
@@ -143,7 +159,7 @@ PROBE_SCRUB: tuple[str, ...] = ("PYTEST_CURRENT_TEST", "CI")
 # verifier_revision with no re-collection, while a collector behavior change
 # needs this bumped by hand to invalidate a baseline cached under the old
 # behavior. Precedent: `skeptic.builder.GREEN_RULE_VERSION`.
-COLLECTOR_VERSION = "1"
+COLLECTOR_VERSION = "2"
 
 # `-q`, `-qq`, `-v`, `-vv`: pytest counts these, so they compose.
 _VERBOSITY = re.compile(r"^-[qv]+$")
@@ -232,8 +248,9 @@ def render_coverage_rc(spec: TaskSpec, data_file: str) -> str:
     container works in /workspace, so the JSON says `minirepo.py` where
     `parse_unified_diff` says `minirepo.py`. Relative `source` entries
     resolve against the working directory rather than against this file's
-    directory (measured with coverage 7.15.2, 2026-07-27), which is why an rc
-    that lives on the artifacts mount can name `.` and mean the tree.
+    directory (measured with coverage 7.15.2, 2026-07-27), which is why the
+    read-only host-authored rc can name `.` and mean the tree from its fixed
+    input mount.
     """
     sources = "".join(f"    {src.rstrip('/')}\n" for src in spec.environment.src_dirs)
     return (
@@ -261,11 +278,12 @@ def _suite_argv(spec: TaskSpec) -> list[str]:
     """
     return [*coverage_test_cmd(spec.environment.test_cmd),
             "--continue-on-collection-errors",
-            f"--junitxml={ARTIFACTS}/{_JUNIT}", "-o", "junit_family=xunit1"]
+            f"--junitxml={_PRIVATE_ARTIFACTS}/{_JUNIT}",
+            "-o", "junit_family=xunit1"]
 
 
 def _report_argv(changed_py: list[str]) -> list[str]:
-    """The scoped context report, written next to the data file.
+    """The scoped context report, written to private phase output.
 
     `--include` is the whole cost control. Contexts are a per-line by per-test
     cross product, and the M1 spike measured `coverage json --show-contexts`
@@ -280,7 +298,7 @@ def _report_argv(changed_py: list[str]) -> list[str]:
     """
     return ["python", "-m", "coverage", "json", "--show-contexts",
             f"--include={','.join(changed_py)}",
-            "-o", f"{ARTIFACTS}/{_COVERAGE_JSON}"]
+            "-o", f"{_PRIVATE_ARTIFACTS}/{_COVERAGE_JSON}"]
 
 
 def _measurable(spec: TaskSpec, changed_files: Sequence[str]) -> list[str]:
@@ -307,46 +325,27 @@ def _measurable(spec: TaskSpec, changed_files: Sequence[str]) -> list[str]:
                     for root in roots)]
 
 
-def _unit_steps(spec: TaskSpec,
-                changed_files: Sequence[str]) -> list[tuple[str, list[str]]]:
-    """The unit's steps in order: collect-only, the suite, the report.
-
-    Collection stays uninstrumented. It imports the test modules and runs no
-    test, so measuring it would add tracer time to a step whose only product
-    is a list of nodeids.
-
-    The report step is dropped when nothing in the patch is measurable.
-    `coverage json` over an `--include` list that matches nothing exits 1 with
-    "No data to report" (measured with coverage 7.15.2, 2026-07-27), and a
-    patch that changed only a golden or a config file has no statements to
-    score either way. `h4-addopts` and `h10-regenerated` are both that shape.
-    """
-    changed_py = _measurable(spec, changed_files)
-    steps = [("collect", _collect_argv(spec.environment.test_cmd)),
-             ("suite", _suite_argv(spec))]
-    if changed_py:
-        steps.append(("coverage", _report_argv(changed_py)))
-    return steps
-
-
-def _unit_script(spec: TaskSpec, changed_files: Sequence[str]) -> str:
-    """One script per unit, one file per step's exit code, stdout, and stderr.
-
-    The separate files are what let the host recover each step independently,
-    so a failure in one is never read as a failure in another. `install.ok` is
-    written first, inside the brace group `RunContainer.run` guards with the
-    overlay install, so its absence after a nonzero run means the install
-    failed rather than any step. No step stops the next: a candidate whose
-    collect exits 5 still runs the suite, both empties become the same
-    observation, and a report step that finds no data leaves the coverage
-    field unobserved instead of failing the unit.
-    """
-    lines = [f"echo ok > {ARTIFACTS}/{_INSTALL_OK}"]
-    for step, argv in _unit_steps(spec, changed_files):
-        lines.append(f"{shlex.join(argv)} > {ARTIFACTS}/{step}.out "
-                     f"2> {ARTIFACTS}/{step}.err")
-        lines.append(f"echo $? > {ARTIFACTS}/{step}.exit")
-    return "\n".join(lines)
+def _run_observation_phase(*, step: str, container: RunContainer, argv: list[str],
+                           quarantine: Path, sealed: Path,
+                           output_specs: Sequence[ArtifactSpec],
+                           timeout_s: int,
+                           env: dict[str, str] | None = None) -> ExecResult:
+    """Capture, admit, and seal one observation phase before another starts."""
+    result = container.run_capture(shlex.join(argv), timeout_s, quarantine, env)
+    install_marker = read_artifact_bytes(
+        quarantine, _INSTALL_OK, CONTROL_MAX, required=False)
+    admit_artifacts(quarantine, sealed, output_specs)
+    if install_marker is not None:
+        publish_artifact_bytes(
+            sealed, f"{step}.{_INSTALL_OK}", install_marker, CONTROL_MAX)
+    publish_artifact_bytes(
+        sealed, f"{step}.out", result.stdout.encode(), TEXT_MAX)
+    publish_artifact_bytes(
+        sealed, f"{step}.err", result.stderr.encode(), TEXT_MAX)
+    publish_artifact_bytes(
+        sealed, f"{step}.exit", f"{result.exit_code}\n".encode(), CONTROL_MAX)
+    shutil.rmtree(quarantine)
+    return result
 
 
 def read_coverage(artifacts: Path, changed_files: Iterable[str]) -> CoverageReport:
@@ -386,7 +385,10 @@ def read_coverage(artifacts: Path, changed_files: Iterable[str]) -> CoverageRepo
     committed sample carries a context and appears in no statement list.
     """
     wanted = set(changed_files)
-    data = json.loads((artifacts / _COVERAGE_JSON).read_text())
+    raw_report = read_artifact_bytes(
+        artifacts, _COVERAGE_JSON, COVERAGE_JSON_MAX)
+    assert raw_report is not None
+    data = json.loads(raw_report)
     statements: dict[str, tuple[int, ...]] = {}
     executed: dict[str, tuple[int, ...]] = {}
     contexts: dict[str, dict[int, tuple[str, ...]]] = {}
@@ -399,7 +401,11 @@ def read_coverage(artifacts: Path, changed_files: Iterable[str]) -> CoverageRepo
         contexts[path] = {int(line): tuple(names)
                           for line, names in sorted(entry.get("contexts", {}).items(),
                                                     key=lambda item: int(item[0]))}
-    with closing(sqlite3.connect(artifacts / _COVERAGE_DATA)) as data_file:
+    coverage_path = validate_artifact_path(
+        artifacts, _COVERAGE_DATA, COVERAGE_DATA_MAX)
+    assert coverage_path is not None
+    coverage_uri = f"{coverage_path.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(coverage_uri, uri=True)) as data_file:
         recorded = data_file.execute("select context from context").fetchall()
     return CoverageReport(statements=statements, executed=executed,
                           contexts=contexts, measured_files=tuple(statements),
@@ -408,24 +414,28 @@ def read_coverage(artifacts: Path, changed_files: Iterable[str]) -> CoverageRepo
 
 def _read_exit(artifacts: Path, step: str) -> int:
     path = artifacts / f"{step}.exit"
-    if not path.is_file():
+    text = read_artifact_text(
+        artifacts, f"{step}.exit", CONTROL_MAX, required=False)
+    if text is None:
         raise SkepticInfraError(
-            f"The {step} step left no exit code at {path}. The unit script "
-            f"records one after every step, so an absent file means the "
-            f"container stopped mid-script (the daemon killed it, or the host "
-            f"filled up). This is an infra failure, never evidence. Next: read "
-            f"{artifacts}/{step}.err, then re-run the pair."
+            f"The {step} step left no exit code at {path}. The sealed phase "
+            f"publishes one after every execution, so an absent file means "
+            f"capture or admission stopped before the phase completed. This "
+            f"is an infra failure, never evidence. Next: read sealed "
+            f"{artifacts}/{step}.err and {artifacts}/{step}.out, then re-run "
+            f"the pair."
         )
-    raw = path.read_text().strip()
+    raw = text.strip()
     try:
         return int(raw)
     except ValueError as exc:
         raise SkepticInfraError(
             f"The {step} step's exit file {path} holds {raw[:40]!r} where an "
-            f"exit code belongs. `echo $? >` writes one integer, so a partial "
-            f"or empty file means the container stopped while writing it. This "
-            f"is an infra failure, never evidence. Next: read "
-            f"{artifacts}/{step}.err, then re-run the pair."
+            f"exit code belongs. Host publication writes one integer, so a "
+            f"partial or empty file means phase publication was interrupted. "
+            f"This is an infra failure, never evidence. Next: read sealed "
+            f"{artifacts}/{step}.err and {artifacts}/{step}.out, then re-run "
+            f"the pair."
         ) from exc
 
 
@@ -500,7 +510,7 @@ def _cross_check(side: Side, collected: tuple[str, ...],
 
 def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
                     side: Side, changed_files: Sequence[str]) -> VariantObservations:
-    """Run one tree in one throwaway container, then read back what it produced.
+    """Run one tree through isolated phases, then read only sealed artifacts.
 
     The missing-mount policy is set here and it is side-specific. The baseline
     takes `RunContainer`'s strict default, because that tree is `git archive`
@@ -510,85 +520,143 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
     in the artifacts: the file is what a human reads, and only the field can
     become `ro_subpath_deleted` evidence (DECISIONS row 91).
 
-    `changed_files` is the candidate's, on both sides. It scopes the coverage
-    report and nothing else, and the two sides run the same command either
-    way (`_suite_argv` reads the spec), so the argv symmetry the differential
-    checks stand on holds. It is read three times (the script, the timeout
-    diagnosis, and the report), so it is materialized on entry: a generator
-    would build a script naming files that the diagnosis then says nothing
-    about.
+    Collection is sealed before the suite begins. The suite's JUnit and
+    coverage data are admitted before a separate coverage-report container
+    receives those host-owned files read-only. No candidate execution ever
+    receives the sealed root, or another phase's output, as writable storage.
+
+    `changed_files` is the candidate's, on both sides. It scopes only the
+    report, and the two sides run symmetric argv under one monotonic deadline.
     """
     changed_files = tuple(changed_files)
-    # Same reuse policy as the two trees in `collect_pair`: this directory is
-    # rebuilt, never topped up. A workdir reused across runs would otherwise
-    # keep the previous run's `install.ok`, exit files, and junit report, and
-    # a unit that died before writing anything would then be read back as a
-    # complete, self-consistent observation of the run before it.
     if artifacts.exists():
         shutil.rmtree(artifacts)
     artifacts.mkdir(parents=True)
+    quarantine_root = artifacts.parent / f".{artifacts.name}-quarantine"
+    if quarantine_root.exists():
+        shutil.rmtree(quarantine_root)
+    quarantine_root.mkdir(mode=0o700)
+
     ro = (tuple(spec.environment.test_dirs)
           + tuple(spec.environment.config_files)
           + tuple(spec.environment.golden_dirs))
-    container = RunContainer(
-        image_tag, tree, ro_subpaths=ro,
-        extra_mounts=((artifacts, ARTIFACTS, "rw"),),
-        missing_ro="drop" if side == "candidate" else "raise",
+    missing_ro: Literal["raise", "drop"] = (
+        "drop" if side == "candidate" else "raise")
+
+    def fresh_container(
+        input_mounts: tuple[tuple[Path, str], ...] = (),
+    ) -> RunContainer:
+        return RunContainer(
+            image_tag, tree, ro_subpaths=ro, missing_ro=missing_ro,
+            input_mounts=input_mounts,
+        )
+
+    deadline = time.monotonic() + spec.environment.timeout_s
+
+    def remaining(step: str) -> int:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise SkepticInfraError(
+                f"The {side} {step} observation phase could not start before "
+                f"the shared environment.timeout_s deadline of "
+                f"{spec.environment.timeout_s}s expired. Earlier phases are "
+                f"sealed, but a partial observation says nothing about the "
+                f"candidate. This is an infra failure, never evidence. Next: "
+                f"raise environment.timeout_s in the task spec, or run "
+                f"`{spec.environment.test_cmd}` in {tree} by hand and time it."
+            )
+        return max(1, int(left))
+
+    def run_phase(*, step: str, container: RunContainer, argv: list[str],
+                  output_specs: Sequence[ArtifactSpec],
+                  env: dict[str, str] | None = None) -> ExecResult:
+        result = _run_observation_phase(
+            step=step, container=container, argv=argv,
+            quarantine=quarantine_root / step, sealed=artifacts,
+            output_specs=output_specs, timeout_s=remaining(step), env=env,
+        )
+        if result.exit_code == -1 or time.monotonic() > deadline:
+            raise SkepticInfraError(
+                f"The {side} {step} observation phase timed out under the "
+                f"shared environment.timeout_s budget of "
+                f"{spec.environment.timeout_s}s. Its partial stdout and stderr "
+                f"are sealed at {artifacts}/{step}.out and "
+                f"{artifacts}/{step}.err. A partial run says nothing about the "
+                f"candidate, so this is an infra failure, never evidence. "
+                f"Next: raise environment.timeout_s in the task spec, or run "
+                f"`{spec.environment.test_cmd}` in {tree} by hand and time it."
+            )
+        install_ok = read_artifact_bytes(
+            artifacts, f"{step}.{_INSTALL_OK}", CONTROL_MAX, required=False)
+        if install_ok is None:
+            raise SkepticInfraError(
+                f"The {side} {step} observation phase never reached its "
+                f"command (container exit {result.exit_code}), so the overlay "
+                f"install failed or the container did not start. Skeptic "
+                f"installs the tree into /tmp/sv before every fresh phase. "
+                f"The phase's stdout and stderr are sealed at "
+                f"{artifacts}/{step}.out and {artifacts}/{step}.err. Next: "
+                f"`docker run --rm {image_tag} true`, then re-run the pair.\n"
+                f"stderr tail:\n{result.stderr[-1500:]}"
+            )
+        return result
+
+    collect_container = fresh_container()
+    run_phase(
+        step="collect", container=collect_container,
+        argv=_collect_argv(spec.environment.test_cmd), output_specs=(),
     )
-    # Written before the run, so the human-readable half survives a unit that
-    # dies partway.
-    (artifacts / _DROPPED).write_text(
-        "".join(f"{path}\n" for path in container.dropped_ro_subpaths))
-    # The pin sits on the artifacts mount, which is already rw and already
-    # outside the judged tree, so it needs no mount of its own and changes
-    # nothing under measurement.
-    (artifacts / _RC).write_text(
-        render_coverage_rc(spec, f"{ARTIFACTS}/{_COVERAGE_DATA}"))
-    steps = [step for step, _ in _unit_steps(spec, changed_files)]
-    # One budget for the whole unit: the overlay install, the collect-only
-    # pass, the instrumented suite, and the report. A timeout is infra on
-    # both sides.
-    result = container.run(_unit_script(spec, changed_files),
-                           timeout_s=spec.environment.timeout_s,
-                           env={"COVERAGE_RCFILE": f"{ARTIFACTS}/{_RC}"})
-    if result.exit_code == -1:
-        # Which exit files exist says where the budget went. The stderr tail
-        # does not: on this path it is the harness's own timeout sentence.
-        done = [step for step in steps if (artifacts / f"{step}.exit").is_file()]
-        if not done:
-            where = ("No step recorded an exit code, so the time went to the "
-                     "overlay install or the collect-only pass.")
-        elif "suite" not in done:
-            where = ("The collect step recorded an exit code and the suite did "
-                     "not, so the suite is what hung.")
-        elif done != steps:
-            where = ("The suite recorded an exit code and the coverage report "
-                     "did not, so writing the report is what hung.")
-        else:
-            where = ("Every step recorded an exit code, so the time went to "
-                     "something after the last one: container teardown, or a "
-                     "process the suite left behind.")
-        raise SkepticInfraError(
-            f"The {side} observation unit timed out after "
-            f"{spec.environment.timeout_s}s. One unit is the overlay install, "
-            f"a collect-only pass, and the instrumented suite, and the budget "
-            f"for all of it is environment.timeout_s. {where} A partial run "
-            f"says nothing about the candidate, so this is an infra failure, "
-            f"never evidence. Next: raise environment.timeout_s in the task "
-            f"spec, or "
-            f"run `{spec.environment.test_cmd}` in {tree} by hand and time it."
+
+    publish_artifact_bytes(
+        artifacts, _RC,
+        render_coverage_rc(
+            spec, f"{_PRIVATE_ARTIFACTS}/{_COVERAGE_DATA}").encode(),
+        CONTROL_MAX,
+    )
+    rc_path = validate_artifact_path(artifacts, _RC, CONTROL_MAX)
+    assert rc_path is not None
+    rc_target = f"{_OBSERVATION_INPUTS}/{_RC}"
+    coverage_env = {"COVERAGE_RCFILE": rc_target}
+    suite_container = fresh_container(
+        ((rc_path, rc_target),))
+    run_phase(
+        step="suite", container=suite_container, argv=_suite_argv(spec),
+        output_specs=(
+            ArtifactSpec(_JUNIT, STRUCTURED_MAX, required=False),
+            ArtifactSpec(_COVERAGE_DATA, COVERAGE_DATA_MAX, required=False),
+        ),
+        env=coverage_env,
+    )
+
+    changed_py = _measurable(spec, changed_files)
+    coverage_path = validate_artifact_path(
+        artifacts, _COVERAGE_DATA, COVERAGE_DATA_MAX, required=False)
+    if changed_py and coverage_path is not None:
+        report_container = fresh_container((
+            (rc_path, rc_target),
+            (coverage_path, f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}"),
+        ))
+        report_env = {
+            **coverage_env,
+            "COVERAGE_FILE": f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}",
+        }
+        run_phase(
+            step="coverage", container=report_container,
+            argv=_report_argv(changed_py),
+            output_specs=(
+                ArtifactSpec(_COVERAGE_JSON, COVERAGE_JSON_MAX, required=False),
+            ),
+            env=report_env,
         )
-    if not (artifacts / _INSTALL_OK).is_file():
-        raise SkepticInfraError(
-            f"The {side} unit never reached its first step (container exit "
-            f"{result.exit_code}), so the overlay install failed or the "
-            f"container did not start. Skeptic installs the tree into a venv "
-            f"at /tmp/sv before either pytest step, and a suite run without it "
-            f"would import the image's frozen closure instead of the code "
-            f"under judgment. Next: `docker run --rm {image_tag} true`, then "
-            f"re-run the pair.\n"
-            f"stderr tail:\n{result.stderr[-1500:]}"
-        )
+
+    publish_artifact_bytes(
+        artifacts, _DROPPED,
+        "".join(
+            f"{path}\n" for path in collect_container.dropped_ro_subpaths
+        ).encode(),
+        TEXT_MAX,
+    )
+    quarantine_root.rmdir()
     return read_variant(spec, tree, artifacts, side, changed_files)
 
 
@@ -614,11 +682,15 @@ def read_variant(spec: TaskSpec, tree: Path, artifacts: Path, side: Side,
     # short-circuit and a parse of that report agree.
     collected: tuple[str, ...] = ()
     if collect_exit != 5:
-        collected = parse_collect_manifest((artifacts / "collect.out").read_text())
+        collect_text = read_artifact_text(artifacts, "collect.out", TEXT_MAX)
+        assert collect_text is not None
+        collected = parse_collect_manifest(collect_text)
     outcomes: dict[str, str] = {}
     collection_errors = 0
     if suite_exit != 5:
-        suite = parse_junit(artifacts / _JUNIT)
+        junit = read_artifact_bytes(artifacts, _JUNIT, STRUCTURED_MAX)
+        assert junit is not None
+        suite = parse_junit_bytes(junit, str(artifacts / _JUNIT))
         outcomes, collection_errors = suite.outcomes, suite.collection_errors
     _cross_check(side, collected, outcomes, artifacts)
     # No report, no reading. `coverage json` writes its file only when it had
@@ -628,16 +700,21 @@ def read_variant(spec: TaskSpec, tree: Path, artifacts: Path, side: Side,
     # means. Both files are checked because `read_coverage` reads both, and
     # sqlite3 would otherwise create the missing one as an empty database.
     coverage = None
-    if all((artifacts / name).is_file() for name in (_COVERAGE_JSON, _COVERAGE_DATA)):
+    coverage_json_path = validate_artifact_path(
+        artifacts, _COVERAGE_JSON, COVERAGE_JSON_MAX, required=False)
+    coverage_data_path = validate_artifact_path(
+        artifacts, _COVERAGE_DATA, COVERAGE_DATA_MAX, required=False)
+    if coverage_json_path is not None and coverage_data_path is not None:
         coverage = read_coverage(artifacts, changed_files)
     # Written before the run (see observe_variant), one path per line, in the
     # sorted order RunContainer already put them in; reading it back is what
     # lets a rehydrated observation carry the same dropped-mount evidence a
     # freshly run one would.
-    dropped_path = artifacts / _DROPPED
     dropped: tuple[str, ...] = ()
-    if dropped_path.is_file():
-        dropped = tuple(line for line in dropped_path.read_text().splitlines() if line)
+    dropped_text = read_artifact_text(
+        artifacts, _DROPPED, TEXT_MAX, required=False)
+    if dropped_text is not None:
+        dropped = tuple(line for line in dropped_text.splitlines() if line)
     return VariantObservations(
         side=side, tree=tree, artifacts=artifacts, collected=collected,
         collect_exit=collect_exit, outcomes=outcomes,
@@ -902,8 +979,8 @@ def _mutation_script(
     unmutated candidate would make every mutant on it read `killed`
     regardless of what it changed.
 
-    `install.ok` is written first, the same marker and the same reason
-    `_unit_script` writes one: `RunContainer.run` guards the overlay install
+    `install.ok` is written first, the same marker and the same reason T1's
+    phase capture carries one: `RunContainer.run` guards the overlay install
     with `&&` ahead of this whole script, so the marker's absence after the
     run means the install failed rather than anything in here (`observe_mutation`
     reads it back). Each mutant's own install copy (mutated source into
@@ -1427,7 +1504,7 @@ def _write_probe_inputs(artifacts: Path, entrypoints: Sequence[ProbeEntrypoint])
 
 
 def _probe_script() -> str:
-    """The two-step contract, `_unit_script`-style: one exit/out/err triple
+    """The two-step contract: one exit/out/err triple
     per step. Step 1 runs the one-test wrapper under pytest, writing
     probe-pytest.json. Step 2 scrubs the test environment (`PROBE_SCRUB` plus
     every `PYTEST_*` name actually set, since a plugin can add its own) and
@@ -1792,8 +1869,8 @@ def _advtest_reference_script(
     before the run and pointed at that candidate's own data file
     (`observe_advtests` writes these; this function only reads the paths back
     out of `_RC`/`_COVERAGE_DATA`'s naming), so N candidates sharing one
-    container never share one data file the way `_unit_script`'s single run
-    does. `COVERAGE_RCFILE=<path> cmd` is plain POSIX sh: the assignment sets
+    container never share one data file. `COVERAGE_RCFILE=<path> cmd` is plain
+    POSIX sh: the assignment sets
     that one command's environment only, which is what lets each candidate's
     two steps (the coverage-wrapped suite, then the report) point at a
     different file than the next candidate's, all under the container's one
@@ -1936,7 +2013,7 @@ def _coverage_report_step_detail(cov_exit: int) -> str:
     """The reference tree's coverage-report step's own nonzero exit,
     translated to a rung `target_coverage` detail. Exit 1 is `coverage
     json`'s own "No data to report" for an `--include` list that matched
-    nothing (`_unit_steps`'s own docstring documents this exit); every other
+    nothing (the same exit T1 avoids for an unmeasurable patch); every other
     code in `_LADDER_EXITS` is not that shape and gets the generic ladder-exit
     detail instead (DECISIONS row 124's own distinction for `_guard_
     calibration`, restated here: a timeout or a crash is a different finding

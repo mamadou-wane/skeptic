@@ -1,0 +1,16 @@
+{
+  "additions": [
+    "tests/test_milestone_sync.py::test_sync_milestone_to_jira_overwrite_existing"
+  ],
+  "baseline_collect_exit": 0,
+  "baseline_collected_count": 57,
+  "candidate_collect_exit": 0,
+  "candidate_collected_count": 57,
+  "check": "t1_collect",
+  "dropped_ro_subpaths": [],
+  "missing": [
+    "tests/test_milestone_sync.py::test_sync_milestone_to_jira_add_to_existing"
+  ],
+  "quarantine": [],
+  "status": "completed"
+}

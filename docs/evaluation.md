@@ -442,7 +442,7 @@ reach a verdict (row 235). The task installs now pin their transitive dependenci
 measured (DECISIONS row 231), and the fresh-clone footprint is measured and
 tabled under The lanes above (row 232).
 
-M7 closed 2026-08-30 (DECISIONS row 237) against its row as amended by row
+M7 closed 2026-08-29 (DECISIONS row 237) against its row as amended by row
 236: report polish and the GIF/PNG deliverable were cut, the H7 work item
 closed on rows 229 and 230 with the qualifier above, and the plan's
 definition of done was amended to the documentation split PR #19 made. M7

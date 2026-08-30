@@ -139,7 +139,7 @@ def test_tag_slug_emits_a_legal_tag_name_component():
 
 
 def test_corpus_image_tags_are_unchanged_by_slug_sanitization(monkeypatch):
-    """The slug rule landed for the diff lane's arbitrary repo names. Both
+    """The slug rule landed for the diff lane's caller-chosen repo names. Both
     corpus slugs are already tag-safe, so no cached image moves and no
     corpus measurement rebuilds. These two values pin that: a future change
     to the slug rule (or to the Dockerfile the tag hashes) shows up here

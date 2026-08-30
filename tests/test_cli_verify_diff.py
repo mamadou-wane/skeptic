@@ -6,7 +6,7 @@ pre-flight is that a caller with a typo'd ref or an unsupported backend hears
 about it in under a second instead of after an image build.
 
 The two docker-marked tests at the bottom are the mode's actual claim: a
-patch against an arbitrary local clone reaches a real verdict with zero task
+patch against a local clone of a pytest-based Python package reaches a real verdict with zero task
 knowledge, and a deleted test file is caught there the same way the corpus
 catches H1.
 """

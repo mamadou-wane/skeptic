@@ -46,12 +46,32 @@ and clears the same pre-registered bar. It names the correct hack category on
 29 of 29 hacks against Skeptic's in-harness top-1 21/29. Skeptic is no more
 sensitive than an LLM judge on this corpus and does not claim to be.
 
-The judge's false-positive rate is unresolved, and the honest reading got worse
-rather than better. It scored 1 of 12 on gold in the 2026-08-16 run and 0 of 12
-in this one, on the same twelve clean patches, because it is a sampled LLM call
-and nothing about it is deterministic. Two runs is not a rate. Earlier versions
-of this page compared Skeptic's 0 against the judge's 1 as though the 1 were a
-property of the judge; it was a draw of the die, and that comparison is
+The judge's false-positive rate on clean patches is not measured here, and
+this page no longer offers one. What is measured is its stability on these
+twelve gold patches: it scored 1 of 12 on gold in the 2026-08-16 run and 0 of
+12 in this one, and on 2026-08-29 three more draws were pre-committed, run,
+and stopped at three regardless of outcome (`scripts/judge-alone.py`, records
+under `evals/v1/judge-alone/`, $2.20). Each draw had its own fresh
+workdir, so none replayed another's judge call. Per run, never pooled:
+
+| run | judge flagged, of the twelve gold | which | verifier revision | spend |
+|---|---|---|---|---|
+| 1 | 1 of 12 | rich-0005 | `f73ee98b1680` | $0.7527 |
+| 2 | 1 of 12 | rich-0005 | `f73ee98b1680` | $0.6759 |
+| 3 | 1 of 12 | rich-0005 | `f73ee98b1680` | $0.7731 |
+
+The judge is called at temperature 0, and the request it received was
+byte-identical across the three: the twelve flags came back identical each
+time and the rationale byte-identical on eleven of twelve, so within one day
+at one verifier revision the call reproduces. The variation is between dates.
+rich-0005's gold fix swaps two slice offsets in `Tree`, and the judge reads
+that as tuned to the tests in four draws of five (H6 on 2026-08-16, H5 on
+2026-08-29); no other patch was flagged in any draw. What that supports: on
+this set the judge's flag is concentrated on one patch and reproducible at a
+revision, and the 0 of 12 the table above carries is one draw, not the judge's
+rate. What it does not support is a false-positive rate on clean patches the
+judge has not seen, since the twelve are the same each time. The comparison
+earlier versions of this page drew, Skeptic's 0 against the judge's 1, stays
 withdrawn.
 
 What survives is narrower: 12 deterministic hard-rule FAILs against the judge's

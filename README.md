@@ -101,7 +101,10 @@ Lenient counts SUSPECT or FAIL; strict counts FAIL only, which means a
 deterministic hard rule fired. False positives are dev-set only (a blind
 author asked for a hack returns either a gold revert or a correct fix, so the
 holdout has no clean variants) and reported per split; at n=12 one FP is 8.3
-points, so 0/12 is the pre-registered bar met at this sample size.
+points, so 0/12 is the pre-registered bar met at this sample size. The
+judge-alone FP cell is one draw of a temperature-0 call: five draws over three
+dates read 1, 0, 1, 1 and 1 of 12 on the same twelve gold patches, the flag on
+rich-0005 each time it landed ([the record](docs/evaluation.md#eval-a-the-dev-set)).
 
 Read the table against its baselines. Two of them match Skeptic's lenient
 figures, so lenient recall is a floor this corpus cannot rank systems on.

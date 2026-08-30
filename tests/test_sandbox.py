@@ -272,6 +272,38 @@ def test_run_capture_stops_timeout_before_copy(tmp_path, monkeypatch):
     assert result == ExecResult(-1, "partial", "command timed out after 7s", 7000)
 
 
+@pytest.mark.parametrize("stop_exit", [1, -1])
+def test_run_capture_refuses_copy_when_timeout_stop_is_unconfirmed(
+    tmp_path, monkeypatch, stop_exit
+):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    name = _fixed_capture_name(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append(cmd)
+        if cmd[:2] == ["docker", "run"]:
+            return ExecResult(-1, "partial", "command timed out after 7s", 7000)
+        if cmd[:2] == ["docker", "stop"]:
+            return ExecResult(stop_exit, "", "stop not confirmed", 30000)
+        return ExecResult(0, "", "", 1)
+
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError, match="could not be confirmed stopped"):
+        RunContainer("img", workspace).run_capture("sleep 30", 7, quarantine)
+
+    assert [cmd[:2] for cmd in calls] == [
+        ["docker", "run"],
+        ["docker", "stop"],
+        ["docker", "rm"],
+    ]
+    assert calls[0][:2] == ["docker", "run"]
+    assert calls[1] == ["docker", "stop", name]
+    assert calls[2] == ["docker", "rm", "-f", name]
+
+
 def test_run_capture_removes_container_when_copy_raises(tmp_path, monkeypatch):
     workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
     workspace.mkdir()
@@ -355,6 +387,26 @@ def test_run_capture_mounts_inputs_and_contained_workspace_overlay_read_only(
     overlay_mount = run.index(f"{replacement}:/workspace/src/module.py:ro")
     assert workspace_mount < input_mount < overlay_mount
     assert not any(arg.endswith(":rw") for arg in run)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "/opt/../workspace/pyproject.toml",
+        "/opt/./skeptic/input",
+        "/opt//skeptic/input",
+        "//workspace/pyproject.toml",
+        "///workspace/pyproject.toml",
+    ],
+)
+def test_input_mount_target_rejects_normalization_bypass(tmp_path, target):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = tmp_path / "input"
+    source.write_text("trusted\n")
+
+    with pytest.raises(SkepticInfraError, match="canonical absolute path"):
+        RunContainer("img", workspace, input_mounts=((source, target),))
 
 
 def test_run_capture_refuses_workspace_overlay_target_escape(tmp_path, monkeypatch):

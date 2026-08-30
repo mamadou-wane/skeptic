@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import os
+import posixpath
 import shutil
 import stat
 import subprocess
@@ -222,7 +223,14 @@ def _validate_input_mount(source: Path, target: str) -> InputMount:
             f"input mount target {target!r} is not an absolute path. "
             f"Capture inputs use fixed absolute container paths."
         )
-    if target == "/workspace" or target.startswith("/workspace/"):
+    canonical = posixpath.normpath(target)
+    if target.startswith("//") or canonical != target:
+        raise SkepticInfraError(
+            f"input mount target {target!r} is not a canonical absolute path. "
+            f"Capture inputs reject dot components and repeated separators "
+            f"before Docker can normalize them into a different target."
+        )
+    if canonical == "/workspace" or canonical.startswith("/workspace/"):
         raise SkepticInfraError(
             f"input mount target {target!r} is inside /workspace. "
             f"Use a workspace overlay for a contained repository file."
@@ -563,8 +571,18 @@ class RunContainer:
         try:
             primary = _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
             if primary.exit_code == -1:
-                _run(["docker", "stop", name], cwd=self.workspace,
-                     timeout_s=30, env=None)
+                stopped = _run(["docker", "stop", name], cwd=self.workspace,
+                               timeout_s=30, env=None)
+                if stopped.exit_code != 0:
+                    raise SkepticInfraError(
+                        f"capture container {name} could not be confirmed stopped "
+                        f"after its run timed out (stop exit {stopped.exit_code}).\n"
+                        f"run stderr tail:\n{primary.stderr[-800:]}\n"
+                        f"stop stderr tail:\n{stopped.stderr[-800:]}\n"
+                        f"Skeptic refuses to copy private output while candidate "
+                        f"code may still be writing it. Next: inspect Docker daemon "
+                        f"health and remove the container if it remains."
+                    )
             copied = _run(
                 ["docker", "cp", f"{name}:/tmp/skeptic-artifacts/.", str(quarantine)],
                 cwd=self.workspace,

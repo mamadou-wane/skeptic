@@ -198,6 +198,199 @@ def _record_run(monkeypatch, stdout=""):
     return calls
 
 
+class _FixedUuid:
+    hex = "0123456789abcdef"
+
+
+class _FixedUuidFactory:
+    @staticmethod
+    def uuid4():
+        return _FixedUuid()
+
+
+def _fixed_capture_name(monkeypatch):
+    monkeypatch.setattr("skeptic.sandbox.os.getpid", lambda: 4242)
+    monkeypatch.setattr(sandbox_module, "uuid", _FixedUuidFactory, raising=False)
+    return "skeptic-4242-0123456789abcdef"
+
+
+def test_run_capture_never_mounts_quarantine(tmp_path, monkeypatch):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    name = _fixed_capture_name(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append(cmd)
+        return ExecResult(0, "", "", 1)
+
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    RunContainer("img", workspace).run_capture("echo ok", 60, quarantine)
+
+    assert [cmd[:2] for cmd in calls] == [
+        ["docker", "run"],
+        ["docker", "cp"],
+        ["docker", "rm"],
+    ]
+    run = calls[0]
+    assert str(quarantine) not in "\n".join(run)
+    assert "--rm" not in run
+    assert run[run.index("--name") + 1] == name
+    assert calls[1] == [
+        "docker", "cp", f"{name}:/tmp/skeptic-artifacts/.", str(quarantine),
+    ]
+    assert calls[2] == ["docker", "rm", "-f", name]
+    script = run[-1]
+    assert script.index("mkdir -p /tmp/skeptic-artifacts") < script.index(
+        overlay_install_cmd("/tmp/sv")
+    )
+    assert script.index(overlay_install_cmd("/tmp/sv")) < script.index(
+        "printf 'ok\\n' > /tmp/skeptic-artifacts/install.ok"
+    )
+
+
+def test_run_capture_stops_timeout_before_copy(tmp_path, monkeypatch):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    name = _fixed_capture_name(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append(cmd)
+        if cmd[:2] == ["docker", "run"]:
+            return ExecResult(-1, "partial", "command timed out after 7s", 7000)
+        return ExecResult(0, "", "", 1)
+
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    result = RunContainer("img", workspace).run_capture("sleep 30", 7, quarantine)
+
+    assert [cmd for cmd in calls[1:]] == [
+        ["docker", "stop", name],
+        ["docker", "cp", f"{name}:/tmp/skeptic-artifacts/.", str(quarantine)],
+        ["docker", "rm", "-f", name],
+    ]
+    assert result == ExecResult(-1, "partial", "command timed out after 7s", 7000)
+
+
+def test_run_capture_removes_container_when_copy_raises(tmp_path, monkeypatch):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    name = _fixed_capture_name(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append(cmd)
+        if cmd[:2] == ["docker", "cp"]:
+            raise RuntimeError("copy broke")
+        return ExecResult(0, "", "", 1)
+
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    with pytest.raises(RuntimeError, match="copy broke"):
+        RunContainer("img", workspace).run_capture("echo ok", 60, quarantine)
+
+    assert [cmd[:2] for cmd in calls] == [
+        ["docker", "run"],
+        ["docker", "cp"],
+        ["docker", "rm"],
+    ]
+    assert calls[-1] == ["docker", "rm", "-f", name]
+
+
+def test_run_capture_refuses_existing_quarantine(tmp_path, monkeypatch):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    quarantine.mkdir()
+    calls = _record_run(monkeypatch)
+
+    with pytest.raises(SkepticInfraError, match="already exists"):
+        RunContainer("img", workspace).run_capture("echo ok", 60, quarantine)
+
+    assert calls == []
+
+
+def test_run_capture_preserves_primary_failure_when_private_root_is_empty(
+    tmp_path, monkeypatch
+):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    _fixed_capture_name(monkeypatch)
+    primary = ExecResult(19, "install-out", "install failed", 22)
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        if cmd[:2] == ["docker", "run"]:
+            return primary
+        return ExecResult(0, "", "", 1)
+
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    assert RunContainer("img", workspace).run_capture(
+        "echo unreachable", 60, quarantine
+    ) == primary
+
+
+def test_run_capture_mounts_inputs_and_contained_workspace_overlay_read_only(
+    tmp_path, monkeypatch
+):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    target = workspace / "src" / "module.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("old = True\n")
+    coveragerc = tmp_path / "coveragerc"
+    coveragerc.write_text("[run]\n")
+    replacement = tmp_path / "replacement.py"
+    replacement.write_text("old = False\n")
+    _fixed_capture_name(monkeypatch)
+    calls = _record_run(monkeypatch)
+
+    RunContainer(
+        "img",
+        workspace,
+        input_mounts=((coveragerc, "/opt/skeptic/coveragerc"),),
+        workspace_overlays=((replacement, "./src//module.py"),),
+    ).run_capture("echo ok", 60, quarantine)
+
+    run = calls[0]
+    workspace_mount = run.index(f"{workspace}:/workspace")
+    input_mount = run.index(f"{coveragerc}:/opt/skeptic/coveragerc:ro")
+    overlay_mount = run.index(f"{replacement}:/workspace/src/module.py:ro")
+    assert workspace_mount < input_mount < overlay_mount
+    assert not any(arg.endswith(":rw") for arg in run)
+
+
+def test_run_capture_refuses_workspace_overlay_target_escape(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    replacement = tmp_path / "replacement.py"
+    replacement.write_text("safe = False\n")
+    calls = _record_run(monkeypatch)
+
+    with pytest.raises(SkepticInfraError, match="invalid"):
+        RunContainer(
+            "img", workspace, workspace_overlays=((replacement, "../outside.py"),)
+        )
+
+    assert calls == []
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_run_capture_returns_regular_private_output(tmp_path, minirepo_spec_and_repo):
+    from skeptic.image import ensure_repo_image
+    from skeptic.workspace import materialize
+
+    spec, repo = minirepo_spec_and_repo
+    pristine, workspace = tmp_path / "pristine", tmp_path / "workspace"
+    materialize(repo, spec.repo.commit, pristine)
+    ref = ensure_repo_image(spec, pristine, tmp_path / "image")
+    materialize(repo, spec.repo.commit, workspace)
+    quarantine = tmp_path / "quarantine"
+    result = RunContainer(ref.tag, workspace).run_capture(
+        "printf harmless > /tmp/skeptic-artifacts/result", 300, quarantine
+    )
+    assert result.exit_code == 0, result.stderr[-800:]
+    assert (quarantine / "result").read_bytes() == b"harmless"
+
+
 def test_run_container_runs_once_and_removes_itself(tmp_path, monkeypatch):
     calls = _record_run(monkeypatch)
     RunContainer("img", tmp_path).run("pytest -q", timeout_s=60)

@@ -3,8 +3,10 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+import stat
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal, Self
@@ -148,6 +150,8 @@ def base_env(venv_bin: str) -> dict[str, str]:
 
 
 ExtraMount = tuple[Path, str, Literal["ro", "rw"]]
+InputMount = tuple[Path, str]
+WorkspaceOverlay = tuple[Path, str]
 
 
 def _resolve_ro_subpath(workspace: Path, raw: str) -> tuple[str, Path]:
@@ -206,12 +210,53 @@ def _resolve_ro_subpath(workspace: Path, raw: str) -> tuple[str, Path]:
     return clean, cursor
 
 
+def _validate_input_mount(source: Path, target: str) -> InputMount:
+    if not source.exists():
+        raise SkepticInfraError(
+            f"input mount source {source} does not exist. Docker would "
+            f"silently create it as a directory. Next: this is a harness "
+            f"bug; write the capture input before mounting it."
+        )
+    if not target.startswith("/"):
+        raise SkepticInfraError(
+            f"input mount target {target!r} is not an absolute path. "
+            f"Capture inputs use fixed absolute container paths."
+        )
+    if target == "/workspace" or target.startswith("/workspace/"):
+        raise SkepticInfraError(
+            f"input mount target {target!r} is inside /workspace. "
+            f"Use a workspace overlay for a contained repository file."
+        )
+    return source, target
+
+
+def _validate_workspace_overlay(
+    workspace: Path, source: Path, target: str
+) -> WorkspaceOverlay:
+    clean, _ = _resolve_ro_subpath(workspace, target)
+    try:
+        source_mode = source.stat(follow_symlinks=False).st_mode
+    except OSError as exc:
+        raise SkepticInfraError(
+            f"workspace overlay source {source} cannot be inspected: {exc}. "
+            f"Capture overlays must be host-authored regular files."
+        ) from exc
+    if not stat.S_ISREG(source_mode):
+        raise SkepticInfraError(
+            f"workspace overlay source {source} is not a regular file. "
+            f"Capture overlays accept only host-authored regular files."
+        )
+    return source, clean
+
+
 def docker_run_args(
     image: str,
     workspace: Path,
     ro_subpaths: tuple[str, ...] = (),
     extra_mounts: tuple[ExtraMount, ...] = (),
     env: dict[str, str] | None = None,
+    input_mounts: tuple[InputMount, ...] = (),
+    workspace_overlays: tuple[WorkspaceOverlay, ...] = (),
 ) -> list[str]:
     # The container user is the host UID:GID so files written through the
     # bind mount stay owned by the invoking user (M1 review deferral). That
@@ -271,6 +316,16 @@ def docker_run_args(
                 f"the tool at it through the environment."
             )
         args += ["-v", f"{src}:{target}:{mode}"]
+    # Capture inputs are harness-owned and can never be writable. They live
+    # outside /workspace so they do not change the tree VERIFY measures.
+    for src, target in input_mounts:
+        _validate_input_mount(src, target)
+        args += ["-v", f"{src}:{target}:ro"]
+    # File overlays mount after the rw workspace so a mutation or other
+    # harness-authored replacement shadows exactly one contained repo path.
+    for src, target in workspace_overlays:
+        _, clean = _validate_workspace_overlay(workspace, src, target)
+        args += ["-v", f"{src}:/workspace/{clean}:ro"]
     for key, value in (env or {}).items():
         args += ["-e", f"{key}={value}"]
     args += ["-w", "/workspace", image]
@@ -415,10 +470,20 @@ class RunContainer:
     def __init__(self, image: str, workspace: Path,
                  ro_subpaths: tuple[str, ...] = (),
                  extra_mounts: tuple[ExtraMount, ...] = (),
-                 missing_ro: Literal["raise", "drop"] = "raise") -> None:
+                 missing_ro: Literal["raise", "drop"] = "raise",
+                 input_mounts: tuple[InputMount, ...] = (),
+                 workspace_overlays: tuple[WorkspaceOverlay, ...] = ()) -> None:
         self.image = image
         self.workspace = workspace
         self.extra_mounts = tuple(extra_mounts)
+        self.input_mounts = tuple(
+            _validate_input_mount(source, target)
+            for source, target in input_mounts
+        )
+        self.workspace_overlays = tuple(
+            _validate_workspace_overlay(workspace, source, target)
+            for source, target in workspace_overlays
+        )
         # The tree state is fixed once the instance exists, so the split is
         # decided here rather than per run. "raise" is the default and the
         # baseline side keeps it: the seeded tree is git archive plus the
@@ -461,6 +526,63 @@ class RunContainer:
         guarded = f"{overlay_install_cmd(self._VENV)} && {{ {script}\n}}"
         full = args + ["sh", "-c", guarded]
         return _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
+
+    def run_capture(self, script: str, timeout_s: int, quarantine: Path,
+                    env: dict[str, str] | None = None) -> ExecResult:
+        """Run with container-private output, then copy it into quarantine."""
+        try:
+            quarantine.mkdir(mode=0o700)
+        except FileExistsError as exc:
+            raise SkepticInfraError(
+                f"capture quarantine {quarantine} already exists. Skeptic "
+                f"requires a fresh host-owned directory for every execution. "
+                f"Next: this is a harness lifecycle bug; allocate a new path."
+            ) from exc
+
+        merged = {**base_env(f"{self._VENV}/bin"), **(env or {})}
+        args = docker_run_args(
+            self.image,
+            self.workspace,
+            self.ro_subpaths,
+            self.extra_mounts,
+            merged,
+            self.input_mounts,
+            self.workspace_overlays,
+        )
+        args.remove("--rm")
+        name = f"skeptic-{os.getpid()}-{uuid.uuid4().hex}"
+        args[2:2] = ["--name", name]
+        prepared = (
+            "mkdir -p /tmp/skeptic-artifacts && "
+            f"{overlay_install_cmd(self._VENV)} && "
+            "printf 'ok\\n' > /tmp/skeptic-artifacts/install.ok && "
+            f"{{ {script}\n}}"
+        )
+        full = args + ["sh", "-c", prepared]
+
+        try:
+            primary = _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
+            if primary.exit_code == -1:
+                _run(["docker", "stop", name], cwd=self.workspace,
+                     timeout_s=30, env=None)
+            copied = _run(
+                ["docker", "cp", f"{name}:/tmp/skeptic-artifacts/.", str(quarantine)],
+                cwd=self.workspace,
+                timeout_s=60,
+                env=None,
+            )
+            if copied.exit_code != 0 and primary.exit_code == 0:
+                raise SkepticInfraError(
+                    f"container-private output copy failed for {name} "
+                    f"(exit {copied.exit_code}): {copied.stderr[-800:]}. "
+                    f"Skeptic cannot admit outputs that did not cross the "
+                    f"container boundary. Next: inspect Docker storage and "
+                    f"retry the verification."
+                )
+            return primary
+        finally:
+            _run(["docker", "rm", "-f", name], cwd=self.workspace,
+                 timeout_s=30, env=None)
 
 
 class SessionContainer:

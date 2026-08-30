@@ -208,10 +208,10 @@ The verifier gets verified. Fixture mini-repo (shared with `skeptic demo`) with 
 - `skeptic doctor`: preflight on Docker daemon (CLI absent vs stopped vs socket perms), API keys, Python 3.12, disk, arch. Operational error contract: every setup failure states what failed, why Skeptic needs it, and the exact next command.
 - Free/paid lanes: `--profile deterministic` (T1 + mutation, zero keys) on `verify`/`eval`; key validation per command *before* any image work, naming the exact env var; never silently downgrade.
 - Terminal verdict spec: rendered banner and evidence list (check · category · file:line · artifact path), exit codes 0/1/2/3. This is what makes the "CLI in CI" roadmap line real.
-- Discoverability: `skeptic tasks list`, `skeptic runs list`; `report` defaults to the latest run; `eval` defaults to `tasks/`→`reports/`; every command prints the suggested next command; `seed` validates by default (`--no-check` to skip).
-- README (dual audience). Above the fold: one-sentence value prop, eval table (n, corpus version, run date), demo command with pasted expected output, evidence GIF plus one committed PNG, measured time/disk against the SWE-bench-harness anchor. Second screen: three lanes (free demo / deterministic verify / paid end-to-end), each with measured runtime, download, disk, max cost. Then architecture, tradeoffs, limits, related work.
+- Discoverability: `skeptic tasks list` (`skeptic runs list` and `report` were dropped at M6, DECISIONS row 224, and cut for good at M7 close, row 236); `eval` defaults to `tasks/`→`reports/`; every command prints the suggested next command; `seed` validates by default (`--no-check` to skip).
+- README (dual audience). Above the fold: one-sentence value prop, eval table (n, corpus version, run date), demo command with pasted expected output, evidence GIF plus one committed PNG (cut at M7 close, DECISIONS row 236: the README's final structure replaced them), measured time/disk against the SWE-bench-harness anchor. Second screen: three lanes (free demo / deterministic verify / paid end-to-end), each with measured runtime, download, disk, max cost. Then architecture, tradeoffs, limits, related work.
 - Reproducibility artifacts committed: `evals/v1/manifest.json` (content hashes: code, corpus, patches, image digests, locks, model/prompt identities, seeds) plus raw traces and trusted generated tests for the headline run. (`skeptic reproduce` command: deferred.)
-- M7 acceptance: a timed fresh-clone run in a clean container proves the <10-minute bar by measurement.
+- M7 acceptance: a timed fresh-clone run in a clean container proves the <10-minute bar by measurement. (Measured 2026-08-29 at 67 s from clone to first real verdict, with "clean container" narrowed to a clean checkout, venv and build cache on the host, since the Docker lane needs the host daemon either way; DECISIONS row 232.)
 - Stack and distribution: Python 3.12, stdlib `ast`, coverage.py, pytest, Docker SDK, Typer, Pydantic, Jinja2. Install via `pipx install` from the repo plus a local image build (GHCR image deferred per amendment 4).
 
 ## 13. Repo admission protocol and layout
@@ -220,7 +220,7 @@ Before M1 coding: pin exact commits and measure per candidate repo for Python 3.
 
 ```
 skeptic/
-├── cli.py                  # typer: seed build verify run eval report demo doctor clean; tasks/runs list
+├── cli.py                  # typer: demo doctor tasks seed build build-arm verify eval (report, run, clean and runs list never landed; DECISIONS rows 224 and 236)
 ├── orchestrator/           # FSM, budgets, cache, ledger, run manifest
 ├── sandbox/                # image build, two-phase network, exec API, venv fallback (verify-only)
 ├── builder/                # host-side loop, tools, prompts
@@ -228,7 +228,7 @@ skeptic/
 │   ├── t1_collect.py  t1_outcomes.py  t1_config.py  t1_scope.py  t1_patterns.py  t1_coverage.py  t1_ast.py
 │   ├── t2_mutation.py t2_advtests.py  t2_probe.py   t2_judge.py
 │   └── aggregate.py
-├── evalkit/  report/       # metrics, confusion matrices; JSONL → static HTML
+├── evalkit/                # metrics, confusion matrices (report/ cut: DECISIONS rows 224 and 236)
 ├── fixtures/mini_repo/     # shared: demo + self-tests
 ├── tasks/  patches/  evals/v1/   # specs; seed/gold/gold-prime/hack diffs; committed manifest + traces
 ├── tests/                  # harness self-tests
@@ -245,11 +245,11 @@ skeptic/
 | M4 | Aug 1–3 | T2 checks, probe, judge baseline, aggregator + golden-verdict tests | H5–H7 fixtures flagged; gold + gold-prime PASS on 2 real tasks |
 | **M5** | Aug 4–7 | Publishable core: full corpus (12–15 tasks; gold-prime + acceptance suites), Eval A dev set + baselines, Eval B base arm, demo + doctor, README v1 with real numbers | Repo is publishable as-is if everything after this slips |
 | M6 | Aug 8–11 | Blind holdout (frozen weights); pressure arms (6-task subset); `verify --diff` + GitHub Action on one real public agent PR | holdout row in table; per-arm incidence; Action demo recorded |
-| M7 | Aug 12–14 | Report polish; committed manifest + traces; timed fresh-clone acceptance; README final + GIF/PNG | stranger <10 min, measured; DoD met |
+| M7 | Aug 12–14 | Report polish (cut, row 236); committed manifest + traces; timed fresh-clone acceptance; README final (GIF/PNG cut, row 236) | stranger <10 min, measured: 67 s (row 232); DoD met as amended (row 236); closed 2026-08-29 (row 237) |
 
-**Status against this schedule, as of 2026-08-22.** M1 through M6 are complete. M5 closed on 2026-08-17 with all six of its exit criteria met and the repo published (`DECISIONS.md` row 222; paid spend $6.9486 of a $50 ceiling). M6 closed on 2026-08-22 against this row's three criteria: the holdout row is in the table at 10/11 lenient, per-arm incidence is published at n=6 per arm, and the Action demo is recorded, having returned three INFRA_ERRORs on three real public agent PRs (`DECISIONS.md` rows 226 to 228; paid spend $4.1979 of a $15 ceiling). M7 is the remaining work, and it inherits four items M6 named rather than fixed: the H7 rule, an arm snapshot that carries its own candidate, the diff lane's install-and-apply path, and task installs that pin transitive dependencies. The dates in the table above are the original timebox, kept as the record of what was planned, and are no longer a forecast.
+**Status against this schedule, as of 2026-08-22.** M1 through M6 are complete. M5 closed on 2026-08-17 with all six of its exit criteria met and the repo published (`DECISIONS.md` row 222; paid spend $6.9486 of a $50 ceiling). M6 closed on 2026-08-22 against this row's three criteria: the holdout row is in the table at 10/11 lenient, per-arm incidence is published at n=6 per arm, and the Action demo is recorded, having returned three INFRA_ERRORs on three real public agent PRs (`DECISIONS.md` rows 226 to 228; paid spend $4.1979 of a $15 ceiling). M7 was the remaining work, inheriting four items M6 named rather than fixed, and closed 2026-08-29 as the next sentences record: the H7 rule, an arm snapshot that carries its own candidate, the diff lane's install-and-apply path, and task installs that pin transitive dependencies. The dates in the table above are the original timebox, kept as the record of what was planned, and are no longer a forecast. **As of 2026-08-29.** M7 is closed (DECISIONS row 237) against its row as amended by row 236: the fresh-clone bar measured at 67 s (row 232), task installs pinned to the closures the published runs measured (row 231), the guard-probe parser fixed and the agent-authored hack caught 3 of 3 in re-verification (row 230), the judge re-sampled and reported per run (row 234), the diff lane's install path given a stated boundary with two of three real PRs reaching a verdict (row 235), and three stale figures corrected and bound (row 233). Report polish and the GIF/PNG were cut, the H7 work item closed on rows 229 and 230, and §16 was amended to the PR #19 documentation split. M7 paid about $6.04.
 
-**Worktree lanes** (parallelizable): A orchestrator/sandbox/CLI · B T1 checks (pure functions over fixtures) · C corpus (daily from M2, needs A's `seed --check`) · D T2+aggregator (needs A, B's frozen schema) · E evalkit/report (needs trace schema). The `verdict.json` evidence schema is frozen at M3 in `skeptic/checks/evidence.py` (Pydantic models, `extra="forbid"` throughout; `Evidence` and `CheckResult` frozen, `Verdict` validated on assignment) · B and D share it.
+**Worktree lanes** (parallelizable): A orchestrator/sandbox/CLI · B T1 checks (pure functions over fixtures) · C corpus (daily from M2, needs A's `seed --check`) · D T2+aggregator (needs A, B's frozen schema) · E evalkit (report/ cut, DECISIONS row 236) (needs trace schema). The `verdict.json` evidence schema is frozen at M3 in `skeptic/checks/evidence.py` (Pydantic models, `extra="forbid"` throughout; `Evidence` and `CheckResult` frozen, `Verdict` validated on assignment) · B and D share it.
 
 ## 15. Risks, cut lines, open questions
 
@@ -265,7 +265,7 @@ skeptic/
 
 ## 16. Definition of done
 
-Public repo, MIT license, where the README leads with the eval table (dev + within-taxonomy holdout + baselines; FP split gold/gold-prime; attribution top-1/anywhere; cost actuals), the <60 s demo with pasted output, the measured footprint anchor, architecture diagram, tradeoffs that argue *why* (rules-first aggregator, mutation budget, routing, prevention-vs-detection scoping), a limits section that states what fails (including patch-content prompt injection against Skeptic's own testgen/judge models, bounded to a missed detection), related-work positioning, and a roadmap (CI patch-admission gate · import-graph reachability · second-language rewrite · verifier co-evolution). `DECISIONS.md` committed. CI green.
+Public repo, MIT license, where the README leads with the eval table (dev + within-taxonomy holdout + baselines; FP split gold/gold-prime; attribution top-1/anywhere; cost actuals), the <60 s demo with pasted output, the measured footprint anchor, architecture diagram, tradeoffs that argue *why* (rules-first aggregator, mutation budget, routing, prevention-vs-detection scoping), a limits section that states what fails (including patch-content prompt injection against Skeptic's own testgen/judge models, bounded to a missed detection), related-work positioning, and a roadmap (CI patch-admission gate · import-graph reachability · second-language rewrite · verifier co-evolution). `DECISIONS.md` committed. CI green. Amended at M7 close (DECISIONS row 236), the final reading of this section: the README carries the headline evidence and direct links, the eval table with its baselines and the FP split, the demo with pasted output, the measured footprint anchor and the roadmap; attribution, the cost actuals, the architecture diagram, the tradeoffs, the limits and related work live one click away in `docs/evaluation.md` and `docs/architecture.md`. That is the split PR #19 made and ai-log 0019 recorded as a departure; it is now the definition, not a departure from it.
 
 ---
 

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from skeptic.checks import T1_REGISTRY, t1_ast, t2_advtests, t2_judge, t2_mutation, t2_probe
@@ -135,6 +136,11 @@ class LayerOutcome:
     infra: dict[str, str]
 
 
+def relative_to_run(text: str, run_dir: Path) -> str:
+    """`text` with every absolute path under `run_dir` made relative to it."""
+    return text.replace(str(run_dir) + "/", "")
+
+
 def run_verify_layer(
     pair: ObservationPair, profile: str = "deterministic"
 ) -> LayerOutcome:
@@ -166,16 +172,22 @@ def run_verify_layer(
         registry = tuple(
             (name, check) for name, check in registry if name not in excused
         )
+    # A check's refusal names artifact paths for the human reading stderr,
+    # and those are absolute host paths. `infra_detail` copies the text into
+    # verdict.json, which is committed and shown in a PR's step summary, so
+    # the run's own root is stripped first: row 220 already records a host
+    # path with a username reaching a committed record as a defect.
+    run_dir = pair.artifacts_dir.parent.parent
     for name, check in registry:
         try:
             results.append(check(pair))
         except Exception as exc:  # noqa: BLE001 - decision 8, see module docstring
-            infra[name] = f"{type(exc).__name__}: {exc}"
+            infra[name] = relative_to_run(f"{type(exc).__name__}: {exc}", run_dir)
 
     try:
         annotated = t1_ast.annotate(pair, tuple(results))
     except Exception as exc:  # noqa: BLE001 - decision 8, see module docstring
-        infra["t1_ast"] = f"{type(exc).__name__}: {exc}"
+        infra["t1_ast"] = relative_to_run(f"{type(exc).__name__}: {exc}", run_dir)
     else:
         results = list(annotated)
 
@@ -357,6 +369,7 @@ def aggregate(
         isolation=isolation,
         profile=profile,
         infra_reason=infra_reason,
+        infra_detail=dict(outcome.infra),
     )
 
 

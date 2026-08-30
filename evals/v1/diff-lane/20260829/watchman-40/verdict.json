@@ -1,0 +1,42 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t2_mutation.json",
+      "category": "coverage",
+      "check": "t2_mutation",
+      "detail": "18 surviving mutants in the caller code (kill rate 0.05): source/main.py:155 (call_removal), source/main.py:160 (call_removal), source/main.py:161 (conditional_negation), source/main.py:163 (off_by_one), source/main.py:163 (call_removal) (+13 more)",
+      "location": "source/main.py:155",
+      "nodeids": [],
+      "rule": "mutation_caller_control",
+      "severity": "soft"
+    }
+  ],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_scope",
+    "t1_goldens",
+    "t2_advtests",
+    "t2_probe",
+    "t2_judge"
+  ],
+  "profile": "deterministic",
+  "run_id": "verify-0a91717f7d1d",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.25,
+  "task_id": "wm-9a8468a4fd56-9fefc0b2d01c",
+  "variant": "diff:9fefc0b2",
+  "verdict": "PASS"
+}

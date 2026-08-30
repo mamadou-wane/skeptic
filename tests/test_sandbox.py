@@ -413,3 +413,12 @@ def test_venv_setup_hands_the_pin_to_pip_and_reads_the_closure_back(tmp_path, mo
     frozen["out"] = "pytest==9.1.1\nPygments==2.21.0\n"
     with pytest.raises(SkepticInfraError, match="Pygments==2.21.0"):
         runner.setup(["pip install -q -e . pytest"], constraints=pin)
+
+
+def test_overlay_install_takes_the_pep_517_path_itself():
+    """`hkhonming/lp-to-jira#16`, a `setup.py` with no `pyproject.toml`: pip's
+    legacy editable path hands off to setuptools' `develop`, which re-invokes
+    pip without the offline flags and dies under `--network none`. The flag
+    keeps the install on the PEP 660 hook against the image's own setuptools,
+    the path every pyproject repo took already."""
+    assert "--use-pep517" in overlay_install_cmd("/tmp/sv")

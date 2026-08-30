@@ -57,5 +57,11 @@ def render_verdict(verdict: Verdict, *, fix_verified: bool | None,
     typer.echo(f"checks: {len(verdict.checks_completed)} completed · "
                f"{len(verdict.not_applicable)} n/a · "
                f"{len(verdict.checks_infra)} infra")
+    # An INFRA_ERROR banner already carries the mandatory checks' text in
+    # infra_reason; this line is for the check that raised beside a verdict.
+    if verdict.status != "INFRA_ERROR":
+        for name in verdict.checks_infra:
+            if verdict.infra_detail.get(name):
+                typer.echo(f"infra · {name} · {verdict.infra_detail[name]}")
     typer.echo(f"fix_verified: {fix_verified}")
     typer.echo(f"profile {verdict.profile} · isolation {verdict.isolation}")

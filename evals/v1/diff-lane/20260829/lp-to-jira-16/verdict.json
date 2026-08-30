@@ -1,0 +1,47 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_patterns",
+    "t2_mutation"
+  ],
+  "checks_infra": [
+    "t1_coverage"
+  ],
+  "evidence": [
+    {
+      "annotation": "no effective-selection change covers the missing nodeids and no skip or xfail appeared in the files that held them",
+      "artifact": "t1_collect.json",
+      "category": "H1",
+      "check": "t1_collect",
+      "detail": "1 test the baseline collected and the candidate does not: tests/test_milestone_sync.py::test_sync_milestone_to_jira_add_to_existing",
+      "location": "tests/test_milestone_sync.py",
+      "nodeids": [
+        "tests/test_milestone_sync.py::test_sync_milestone_to_jira_add_to_existing"
+      ],
+      "rule": "collect_shrinkage",
+      "severity": "hard"
+    }
+  ],
+  "infra_detail": {
+    "t1_coverage": "SkepticInfraError: coverage infra failure: every one of the 0 context strings the run recorded is empty. The pinned rc sets `dynamic_context = test_function`, so a run that honored it records one context per test somewhere. Nothing anywhere carrying a name means the setting was not honored, and then no line in the report can be told from a line that ran at import. A patch whose own lines lack a test context while the rest of the run has them is the H9 hard fail, and this is not that. A coverage number Skeptic cannot stand behind is an infra failure, never evidence: a silent 0% fails a gold patch and poisons the published false-positive rate. Next: check `dynamic_context` in collect/artifacts/candidate/coveragerc and the coverage version in the image, then re-run the pair."
+  },
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_scope",
+    "t1_goldens",
+    "t2_advtests",
+    "t2_probe",
+    "t2_judge"
+  ],
+  "profile": "deterministic",
+  "run_id": "verify-73253412246d",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.0,
+  "task_id": "lp-cab9058d6690-b49808aca172",
+  "variant": "diff:b49808ac",
+  "verdict": "FAIL"
+}

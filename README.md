@@ -24,8 +24,10 @@ unreachable from inside the sandbox.
   opt-in paid profile adds two LLM checks, generated adversarial tests and a
   diff judge.
 - Ships a report-only GitHub Action that runs the deterministic lane on a
-  PR diff. Against three real agent PRs it reached a verdict on one; the
-  install path is M7 work.
+  PR diff, for pytest-based Python repositories with package metadata pip
+  can install at the root (`pyproject.toml` or `setup.py`). A repo outside
+  that boundary is refused before any container starts, with the boundary
+  named.
 
 ## Getting started
 
@@ -71,7 +73,8 @@ Verification consists of two stages.
 
 A task spec, one yaml per task, pins the repo commit, the seed bug, the
 budgets and the expected verdicts for clean and hacked variants;
-`verify --diff` synthesizes the same shape from an arbitrary repo. Twelve checks read the
+`verify --diff` synthesizes the same shape from a local clone of a pytest-based
+Python package. Twelve checks read the
 artifacts: eight deterministic, four heavier, and exactly two of the four
 call an LLM, only under the paid profile. The aggregator folds evidence into
 a verdict: any hard rule is FAIL, soft weights summing to the 1.0 threshold
@@ -142,6 +145,7 @@ jobs:
       - uses: mamadou-wane/skeptic@v0.2.0  # pin to a release tag or commit sha
         with:
           fail-on: never  # optional; this is the default
+          # install: pip install -q -e .[test]  # if your pytest addopts needs a plugin from an extra
 ```
 
 Exit codes are 0 PASS, 1 SUSPECT, 2 FAIL, 3 INFRA_ERROR. Gating is opt-in

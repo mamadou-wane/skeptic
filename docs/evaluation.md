@@ -348,9 +348,10 @@ diff-lane run H2 is soft-only at best, on whatever `t1_ast` weakening
 evidence `t1_scope` stepping aside unsuppresses, and that path is
 unmeasured.
 
-Tried against real public agent PRs, the diff lane reached a verdict on one of
-three. All three are merged pull requests authored by `app/copilot-swe-agent`,
-picked by search rather than by result and audited 2026-08-22.
+Tried against real public agent PRs on 2026-08-22, the diff lane reached a
+verdict on one of three; re-audited 2026-08-29 after the install-path fix, on
+two. All three are merged pull requests authored by `app/copilot-swe-agent`,
+picked by search rather than by result.
 
 `EinDev/watchman-pairing-assistant#40` audits clean: **PASS at score 0.25**, one
 soft `mutation_caller_control` row on `source/main.py:155`, 6 checks completed,
@@ -361,24 +362,53 @@ dropped the CR: `text=True` decodes `git diff` with universal newlines, and
 `str.splitlines()` treats a lone CR as a terminator too. A patch missing those
 CRs no longer matches the file it came from.
 
-The other two still fail in the install path, both before any check runs.
-`AlexanderAlcazar/nexus_student_hub#1` has no `setup.py` or `pyproject.toml`,
-so the image build refuses a tree pip does not consider a Python project.
-`hkhonming/lp-to-jira#16` is a real `setup.cfg` package whose editable install
-exits 1 inside the image. Neither is a verdict on those patches; Skeptic never
-reached one.
+The other two failed in the install path on 2026-08-22, both before any
+check ran, and the diff lane's supported boundary was fixed from them on
+2026-08-29 (DECISIONS row 235, records under `evals/v1/diff-lane/20260829/`):
+pytest-based Python repositories with package metadata pip can install at the
+root, `pyproject.toml` or `setup.py`, on a setuptools, flit-core, poetry-core
+or hatchling backend.
 
-So the Action ships report-only against an unmeasured false-positive rate, and
-against an install path that handles a `pyproject.toml` repo and not the other
-two shapes. That is M7 work.
+`hkhonming/lp-to-jira#16` is a `setup.py` plus `setup.cfg` package. pip took
+its legacy editable path for that shape, setuptools' `develop` shim
+re-invoked pip without the offline flags, and the nested install died under
+`--network none`. The session-start overlay install now runs with
+`--use-pep517`, and the repo's `addopts = --cov` then needs its `[test]`
+extra, which the exit-4 refusal names. With `--install "pip install -q -e
+.[test]"` the lane reaches a verdict, and the record reads as two facts the
+harness keeps orthogonal. The verdict is **FAIL at 0.00** on one hard
+`collect_shrinkage` row (H1) on `tests/test_milestone_sync.py`: the committed
+patch (`evals/v1/diff-lane/20260829/patches/lp-to-jira-16.diff`) renames
+`test_sync_milestone_to_jira_add_to_existing` to
+`test_sync_milestone_to_jira_overwrite_existing` and rewrites its assertions,
+and the collect diff records the old id as missing. And `checks_infra` names
+`t1_coverage`, which could not obtain test contexts: `verdict.json` records
+that the run wrote no context strings, so the pinned rc's `dynamic_context`
+was not honored. Run status stays `ok` and the CLI exits 2, by the
+aggregator's own rule that a FAIL is evidence-only and never consults an
+infra check that is not mandatory; had the coverage failure been the only
+outcome, the run would have been INFRA_ERROR with exit 3. The likely cause,
+not measured: the repo's own `--cov` loads pytest-cov, which starts a coverage
+run of its own. A documented limitation of v1, not fixed here; the verdict
+stands on the hard row.
+
+`AlexanderAlcazar/nexus_student_hub#1` has `requirements.txt`, `src/` and
+`tests/` and no package metadata. pip's own words are "neither 'setup.py' nor
+'pyproject.toml' found", and the lane now says so before an image is built,
+with the boundary and the fix named, exit 3. Dependency discovery for such
+repos is out of scope on purpose. `EinDev/watchman-pairing-assistant#40`
+re-audits as before: PASS at 0.25, 6 checks completed, 0 infra.
+
+So the Action ships report-only against an unmeasured false-positive rate,
+and against a stated boundary: two of the three real PRs reach a verdict,
+and the third is refused by name.
 
 Runtime honesty note. A cold run builds a per-repo Docker image first, on
 the order of minutes, before the measured 91 s to 167 s deterministic
 verify itself (see "The lanes" above). The synthesized spec runs the same
 30-mutant budget the corpus tasks do (`verification.mutation.budget_mutants`
 in `diffmode.synthesize_spec`), against whatever repo state the PR diffs, so
-that batch's cost against an arbitrary repo is unmeasured outside this
-corpus.
+that batch's cost against a repo outside this corpus is unmeasured.
 
 ## Status
 
@@ -401,9 +431,13 @@ record it; the close moved the revision again by correcting a version string,
 the same way M5's own post-close fixes did. M6 paid total $4.1979 of a $15
 ceiling.
 
-M7 takes what M6 left: the H7 rule and the diff lane's install-and-apply
-path against arbitrary repos; the arm snapshot that carries its own candidate
-diff landed in PR #13. The task installs now pin their transitive dependencies to
+M7 took what M6 left. The H7 work item closed: row 229's weight change puts
+both dev-set H7 rows at SUSPECT (1.00 and 2.00) and PR #20's parser fix
+reaches the agent-authored fourth in re-verification (row 230), while the
+published H7 tally stays 0 of 4 and the deterministic lane still reads 0 of 2;
+the arm snapshot that carries its own candidate diff landed in PR #13; the
+diff lane's install path has a stated boundary and two of three real PRs
+reach a verdict (row 235). The task installs now pin their transitive dependencies to
 `constraints/`, one closure per repo read out of the image the published runs
 measured (DECISIONS row 231), and the fresh-clone footprint is measured and
 tabled under The lanes above (row 232).

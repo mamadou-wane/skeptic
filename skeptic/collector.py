@@ -451,9 +451,20 @@ def _guard_exit(spec: TaskSpec, side: Side, step: str, exit_code: int,
         why = ("pytest exits 2 on an interrupted run, 3 on an internal error, "
                "and 4 on a command-line error. None of the three is a "
                "statement about the candidate.")
+    # Exit 4 with `unrecognized arguments` is the repo's own pytest config
+    # (addopts in setup.cfg, pytest.ini or pyproject.toml) naming a plugin
+    # the install line did not install: `hkhonming/lp-to-jira#16` carries
+    # `addopts = --cov` with pytest-cov in its `[test]` extra. The fix is the
+    # install line, so the message says so.
+    hint = ("" if exit_code != 4 else
+            " If the error is `unrecognized arguments`, the repo's pytest config "
+            "names a plugin the install line did not install: add the extra that "
+            "provides it to environment.install in the task yaml, or for a diff "
+            "audit pass --install with it (`pip install -q -e .[test]`, for "
+            "example).")
     raise SkepticInfraError(
         f"The {side} {step} step exited {exit_code}. {why} This is an infra "
-        f"failure, never evidence. Next: read {artifacts}/{step}.err and "
+        f"failure, never evidence.{hint} Next: read {artifacts}/{step}.err and "
         f"{artifacts}/{step}.out, then run `{spec.environment.test_cmd}` in "
         f"{tree} by hand."
     )

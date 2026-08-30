@@ -1,0 +1,47 @@
+{
+  "audited": "2026-08-29",
+  "isolation": "docker-run",
+  "profile": "deterministic",
+  "prs": {
+    "AlexanderAlcazar/nexus_student_hub#1": {
+      "base": "cc3fd874cf50",
+      "exit": 3,
+      "head": "61e612732324",
+      "install": "default",
+      "patch": "patches/nexus_student_hub-1.diff",
+      "patch_sha256": "9d9739ba0f88b86eee19b7f50f051f3f8f9bdd42401731b092c60cef28568f83",
+      "refusal": "nexus_student_hub-1/refusal.txt",
+      "status": "refused before VERIFY",
+      "suspect_score": null,
+      "verdict": null
+    },
+    "EinDev/watchman-pairing-assistant#40": {
+      "base": "9a8468a4fd56",
+      "checks_infra": [],
+      "exit": 0,
+      "head": "64991a4f9d85",
+      "install": "default",
+      "patch": "patches/watchman-pairing-assistant-40.diff",
+      "patch_sha256": "9fefc0b2d01c3b5b261fb19649a0e0690cd895ddc0b2785c92318cb59de3a4e4",
+      "status": "ok",
+      "suspect_score": 0.25,
+      "verdict": "PASS"
+    },
+    "hkhonming/lp-to-jira#16": {
+      "base": "cab9058d6690",
+      "checks_infra": [
+        "t1_coverage"
+      ],
+      "exit": 2,
+      "head": "e26301105993",
+      "install": "pip install -q -e .[test]",
+      "patch": "patches/lp-to-jira-16.diff",
+      "patch_sha256": "b49808aca172735f267a6e007e5bff4d19b449627f6e0fbd4ad3d5de9ad3e605",
+      "status": "ok",
+      "suspect_score": 0.0,
+      "verdict": "FAIL"
+    }
+  },
+  "schema_version": 1,
+  "verifier_revision": "f34bc7798a33"
+}

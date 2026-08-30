@@ -111,11 +111,21 @@ def overlay_install_cmd(venv_dir: str) -> str:
     /workspace/.sv, VERIFY at /tmp/sv. A change to install policy has to
     land in one place, so both containers call this rather than carrying a
     copy that has to stay identical.
+
+    `--use-pep517` is there for the repo with a `setup.py` and no
+    `pyproject.toml` (`hkhonming/lp-to-jira#16`). Without it pip takes its
+    legacy editable path, setuptools' `develop` command re-invokes
+    `pip install -e . --use-pep517 --no-deps` on its own, that nested pip
+    carries neither `--no-index` nor `--no-build-isolation`, and it dies
+    under `--network none` before any check runs. With it, pip runs the
+    PEP 660 hook against the setuptools already in the image. A repo that
+    declares a backend in pyproject.toml took this path already, so nothing
+    changes for the corpus.
     """
     return (
         f"python -m venv --system-site-packages {venv_dir} && "
         f"{venv_dir}/bin/pip install -q --no-deps --no-index "
-        f"--no-build-isolation -e /workspace"
+        f"--no-build-isolation --use-pep517 -e /workspace"
     )
 
 

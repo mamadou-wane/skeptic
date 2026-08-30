@@ -278,7 +278,10 @@ def _task_dict(**overrides):
 @pytest.mark.parametrize("field", ["test_dirs", "config_files", "golden_dirs"])
 @pytest.mark.parametrize(
     "raw",
-    ["/etc", "../escape", "a/../b", "C:\\Windows", "\\\\server\\share", "", "."],
+    [
+        "/etc", "../escape", "a/../b", "C:\\Windows", "\\Windows",
+        "\\\\server\\share", "", ".",
+    ],
 )
 def test_protected_mount_subpath_syntax_is_rejected(field, raw):
     payload = _task_dict()

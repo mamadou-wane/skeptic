@@ -159,7 +159,7 @@ PROBE_SCRUB: tuple[str, ...] = ("PYTEST_CURRENT_TEST", "CI")
 # verifier_revision with no re-collection, while a collector behavior change
 # needs this bumped by hand to invalidate a baseline cached under the old
 # behavior. Precedent: `skeptic.builder.GREEN_RULE_VERSION`.
-COLLECTOR_VERSION = "2"
+COLLECTOR_VERSION = "3"
 
 # `-q`, `-qq`, `-v`, `-vv`: pytest counts these, so they compose.
 _VERBOSITY = re.compile(r"^-[qv]+$")
@@ -296,7 +296,7 @@ def _report_argv(changed_py: list[str]) -> list[str]:
     coverage data, which is one of its enumerated INFRA conditions rather than
     a number that is quietly wrong.
     """
-    return ["python", "-m", "coverage", "json", "--show-contexts",
+    return ["python", "-P", "-s", "-m", "coverage", "json", "--show-contexts",
             f"--include={','.join(changed_py)}",
             "-o", f"{_PRIVATE_ARTIFACTS}/{_COVERAGE_JSON}"]
 
@@ -520,15 +520,20 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
     in the artifacts: the file is what a human reads, and only the field can
     become `ro_subpath_deleted` evidence (DECISIONS row 91).
 
-    Collection is sealed before the suite begins. The suite's JUnit and
-    coverage data are admitted before a separate coverage-report container
-    receives those host-owned files read-only. No candidate execution ever
-    receives the sealed root, or another phase's output, as writable storage.
+    A clean report source snapshot is taken before collection executes any
+    candidate code. Collection is sealed before the suite begins. The suite's
+    JUnit and coverage data are admitted before a separate coverage-report
+    container receives those host-owned files and the snapshot read-only. The
+    report performs no editable install and Python safe-path/no-user-site flags
+    keep candidate sitecustomize and module shadows out of tool resolution. No
+    candidate execution ever receives the sealed root, or another phase's
+    output, as writable storage.
 
     `changed_files` is the candidate's, on both sides. It scopes only the
     report, and the two sides run symmetric argv under one monotonic deadline.
     """
     changed_files = tuple(changed_files)
+    changed_py = _measurable(spec, changed_files)
     if artifacts.exists():
         shutil.rmtree(artifacts)
     artifacts.mkdir(parents=True)
@@ -536,6 +541,12 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
     if quarantine_root.exists():
         shutil.rmtree(quarantine_root)
     quarantine_root.mkdir(mode=0o700)
+    report_tree: Path | None = None
+    if changed_py:
+        report_tree = artifacts.parent / f".{artifacts.name}-report-source"
+        if report_tree.exists():
+            shutil.rmtree(report_tree)
+        snapshot(tree, report_tree)
 
     ro = (tuple(spec.environment.test_dirs)
           + tuple(spec.environment.config_files)
@@ -589,11 +600,22 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
         install_ok = read_artifact_bytes(
             artifacts, f"{step}.{_INSTALL_OK}", CONTROL_MAX, required=False)
         if install_ok is None:
+            setup_failure = (
+                "the overlay install failed or the container did not start"
+                if container.install_overlay
+                else "the no-install report container did not start"
+            )
+            setup_detail = (
+                "Skeptic installs the tree into /tmp/sv before every "
+                "candidate-executing phase. "
+                if container.install_overlay
+                else "Skeptic runs reporting from the frozen image without "
+                "installing candidate code. "
+            )
             raise SkepticInfraError(
                 f"The {side} {step} observation phase never reached its "
-                f"command (container exit {result.exit_code}), so the overlay "
-                f"install failed or the container did not start. Skeptic "
-                f"installs the tree into /tmp/sv before every fresh phase. "
+                f"command (container exit {result.exit_code}), so "
+                f"{setup_failure}. {setup_detail}"
                 f"The phase's stdout and stderr are sealed at "
                 f"{artifacts}/{step}.out and {artifacts}/{step}.err. Next: "
                 f"`docker run --rm {image_tag} true`, then re-run the pair.\n"
@@ -628,14 +650,19 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
         env=coverage_env,
     )
 
-    changed_py = _measurable(spec, changed_files)
     coverage_path = validate_artifact_path(
         artifacts, _COVERAGE_DATA, COVERAGE_DATA_MAX, required=False)
     if changed_py and coverage_path is not None:
-        report_container = fresh_container((
-            (rc_path, rc_target),
-            (coverage_path, f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}"),
-        ))
+        assert report_tree is not None
+        report_container = RunContainer(
+            image_tag, report_tree,
+            input_mounts=(
+                (rc_path, rc_target),
+                (coverage_path, f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}"),
+            ),
+            install_overlay=False,
+            workspace_mode="ro",
+        )
         report_env = {
             **coverage_env,
             "COVERAGE_FILE": f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}",
@@ -648,6 +675,8 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
             ),
             env=report_env,
         )
+    if report_tree is not None:
+        shutil.rmtree(report_tree)
 
     publish_artifact_bytes(
         artifacts, _DROPPED,

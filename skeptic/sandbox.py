@@ -265,11 +265,13 @@ def docker_run_args(
     env: dict[str, str] | None = None,
     input_mounts: tuple[InputMount, ...] = (),
     workspace_overlays: tuple[WorkspaceOverlay, ...] = (),
+    workspace_mode: Literal["rw", "ro"] = "rw",
 ) -> list[str]:
     # The container user is the host UID:GID so files written through the
     # bind mount stay owned by the invoking user (M1 review deferral). That
     # user has no /etc/passwd entry in the image, so HOME is pointed at the
-    # writable workspace for tools that insist on one.
+    # workspace for tools that insist on one. Trusted no-install captures may
+    # mount the whole workspace read-only.
     args = [
         "docker", "run", "--rm",
         "--network", "none",
@@ -277,9 +279,9 @@ def docker_run_args(
         "--security-opt", "no-new-privileges",
         "--user", f"{os.getuid()}:{os.getgid()}",
         "-e", "HOME=/workspace",
-        "-v", f"{workspace}:/workspace",
+        "-v", f"{workspace}:/workspace{':ro' if workspace_mode == 'ro' else ''}",
     ]
-    # Read-only overlays mount AFTER the rw workspace so they shadow it:
+    # Read-only overlays mount AFTER the workspace so they shadow it:
     # tests, runner configs, and goldens stay Builder-visible and immutable
     # (prevention tier, plan section 6).
     for sub in ro_subpaths:
@@ -465,7 +467,9 @@ class RunContainer:
     one of them is contamination. Several commands inside one `sh -c` are
     fine and intended, and the container is gone when `run` returns.
 
-    The overlay venv sits at /tmp/sv, outside the judged tree. BUILD can
+    Candidate-executing phases install an overlay venv at /tmp/sv, outside the
+    judged tree. A trusted transform may explicitly skip that install and
+    mount a pre-execution source snapshot read-only. BUILD can
     afford /workspace/.sv because `candidate.EXCLUDE_NAMES` strips it from
     the diff; in VERIFY the workspace is the thing being measured.
 
@@ -480,9 +484,13 @@ class RunContainer:
                  extra_mounts: tuple[ExtraMount, ...] = (),
                  missing_ro: Literal["raise", "drop"] = "raise",
                  input_mounts: tuple[InputMount, ...] = (),
-                 workspace_overlays: tuple[WorkspaceOverlay, ...] = ()) -> None:
+                 workspace_overlays: tuple[WorkspaceOverlay, ...] = (),
+                 install_overlay: bool = True,
+                 workspace_mode: Literal["rw", "ro"] = "rw") -> None:
         self.image = image
         self.workspace = workspace
+        self.install_overlay = install_overlay
+        self.workspace_mode = workspace_mode
         self.extra_mounts = tuple(extra_mounts)
         self.input_mounts = tuple(
             _validate_input_mount(source, target)
@@ -525,13 +533,17 @@ class RunContainer:
         # `docker exec` path, which never sees the base flags.
         merged = {**base_env(f"{self._VENV}/bin"), **(env or {})}
         args = docker_run_args(self.image, self.workspace, self.ro_subpaths,
-                               self.extra_mounts, merged)
+                               self.extra_mounts, merged,
+                               workspace_mode=self.workspace_mode)
         # The script goes in a brace group so `&&` guards all of it. A failed
         # install must reach the caller as its own exit code with nothing run
         # after it: an unguarded `install && a; b` runs b against the system
         # python, which would launder a frozen-closure suite into a candidate
         # observation. The newline before the closing brace is sh syntax.
-        guarded = f"{overlay_install_cmd(self._VENV)} && {{ {script}\n}}"
+        guarded = (
+            f"{overlay_install_cmd(self._VENV)} && {{ {script}\n}}"
+            if self.install_overlay else script
+        )
         full = args + ["sh", "-c", guarded]
         return _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
 
@@ -556,13 +568,18 @@ class RunContainer:
             merged,
             self.input_mounts,
             self.workspace_overlays,
+            self.workspace_mode,
         )
         args.remove("--rm")
         name = f"skeptic-{os.getpid()}-{uuid.uuid4().hex}"
         args[2:2] = ["--name", name]
+        install = (
+            f"{overlay_install_cmd(self._VENV)} && "
+            if self.install_overlay else ""
+        )
         prepared = (
             "mkdir -p /tmp/skeptic-artifacts && "
-            f"{overlay_install_cmd(self._VENV)} && "
+            f"{install}"
             "printf 'ok\\n' > /tmp/skeptic-artifacts/install.ok && "
             f"{{ {script}\n}}"
         )

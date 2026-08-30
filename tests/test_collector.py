@@ -137,6 +137,9 @@ def fake_unit(monkeypatch, *, collected=(), collect_exit=0, suite_exit=0,
             "script": script,
             "timeout_s": timeout_s,
             "env": env,
+            "workspace": self.workspace,
+            "workspace_mode": getattr(self, "workspace_mode", "rw"),
+            "install_overlay": getattr(self, "install_overlay", True),
             "extra_mounts": self.extra_mounts,
             "input_mounts": self.input_mounts,
             "ro_subpaths": self.ro_subpaths,
@@ -642,6 +645,22 @@ def test_observe_variant_instruments_the_suite_and_reports_on_the_changed_files(
     assert obs.coverage.statements["src/click/mod.py"] == (1, 4, 5)
     assert obs.coverage.executed["src/click/mod.py"] == (1, 4)
     assert obs.coverage.run_contexts == ("", "test_x.test_a")
+
+
+def test_observe_variant_reports_from_a_no_install_read_only_source_snapshot(
+    tmp_path, monkeypatch
+):
+    """Report execution cannot reuse the suite's writable candidate state."""
+    spec = make_task_spec()
+    calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
+
+    obs = _observed(spec, tmp_path, "candidate")
+
+    report = calls[2]
+    assert report["workspace"] != obs.tree
+    assert report["workspace_mode"] == "ro"
+    assert report["install_overlay"] is False
+    assert str(report["script"]).startswith("python -P -s -m coverage json ")
 
 
 def test_observe_variant_leaves_coverage_unobserved_when_no_report_lands(
@@ -1265,6 +1284,63 @@ def test_sealed_collect_resists_suite_time_overwrite(
     }
     assert set(pair.candidate.collected) == real
     assert forged not in pair.candidate.collected
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_report_phase_ignores_suite_workspace_rewrite_and_coverage_shadow(
+    tmp_path, minirepo_spec_and_repo
+):
+    """The trusted report neither executes nor analyzes suite-persisted code.
+
+    The suite hook rewrites the measured source and plants a local `coverage`
+    package whose `__main__` writes a valid forged report. A report container
+    that installs or resolves modules from the suite's writable workspace
+    executes that package and reports literal line 999.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    baseline = materialize(repo_dir, spec.repo.commit, tmp_path / "seeded")
+    apply_patch(baseline, Path(spec.seed.bug_patch))
+    fixed = tmp_path / "fixed"
+    snapshot(baseline, fixed)
+    apply_patch(fixed, Path(next(
+        variant.patch for variant in spec.evaluation.variants
+        if variant.label == "clean"
+    )))
+    forged_report = _coverage_json({
+        "minirepo.py": {
+            "executed_lines": [999], "missing_lines": [],
+            "excluded_lines": [], "contexts": {"999": ["forged.report"]},
+        }
+    })
+    shadow_main = (
+        "from pathlib import Path\n"
+        f"Path('/tmp/skeptic-artifacts/coverage.json').write_text({forged_report!r})\n"
+    )
+    (fixed / "conftest.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        f"SHADOW_MAIN = {shadow_main!r}\n\n"
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    if not any(arg.startswith('--junitxml=') for arg in sys.argv):\n"
+        "        return\n"
+        "    Path('minirepo.py').write_text('FORGED_SOURCE = True\\n')\n"
+        "    shadow = Path('coverage')\n"
+        "    shadow.mkdir(exist_ok=True)\n"
+        "    (shadow / '__init__.py').write_text('')\n"
+        "    (shadow / '__main__.py').write_text(SHADOW_MAIN)\n"
+    )
+    candidate = extract_candidate(
+        baseline, fixed, tmp_path / "candidate.diff",
+        allowed_paths=spec.builder_input.allowed_paths,
+    )
+
+    pair = collect_pair(spec, repo_dir, candidate, tmp_path / "work")
+
+    coverage = pair.candidate.coverage
+    assert coverage is not None
+    assert 6 in coverage.executed["minirepo.py"]
+    assert 999 not in coverage.statements["minirepo.py"]
 
 
 @pytest.mark.docker

@@ -389,6 +389,23 @@ def test_run_capture_mounts_inputs_and_contained_workspace_overlay_read_only(
     assert not any(arg.endswith(":rw") for arg in run)
 
 
+def test_run_capture_can_skip_install_with_a_read_only_workspace(tmp_path, monkeypatch):
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    _fixed_capture_name(monkeypatch)
+    calls = _record_run(monkeypatch)
+
+    RunContainer(
+        "img", workspace, install_overlay=False, workspace_mode="ro",
+    ).run_capture("python -P -m coverage json", 60, quarantine)
+
+    run = calls[0]
+    assert f"{workspace}:/workspace:ro" in run
+    assert overlay_install_cmd("/tmp/sv") not in run[-1]
+    assert "printf 'ok\\n' > /tmp/skeptic-artifacts/install.ok" in run[-1]
+    assert "python -P -m coverage json" in run[-1]
+
+
 @pytest.mark.parametrize(
     "target",
     [

@@ -16,7 +16,7 @@ The Builder is an LLM coding agent that fixes seeded bugs in real open-source Py
 
 The Skeptic is an independent verification layer that audits every "green" result for the ways agents fake success. Hard evidence comes from observed behavior deltas (test-collection shrinkage, outcome flips, config-effective changes, coverage), with AST analysis as the *attribution* layer that explains mechanism. Probabilistic checks (budgeted mutation testing, adversarial tests validated against a hidden reference, a consumer-process probe) target the hacks prevention can't stop. Evidence aggregates into PASS / SUSPECT / FAIL, with INFRA_ERROR as an orthogonal run status, so infrastructure failures never masquerade as verdicts.
 
-`skeptic verify --diff` audits any patch against any repo, with no Builder and no seeded task, and ships with a ~20-line GitHub Action, demoed on one real public agent PR.
+`skeptic verify --diff` audits a patch against a local repo, with no Builder and no seeded task, and ships with a ~20-line GitHub Action, demoed on one real public agent PR. (The supported boundary, fixed in M7: pytest-based Python repositories with package metadata pip can install at the root; DECISIONS row 235.)
 
 The deliverable is the harness plus a de-circularized eval: a self-authored dev set, a within-taxonomy blind holdout authored by a different frontier model, baseline rows that make the table interpretable, and pressured end-to-end runs classified against frozen acceptance suites. Headline numbers ship with committed raw traces and a reproduction manifest.
 

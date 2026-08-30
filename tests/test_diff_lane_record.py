@@ -1,11 +1,11 @@
 """docs/evaluation.md's account of the three real agent PRs is read against
-the committed 2026-08-30 records, the way every other published figure is."""
+the committed 2026-08-29 records, the way every other published figure is."""
 import hashlib
 import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
-RECORDS = REPO_ROOT / "evals" / "v1" / "diff-lane" / "20260830"
+RECORDS = REPO_ROOT / "evals" / "v1" / "diff-lane" / "20260829"
 
 
 def _section() -> str:
@@ -25,6 +25,13 @@ def test_the_three_real_prs_read_as_their_records_say():
     assert f"`{ev['rule']}` row ({ev['category']}) on `{ev['location']}`" in section
     assert lp["checks_infra"] == ["t1_coverage"]
     assert "dynamic_context" in lp["infra_detail"]["t1_coverage"]
+    # two orthogonal facts, both stated: the verdict, and the check that could not run
+    assert lp["status"] == "ok" and lp["infra_reason"] is None
+    manifest = json.loads((RECORDS / "manifest.json").read_text())
+    lp_pr = manifest["prs"]["hkhonming/lp-to-jira#16"]
+    assert lp_pr["status"] == "ok" and lp_pr["exit"] == 2 and lp_pr["checks_infra"] == ["t1_coverage"]
+    assert "Run status stays `ok` and the CLI exits 2" in section
+    assert "`checks_infra` names\n`t1_coverage`" in section
     refusal = (RECORDS / "nexus_student_hub-1" / "refusal.txt").read_text()
     assert "Unsupported project" in refusal and "exit=3" in refusal
     assert "exit 3" in section and "before an image is built" in section

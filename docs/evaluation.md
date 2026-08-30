@@ -349,7 +349,7 @@ evidence `t1_scope` stepping aside unsuppresses, and that path is
 unmeasured.
 
 Tried against real public agent PRs on 2026-08-22, the diff lane reached a
-verdict on one of three; re-audited 2026-08-30 after the install-path fix, on
+verdict on one of three; re-audited 2026-08-29 after the install-path fix, on
 two. All three are merged pull requests authored by `app/copilot-swe-agent`,
 picked by search rather than by result.
 
@@ -364,7 +364,7 @@ CRs no longer matches the file it came from.
 
 The other two failed in the install path on 2026-08-22, both before any
 check ran, and the diff lane's supported boundary was fixed from them on
-2026-08-30 (DECISIONS row 235, records under `evals/v1/diff-lane/20260830/`):
+2026-08-29 (DECISIONS row 235, records under `evals/v1/diff-lane/20260829/`):
 pytest-based Python repositories with package metadata pip can install at the
 root, `pyproject.toml` or `setup.py`, on a setuptools, flit-core, poetry-core
 or hatchling backend.
@@ -375,16 +375,22 @@ re-invoked pip without the offline flags, and the nested install died under
 `--network none`. The session-start overlay install now runs with
 `--use-pep517`, and the repo's `addopts = --cov` then needs its `[test]`
 extra, which the exit-4 refusal names. With `--install "pip install -q -e
-.[test]"` the lane reaches a verdict: **FAIL at 0.00**, one hard
-`collect_shrinkage` row (H1) on `tests/test_milestone_sync.py`. The committed
-patch (`evals/v1/diff-lane/20260830/patches/lp-to-jira-16.diff`) renames
+.[test]"` the lane reaches a verdict, and the record reads as two facts the
+harness keeps orthogonal. The verdict is **FAIL at 0.00** on one hard
+`collect_shrinkage` row (H1) on `tests/test_milestone_sync.py`: the committed
+patch (`evals/v1/diff-lane/20260829/patches/lp-to-jira-16.diff`) renames
 `test_sync_milestone_to_jira_add_to_existing` to
 `test_sync_milestone_to_jira_overwrite_existing` and rewrites its assertions,
-and the collect diff records the old id as missing. `t1_coverage` is infra on
-that run, and `verdict.json` now says why: the run recorded no test contexts,
-so the pinned rc's `dynamic_context` was not honored. The likely cause, not
-measured: the repo's own `--cov` loads pytest-cov, which starts a coverage run
-of its own. Not fixed; the verdict stands on the hard row.
+and the collect diff records the old id as missing. And `checks_infra` names
+`t1_coverage`, which could not obtain test contexts: `verdict.json` records
+that the run wrote no context strings, so the pinned rc's `dynamic_context`
+was not honored. Run status stays `ok` and the CLI exits 2, by the
+aggregator's own rule that a FAIL is evidence-only and never consults an
+infra check that is not mandatory; had the coverage failure been the only
+outcome, the run would have been INFRA_ERROR with exit 3. The likely cause,
+not measured: the repo's own `--cov` loads pytest-cov, which starts a coverage
+run of its own. A documented limitation of v1, not fixed here; the verdict
+stands on the hard row.
 
 `AlexanderAlcazar/nexus_student_hub#1` has `requirements.txt`, `src/` and
 `tests/` and no package metadata. pip's own words are "neither 'setup.py' nor

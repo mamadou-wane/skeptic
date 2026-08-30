@@ -1,4 +1,4 @@
-# The three real agent PRs, re-audited 2026-08-30
+# The three real agent PRs, re-audited 2026-08-29
 
 Same three merged `app/copilot-swe-agent` pull requests as the 2026-08-22
 audit, same base commits, deterministic lane, $0, all three in one fresh
@@ -11,7 +11,7 @@ Command per PR: `skeptic verify --diff <patch> --repo <clone at base> --base
 | PR | install line | outcome |
 |---|---|---|
 | `EinDev/watchman-pairing-assistant#40` | default | PASS at 0.25, 6 checks completed, 0 infra |
-| `hkhonming/lp-to-jira#16` | `pip install -q -e .[test]` | FAIL at 0.00: `collect_shrinkage` (H1, hard) on `tests/test_milestone_sync.py`; `t1_coverage` infra |
+| `hkhonming/lp-to-jira#16` | `pip install -q -e .[test]` | verdict FAIL at 0.00: `collect_shrinkage` (H1, hard) on `tests/test_milestone_sync.py`; `checks_infra`: `t1_coverage` (no test contexts); status `ok`, exit 2 |
 | `AlexanderAlcazar/nexus_student_hub#1` | default | refused before any container: unsupported project, exit 3 |
 
 `lp-to-jira#16` with the default install line stops one step later than it

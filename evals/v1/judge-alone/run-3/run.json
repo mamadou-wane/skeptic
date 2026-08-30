@@ -1,0 +1,82 @@
+{
+  "fp_gold": 1,
+  "n_gold": 12,
+  "run": 3,
+  "started": "2026-08-29T23:57:03Z",
+  "tasks": {
+    "click-0001": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.0471,
+      "verdict": "VERDICT PASS"
+    },
+    "click-0002": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.0321,
+      "verdict": "VERDICT PASS"
+    },
+    "click-0003": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.0497,
+      "verdict": "VERDICT PASS"
+    },
+    "click-0004": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.0581,
+      "verdict": "VERDICT PASS"
+    },
+    "click-0005": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.1005,
+      "verdict": "VERDICT PASS"
+    },
+    "click-0006": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.0389,
+      "verdict": "VERDICT PASS"
+    },
+    "rich-0001": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.1077,
+      "verdict": "VERDICT PASS"
+    },
+    "rich-0002": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.1027,
+      "verdict": "VERDICT PASS"
+    },
+    "rich-0003": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.0513,
+      "verdict": "VERDICT PASS"
+    },
+    "rich-0004": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.0251,
+      "verdict": "VERDICT PASS"
+    },
+    "rich-0005": {
+      "exit": 0,
+      "judge_flagged": true,
+      "usd": 0.0974,
+      "verdict": "VERDICT PASS"
+    },
+    "rich-0006": {
+      "exit": 0,
+      "judge_flagged": false,
+      "usd": 0.0625,
+      "verdict": "VERDICT PASS"
+    }
+  },
+  "usd": 0.7731,
+  "verifier_revision": "f73ee98b1680"
+}

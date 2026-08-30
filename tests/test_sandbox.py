@@ -3,6 +3,7 @@ import shutil
 
 import pytest
 
+from skeptic import sandbox as sandbox_module
 from skeptic.errors import SkepticInfraError, VenvBuildRefused
 from skeptic.sandbox import (
     VenvRunner,
@@ -115,6 +116,25 @@ def test_docker_run_args_mount_ro_subpaths_over_workspace(tmp_path):
     assert f"-v {tmp_path}/pyproject.toml:/workspace/pyproject.toml:ro" in joined
     # ro overlays must come after the rw workspace mount to take precedence
     assert joined.index(":/workspace ") < joined.index(":/workspace/tests:ro")
+
+
+def test_docker_run_args_normalize_ro_subpath_for_mounting(tmp_path):
+    (tmp_path / "tests").mkdir()
+
+    args = docker_run_args("img", tmp_path, ro_subpaths=("./tests//",))
+
+    assert f"{tmp_path}/tests:/workspace/tests:ro" in args
+
+
+def test_docker_run_args_refuse_ro_subpath_escape_at_final_boundary(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / "tests").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SkepticInfraError, match="outside the workspace"):
+        docker_run_args("img", workspace, ro_subpaths=("tests",))
 
 
 def test_docker_run_args_set_home_to_workspace(tmp_path):
@@ -308,6 +328,60 @@ def test_run_container_dropped_ro_subpaths_is_empty_when_every_path_exists(
     joined = " ".join(calls[0])
     assert f"-v {tmp_path}/tests:/workspace/tests:ro" in joined
     assert f"-v {tmp_path}/pyproject.toml:/workspace/pyproject.toml:ro" in joined
+
+
+def test_resolve_ro_subpath_refuses_final_symlink_escape(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / "tests").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SkepticInfraError, match="outside the workspace"):
+        sandbox_module._resolve_ro_subpath(workspace, "tests")
+
+
+def test_resolve_ro_subpath_refuses_intermediate_symlink_escape(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "tests").mkdir(parents=True)
+    (workspace / "linked").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SkepticInfraError, match="outside the workspace"):
+        sandbox_module._resolve_ro_subpath(workspace, "linked/tests")
+
+
+def test_resolve_ro_subpath_accepts_internal_symlink(tmp_path):
+    workspace = tmp_path / "workspace"
+    real = workspace / "real" / "tests"
+    real.mkdir(parents=True)
+    (workspace / "linked").symlink_to(workspace / "real", target_is_directory=True)
+
+    assert sandbox_module._resolve_ro_subpath(workspace, "linked/tests") == (
+        "linked/tests",
+        real.resolve(),
+    )
+
+
+@pytest.mark.parametrize("raw", ["/etc", "escape", "dangling"])
+def test_run_container_refuses_invalid_ro_subpath_before_missing_ro_drop(tmp_path, raw):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    if raw == "escape":
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (workspace / raw).symlink_to(outside, target_is_directory=True)
+    elif raw == "dangling":
+        (workspace / raw).symlink_to(tmp_path / "gone", target_is_directory=True)
+
+    with pytest.raises(SkepticInfraError):
+        RunContainer("img", workspace, ro_subpaths=(raw,), missing_ro="drop")
+
+
+def test_session_container_refuses_invalid_ro_subpath_at_construction(tmp_path):
+    with pytest.raises(SkepticInfraError):
+        SessionContainer("img", tmp_path, ro_subpaths=("/etc",))
 
 
 def test_session_container_and_run_container_share_one_install_string(tmp_path, monkeypatch):

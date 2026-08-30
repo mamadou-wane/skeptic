@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import ClassVar, Literal, Self
 
 from skeptic.errors import SkepticInfraError, VenvBuildRefused
+from skeptic.spec import normalize_ro_subpath
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,62 @@ def base_env(venv_bin: str) -> dict[str, str]:
 ExtraMount = tuple[Path, str, Literal["ro", "rw"]]
 
 
+def _resolve_ro_subpath(workspace: Path, raw: str) -> tuple[str, Path]:
+    """Return normalized mount spelling and a source contained by workspace.
+
+    Ordinary missing components are returned for the caller's existing
+    raise/drop policy. An existing symlink is resolved strictly, so a dangling
+    link or a link that leaves the workspace is always an infrastructure
+    refusal instead of looking like an ordinary candidate deletion.
+    """
+    try:
+        clean = normalize_ro_subpath(raw)
+    except ValueError as exc:
+        raise SkepticInfraError(
+            f"read-only mount subpath {raw!r} is invalid: {exc}. "
+            f"Skeptic only mounts protected repository-relative paths. "
+            f"Next: fix test_dirs, config_files, or golden_dirs in the task spec."
+        ) from exc
+
+    try:
+        root = workspace.resolve(strict=True)
+    except OSError as exc:
+        raise SkepticInfraError(
+            f"read-only mount workspace {workspace} cannot be resolved: {exc}. "
+            f"Skeptic must resolve the workspace before checking protected mounts."
+        ) from exc
+
+    cursor = root
+    parts = clean.split("/")
+    for index, part in enumerate(parts):
+        candidate = cursor / part
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            return clean, candidate.joinpath(*parts[index + 1:])
+        except OSError as exc:
+            raise SkepticInfraError(
+                f"read-only mount source {candidate} cannot be inspected: {exc}. "
+                f"Skeptic checks every existing path component before mounting it."
+            ) from exc
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise SkepticInfraError(
+                f"read-only mount source {candidate} is a dangling or "
+                f"unresolvable link ({exc}). Skeptic refuses dangling protected "
+                f"paths before applying the candidate missing-path policy."
+            ) from exc
+        if resolved == root or root not in resolved.parents:
+            raise SkepticInfraError(
+                f"read-only mount source {candidate} resolves to {resolved}, "
+                f"outside the workspace {root}. Protected mount sources must "
+                f"remain strictly beneath the workspace."
+            )
+        cursor = resolved
+    return clean, cursor
+
+
 def docker_run_args(
     image: str,
     workspace: Path,
@@ -173,8 +230,7 @@ def docker_run_args(
     # tests, runner configs, and goldens stay Builder-visible and immutable
     # (prevention tier, plan section 6).
     for sub in ro_subpaths:
-        clean = sub.rstrip("/")
-        host = workspace / clean
+        clean, host = _resolve_ro_subpath(workspace, sub)
         if not host.exists():
             raise SkepticInfraError(
                 f"read-only mount source {host} does not exist. Docker would "
@@ -375,11 +431,11 @@ class RunContainer:
         dropped: list[str] = []
         kept: list[str] = []
         for sub in ro_subpaths:
-            clean = sub.rstrip("/")
-            if missing_ro == "drop" and not (workspace / clean).exists():
+            clean, source = _resolve_ro_subpath(workspace, sub)
+            if missing_ro == "drop" and not source.exists():
                 dropped.append(clean)
             else:
-                kept.append(sub)
+                kept.append(clean)
         self.ro_subpaths = tuple(kept)
         self.dropped_ro_subpaths: tuple[str, ...] = tuple(sorted(dropped))
 
@@ -424,7 +480,9 @@ class SessionContainer:
                  ro_subpaths: tuple[str, ...] = ()) -> None:
         self.image = image
         self.workspace = workspace
-        self.ro_subpaths = ro_subpaths
+        self.ro_subpaths = tuple(
+            _resolve_ro_subpath(workspace, sub)[0] for sub in ro_subpaths
+        )
         self._container_id: str | None = None
 
     @property

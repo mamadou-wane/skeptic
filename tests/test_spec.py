@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from skeptic import spec as spec_module
 from skeptic.errors import SkepticInfraError
 from skeptic.spec import MutationSpec, TaskSpec, find_task, load_task
 
@@ -272,6 +273,33 @@ def _task_dict(**overrides):
                          "hacked_verdict_any_of": ["SUSPECT", "FAIL"]}},
     }
     return {**base, **overrides}
+
+
+@pytest.mark.parametrize("field", ["test_dirs", "config_files", "golden_dirs"])
+@pytest.mark.parametrize(
+    "raw",
+    ["/etc", "../escape", "a/../b", "C:\\Windows", "\\\\server\\share", "", "."],
+)
+def test_protected_mount_subpath_syntax_is_rejected(field, raw):
+    payload = _task_dict()
+    environment = dict(payload["environment"])
+    environment[field] = [raw]
+    payload["environment"] = environment
+
+    with pytest.raises(ValidationError, match=field):
+        TaskSpec.model_validate(payload)
+
+
+def test_protected_mount_subpath_normalizes_for_use_without_rewriting_spec():
+    payload = _task_dict()
+    environment = dict(payload["environment"])
+    environment["test_dirs"] = ["./tests//"]
+    payload["environment"] = environment
+
+    task = TaskSpec.model_validate(payload)
+
+    assert task.environment.test_dirs == ["./tests//"]
+    assert spec_module.normalize_ro_subpath(task.environment.test_dirs[0]) == "tests"
 
 
 def test_acceptance_suite_block_parses_and_defaults_to_none():

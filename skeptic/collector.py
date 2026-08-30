@@ -98,26 +98,13 @@ _RC = "coveragerc"
 _COVERAGE_DATA = ".coverage"
 _COVERAGE_JSON = "coverage.json"
 
-# The mutation batch's own artifact layout, all under one batch's artifacts
-# mount (Task 9): `originals/<path>` (the pre-mutation candidate source, one
-# copy per distinct changed path), `mutants/<id>/<basename>` (one mutated
-# source per mutant) plus its `selection.txt`, and `calibration/<key>/`
-# (one timed baseline run per distinct selection set, with its own
-# `selection.txt` for every per-line selection). The selection files are the
-# batch script's transport, not just a record: the script reloads each run's
-# nodeids from them in-container (task 7f). See `observe_mutation`.
-_MUT_ORIGINALS = "originals"
+# Mutation inputs live in a host-owned sibling root that is never writable in a
+# container. Each mutated source is mounted read-only over its one workspace
+# path; selection files are mounted individually at the fixed input target.
+# Outputs keep the existing calibration/<key>/ and mutants/<id>/ sealed layout.
 _MUT_MUTANTS = "mutants"
 _MUT_CALIBRATION = "calibration"
 _MUT_SELECTION = "selection.txt"
-
-# Sentinels the batch script writes to a mutant's own `exit` file in place of
-# a real exit code, when the cp that was supposed to run before or after that
-# mutant's test command failed (DECISIONS row 121). Distinct strings, never
-# valid `int()` input, so they cannot collide with any real exit code and are
-# checked for before `_read_mutation_int` ever tries to parse one.
-_CP_INSTALL_FAILED = "cp-install-failed"
-_CP_RESTORE_FAILED = "cp-restore-failed"
 
 # Timeout caps (DECISIONS row 112): 3x the calibration measurement, floor 5s,
 # ceiling 60s. The ceiling doubles as the calibration run's own bound, since a
@@ -325,27 +312,40 @@ def _measurable(spec: TaskSpec, changed_files: Sequence[str]) -> list[str]:
                     for root in roots)]
 
 
+def _run_private_phase(*, container: RunContainer, script: str,
+                       quarantine: Path, sealed: Path,
+                       output_specs: Sequence[ArtifactSpec], timeout_s: int,
+                       output_prefix: str,
+                       env: dict[str, str] | None = None) -> ExecResult:
+    """Capture and seal one private execution before another can start."""
+    result = container.run_capture(script, timeout_s, quarantine, env)
+    install_marker = read_artifact_bytes(
+        quarantine, _INSTALL_OK, CONTROL_MAX, required=False)
+    admit_artifacts(quarantine, sealed, output_specs)
+    if install_marker is not None:
+        publish_artifact_bytes(
+            sealed, f"{output_prefix}{_INSTALL_OK}", install_marker, CONTROL_MAX)
+    publish_artifact_bytes(
+        sealed, f"{output_prefix}out", result.stdout.encode(), TEXT_MAX)
+    publish_artifact_bytes(
+        sealed, f"{output_prefix}err", result.stderr.encode(), TEXT_MAX)
+    publish_artifact_bytes(
+        sealed, f"{output_prefix}exit", f"{result.exit_code}\n".encode(), CONTROL_MAX)
+    shutil.rmtree(quarantine)
+    return result
+
+
 def _run_observation_phase(*, step: str, container: RunContainer, argv: list[str],
                            quarantine: Path, sealed: Path,
                            output_specs: Sequence[ArtifactSpec],
                            timeout_s: int,
                            env: dict[str, str] | None = None) -> ExecResult:
     """Capture, admit, and seal one observation phase before another starts."""
-    result = container.run_capture(shlex.join(argv), timeout_s, quarantine, env)
-    install_marker = read_artifact_bytes(
-        quarantine, _INSTALL_OK, CONTROL_MAX, required=False)
-    admit_artifacts(quarantine, sealed, output_specs)
-    if install_marker is not None:
-        publish_artifact_bytes(
-            sealed, f"{step}.{_INSTALL_OK}", install_marker, CONTROL_MAX)
-    publish_artifact_bytes(
-        sealed, f"{step}.out", result.stdout.encode(), TEXT_MAX)
-    publish_artifact_bytes(
-        sealed, f"{step}.err", result.stderr.encode(), TEXT_MAX)
-    publish_artifact_bytes(
-        sealed, f"{step}.exit", f"{result.exit_code}\n".encode(), CONTROL_MAX)
-    shutil.rmtree(quarantine)
-    return result
+    return _run_private_phase(
+        container=container, script=shlex.join(argv), quarantine=quarantine,
+        sealed=sealed, output_specs=output_specs, timeout_s=timeout_s,
+        output_prefix=f"{step}.", env=env,
+    )
 
 
 def read_coverage(artifacts: Path, changed_files: Iterable[str]) -> CoverageReport:
@@ -891,38 +891,29 @@ def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
 
 def _selection_key(selection: tuple[str, ...]) -> str:
     """A filesystem-safe id for one distinct selection set, shared by every
-    mutant that resolved to it, so the batch times each selection once."""
+    mutant that resolved to it, so mutation calibrates each selection once."""
     return hashlib.sha256("\x1f".join(selection).encode()).hexdigest()[:12]
 
 
 def _write_mutation_inputs(
-    tree: Path, artifacts: Path, mutants: Sequence[Mutant],
+    inputs: Path, mutants: Sequence[Mutant],
     selections: Mapping[str, tuple[str, ...]],
 ) -> None:
-    """Host-side layout for a runnable batch: originals, mutated sources, a
-    per-mutant selection file, and a per-distinct-selection calibration copy,
-    all on the artifacts mount.
+    """Write host-owned source and selection inputs for isolated executions.
 
-    The selection files are what the batch script actually runs from (task
+    The selection files are what each phase script actually runs from (task
     7f): one nodeid per line, in selection order, byte-deterministic. The
     calibration copy exists because the calibration step runs once per
     distinct selection, before any mutant dir is a natural place to look;
     `FULL_SUITE` gets none, since its command carries no nodeids at all.
 
-    Mutant source never reaches a shell: every mutated file lands through
-    `write_text`, the way `mutated_source` was produced (`ast.unparse` over a
-    parsed, harness-owned tree), never through interpolation into the batch
-    script below.
+    Mutant source never reaches a shell and no candidate source is copied into
+    this root. Every mutated file lands through `write_text`, the way
+    `mutated_source` was produced (`ast.unparse` over a harness-owned tree),
+    then reaches its fresh container only as a read-only workspace overlay.
     """
-    originals_dir = artifacts / _MUT_ORIGINALS
-    mutants_dir = artifacts / _MUT_MUTANTS
-    written: set[str] = set()
+    mutants_dir = inputs / _MUT_MUTANTS
     for m in mutants:
-        if m.path not in written:
-            dest = originals_dir / m.path
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text((tree / m.path).read_text())
-            written.add(m.path)
         mdir = mutants_dir / m.mutant_id
         mdir.mkdir(parents=True, exist_ok=True)
         (mdir / Path(m.path).name).write_text(m.mutated_source)
@@ -931,19 +922,19 @@ def _write_mutation_inputs(
     for selection in {selections[m.mutant_id] for m in mutants}:
         if selection == FULL_SUITE:
             continue
-        cal_dir = artifacts / _MUT_CALIBRATION / _selection_key(selection)
+        cal_dir = inputs / _MUT_CALIBRATION / _selection_key(selection)
         cal_dir.mkdir(parents=True, exist_ok=True)
         (cal_dir / _MUT_SELECTION).write_text("".join(f"{nodeid}\n" for nodeid in selection))
 
 
 def _selection_load_lines(selection_file: str) -> list[str]:
-    """The batch script's selection transport (task 7f): reset the positional
+    """A mutation phase's selection transport (task 7f): reset the positional
     parameters, then reload them from `selection_file` (one nodeid per line,
     newline-terminated, written host-side by `_write_mutation_inputs`), so the
     timed command names its nodeids as `"$@"` instead of as inlined text.
 
-    Inlining was the click-0004 INFRA: `RunContainer.run` hands the whole
-    batch script to the container as ONE `sh -c` argv string, and Linux caps
+    Inlining was the click-0004 INFRA: `RunContainer.run_capture` hands the
+    phase script to the container as ONE `sh -c` argv string, and Linux caps
     a single exec argument at 128KB (MAX_ARG_STRLEN), so a hot seeded line's
     covering selection (measured: 1,181 nodeids, 92,088 bytes, twice) blew
     the limit and the container died at exec, before `install.ok`. Loaded
@@ -955,20 +946,20 @@ def _selection_load_lines(selection_file: str) -> list[str]:
     `test_selection_loader_reconstructs_the_exact_argv` proves under a real
     `sh`. POSIX only, like the rest of the script: the redirected `while` is
     a compound command in the current shell, so the `set --` builds real
-    positional parameters, not a subshell's copy. `selection_file` is always
-    `/artifacts/...` plus a 12-hex key or mutant id, the same guarantee that
-    lets the script's other redirections go unquoted.
+    positional parameters, not a subshell's copy. `selection_file` is the
+    fixed, canonical `/opt/skeptic-observation-inputs/selection.txt` target of
+    one individually validated read-only input mount.
 
-    The trailing guard aborts the whole batch when the load produced nothing
+    The trailing guard aborts the current phase when the load produced nothing
     (task 7f fix round). A per-line selection is never empty (an uncovered
     mutant never reaches the script), so `$#` = 0 here means the selection
     file was missing, empty, or unreadable, and dash/ash continue past a
     failed redirection with the loop never run: without the guard the timed
     command would degenerate to a bare full-suite run recorded as the
     mutant's own kill status, an error direction that inflates the kill
-    rate. `exit` ends the script before this run's `exit` file is written,
-    which surfaces as the existing missing-exit-file INFRA in
-    `_guard_calibration` or `observe_mutation`: never evidence.
+    rate. Host-side input validation makes missing files unreachable, while an
+    empty selection exits before the private duration is written and is
+    refused during calibration rather than becoming mutation evidence.
     """
     return [
         "set --",
@@ -977,127 +968,49 @@ def _selection_load_lines(selection_file: str) -> list[str]:
     ]
 
 
-def _mutation_script(
-    test_cmd: str, mutants: Sequence[Mutant], selections: Mapping[str, tuple[str, ...]],
-) -> str:
-    """One calibration step per distinct selection, then one run per mutant.
+def _calibration_script(test_cmd: str, selection_file: str | None) -> str:
+    """Run one unmutated selection and record its private wall time."""
+    load = [] if selection_file is None else _selection_load_lines(selection_file)
+    argv = shlex.join(shlex.split(test_cmd)) + (
+        "" if selection_file is None else ' "$@"')
+    return "\n".join([
+        *load,
+        "set +e",
+        "START=$(date +%s%N)",
+        f"timeout {_MUT_CAP_CEILING_S} {argv}",
+        "CODE=$?",
+        "END=$(date +%s%N)",
+        ("echo $(( (END - START) / 1000000 )) > "
+         f"{_PRIVATE_ARTIFACTS}/calibration_ms"),
+        'exit "$CODE"',
+    ])
 
-    The script itself stays small and bounded no matter how large any
-    selection is (task 7f): a per-line selection's nodeids are never inlined
-    into the command text; each run reloads them from its own `selection.txt`
-    on the artifacts mount (`_selection_load_lines`) and passes them as
-    `"$@"`. `FULL_SUITE` keeps the plain command: its sentinel is a marker,
-    not a nodeid, and must never reach pytest as a positional argument.
 
-    Calibration measures how long the selected tests take against the
-    unmutated (already-copied-in) candidate source, in whole milliseconds via
-    `date +%s%N`, and clamps `3x` that into the mutant cap in-script (POSIX
-    arithmetic and `[ ]` tests only, no bashisms): a cap computed host-side
-    would need the calibration run's real wall time before the batch script
-    could even be written, and the whole point of one script per batch is
-    paying the overlay install once. Each mutant then: copies its mutated
-    file over `/workspace/<path>`, runs under that cap, records the exit code
-    and its own wall time, and restores the original. Each selection load
-    runs before the run's own timing starts, so reading a large selection
-    file never counts against the calibration measurement or a mutant's cap.
-
-    The calibration run's own exit code is captured too (`echo $?` runs
-    immediately after it, before the next `date` command substitution can
-    overwrite `$?`): `observe_mutation` reads it back and refuses the whole
-    batch on a nonzero one, since a selection that is already red on the
-    unmutated candidate would make every mutant on it read `killed`
-    regardless of what it changed.
-
-    `install.ok` is written first, the same marker and the same reason T1's
-    phase capture carries one: `RunContainer.run` guards the overlay install
-    with `&&` ahead of this whole script, so the marker's absence after the
-    run means the install failed rather than anything in here (`observe_mutation`
-    reads it back). Each mutant's own install copy (mutated source into
-    `/workspace`) is guarded by `if`: on failure the mutant's `exit` file gets
-    the `_CP_INSTALL_FAILED` sentinel instead of running the timed command
-    against whichever unmutated source happens to already be sitting there,
-    an exit 0 that would otherwise manufacture `survived` for a mutant that
-    never actually ran (DECISIONS row 121). The restore copy back is guarded
-    too, with its own `_CP_RESTORE_FAILED` sentinel, because a failed restore
-    leaves that file mutated for every mutant the batch runs after this one:
-    `observe_mutation` maps either sentinel to a whole-observation INFRA.
-
-    Each successful install `cp` is followed by `rm -rf` on that file's own
-    `__pycache__` (M4 follow-up batch 2, root-caused on the h5 minirepo
-    fixture's own load-flake). CPython's default timestamp-based `.pyc`
-    invalidation truncates the source mtime to whole seconds, and every
-    mutant in a batch overwrites the same path in well under a second: two
-    `cp`s landing in the same wall-clock second leave a fresh process free to
-    reuse a stale compile from whatever the file held a moment earlier
-    (measured directly: a same-second overwrite of a same-length file left a
-    fresh `python -c "import mod"` returning the previous body's value). That
-    silently reruns a mutant's selected tests against the wrong source and
-    can flip `killed` to `survived` or back with no exit-code anomaly to
-    catch it. `rm -rf` is unconditional and pre-timing, so a missing
-    directory costs nothing and the deletion never counts against the
-    mutant's own measured duration.
-    """
-    run_cmd = shlex.join(shlex.split(test_cmd))
-    distinct = sorted({selections[m.mutant_id] for m in mutants})
-    lines: list[str] = [f"echo ok > {ARTIFACTS}/{_INSTALL_OK}"]
-    for selection in distinct:
-        key = _selection_key(selection)
-        cal_dir = f"{ARTIFACTS}/{_MUT_CALIBRATION}/{key}"
-        lines.append(f"mkdir -p {cal_dir}")
-        if selection == FULL_SUITE:
-            timed = f"timeout {_MUT_CAP_CEILING_S} {run_cmd}"
-        else:
-            lines += _selection_load_lines(f"{cal_dir}/{_MUT_SELECTION}")
-            timed = f'timeout {_MUT_CAP_CEILING_S} {run_cmd} "$@"'
-        lines.append("CSTART=$(date +%s%N)")
-        lines.append(f"{timed} > {cal_dir}/out 2> {cal_dir}/err")
-        lines.append(f"echo $? > {cal_dir}/exit")
-        lines.append("CEND=$(date +%s%N)")
-        lines.append("CAL_MS=$(( (CEND - CSTART) / 1000000 ))")
-        lines.append("CAP=$(( CAL_MS * 3 / 1000 ))")
-        lines.append(f'[ "$CAP" -lt {_MUT_CAP_FLOOR_S} ] && CAP={_MUT_CAP_FLOOR_S}')
-        lines.append(f'[ "$CAP" -gt {_MUT_CAP_CEILING_S} ] && CAP={_MUT_CAP_CEILING_S}')
-        lines.append(f'echo "$CAP" > {cal_dir}/cap')
-        lines.append(f'echo "$CAL_MS" > {cal_dir}/calibration_ms')
-    for m in mutants:
-        selection = selections[m.mutant_id]
-        key = _selection_key(selection)
-        # mdir lands unquoted in the redirections below (>, 2>) further down
-        # this loop; that is safe only because `mutant_id` is always a 12-hex
-        # sha256 digest (`mutation._mutant_id`), never arbitrary text.
-        mdir = f"{ARTIFACTS}/{_MUT_MUTANTS}/{m.mutant_id}"
-        source = shlex.quote(f"{mdir}/{Path(m.path).name}")
-        workspace_path = shlex.quote(f"/workspace/{m.path}")
-        original = shlex.quote(f"{ARTIFACTS}/{_MUT_ORIGINALS}/{m.path}")
-        parent = Path(m.path).parent
-        pycache_dir = shlex.quote(
-            f"/workspace/{parent}/__pycache__" if str(parent) != "."
-            else "/workspace/__pycache__")
-        if selection == FULL_SUITE:
-            timed = f'timeout "$CAP" {run_cmd}'
-        else:
-            lines += _selection_load_lines(f"{mdir}/{_MUT_SELECTION}")
-            timed = f'timeout "$CAP" {run_cmd} "$@"'
-        lines.append(f"CAP=$(cat {ARTIFACTS}/{_MUT_CALIBRATION}/{key}/cap)")
-        lines.append(f"if cp {source} {workspace_path}; then")
-        lines.append(f"  rm -rf {pycache_dir}")
-        lines.append("  MSTART=$(date +%s%N)")
-        lines.append(f"  {timed} > {mdir}/out 2> {mdir}/err")
-        lines.append(f"  echo $? > {mdir}/exit")
-        lines.append("  MEND=$(date +%s%N)")
-        lines.append(f"  echo $(( (MEND - MSTART) / 1000000 )) > {mdir}/dur_ms")
-        lines.append("else")
-        lines.append(f"  echo {_CP_INSTALL_FAILED} > {mdir}/exit")
-        lines.append("fi")
-        lines.append(f"cp {original} {workspace_path} || echo {_CP_RESTORE_FAILED} > {mdir}/exit")
-    return "\n".join(lines)
+def _mutant_script(test_cmd: str, selection_file: str | None,
+                   timeout_s: int) -> str:
+    """Run one read-only-overlaid mutant and record its private wall time."""
+    load = [] if selection_file is None else _selection_load_lines(selection_file)
+    argv = shlex.join(shlex.split(test_cmd)) + (
+        "" if selection_file is None else ' "$@"')
+    return "\n".join([
+        *load,
+        "set +e",
+        "START=$(date +%s%N)",
+        f"timeout {timeout_s} {argv}",
+        "CODE=$?",
+        "END=$(date +%s%N)",
+        f"echo $(( (END - START) / 1000000 )) > {_PRIVATE_ARTIFACTS}/dur_ms",
+        'exit "$CODE"',
+    ])
 
 
 def _mutation_host_budget(n_runnable: int, n_distinct: int) -> int:
-    """The outer `container.run` timeout: every mutant and every calibration
-    run at its worst case (the 60s ceiling), plus slack for the overlay
-    install and the file copies. Computable before the batch runs, since it
-    depends on counts alone, never on a measured duration."""
+    """One host deadline for all private mutation captures.
+
+    Every mutant and calibration gets its 60s worst case, plus slack for fresh
+    overlay installs, private-output copies, and host admission. The value is
+    computable before execution because it depends on counts, not measurements.
+    """
     return (n_runnable + n_distinct) * _MUT_CAP_CEILING_S + _MUT_SLACK_S
 
 
@@ -1118,14 +1031,18 @@ def _status_for_exit(code: int) -> MutantStatus | None:
     return _KNOWN_MUTATION_EXITS.get(code)
 
 
-def _read_mutation_int(path: Path, what: str) -> int:
-    raw = path.read_text().strip()
+def _read_mutation_int(path: Path, what: str, *, required: bool = True) -> int | None:
+    raw_text = read_artifact_text(
+        path.parent, path.name, CONTROL_MAX, required=required)
+    if raw_text is None:
+        return None
+    raw = raw_text.strip()
     try:
         return int(raw)
     except ValueError as exc:
         raise SkepticInfraError(
-            f"{path} holds {raw[:40]!r} where {what} belongs. The batch script "
-            f"writes one integer there, so a partial or empty file means the "
+            f"{path} holds {raw[:40]!r} where {what} belongs. The private phase "
+            f"publishes one integer there, so a partial or empty file means the "
             f"container stopped while writing it. This is an infra failure, "
             f"never evidence. Next: read {path.parent}/err, then re-run the pair."
         ) from exc
@@ -1137,13 +1054,13 @@ def _guard_calibration(
     """Read every distinct selection's own calibration exit; return the
     `FULL_SUITE` selections that came back red, for the caller to void.
 
-    A missing exit file is refused for every selection alike: the batch
-    script records one immediately after the calibration run, so an absent
-    file means the container stopped before reaching it, an infra failure no
+    A missing exit file is refused for every selection alike: the host
+    publishes one immediately after the calibration capture, so an absent
+    file is an admission/lifecycle failure no
     selection kind excuses. A present, nonzero exit splits by kind and, for
     `FULL_SUITE`, by the exit value itself (DECISIONS rows 119 and 120). A
     per-line selection's covering tests are exactly the ones a green fix has
-    to keep passing, so a red one still refuses the whole batch outright:
+    to keep passing, so a red one still refuses the whole observation outright:
     every mutant sampled onto it would read `killed` regardless of what it
     changed, publishing a kill rate that measures nothing. `FULL_SUITE` is
     the selection every caller-population mutant gets (no per-line coverage
@@ -1154,7 +1071,7 @@ def _guard_calibration(
     observation running on the signal it can still trust instead of
     refusing it outright over a permanent, unrelated gap. Any other nonzero
     `FULL_SUITE` exit (2 interrupted, 3 internal error, 4 usage error, 124
-    the batch script's own timeout, or anything else) is not that shape: an
+    the phase script's own timeout, or anything else) is not that shape: an
     interrupted or crashed calibration run says nothing about whether the
     suite is environmentally red, and voiding on it would launder a real
     infrastructure failure into a quietly smaller batch. Those exits refuse
@@ -1171,16 +1088,16 @@ def _guard_calibration(
     for selection in sorted(distinct):
         cal_dir = artifacts / _MUT_CALIBRATION / _selection_key(selection)
         exit_path = cal_dir / "exit"
-        if not exit_path.is_file():
+        code = _read_mutation_int(exit_path, "an exit code", required=False)
+        if code is None:
             raise SkepticInfraError(
                 f"The calibration run for selection {selection} left no exit "
-                f"code at {exit_path}. The batch script records one "
-                f"immediately after the calibration run, so an absent file "
+                f"code at {exit_path}. The host records one immediately after "
+                f"the calibration run, so an absent file "
                 f"means the container stopped before reaching it. This is an "
                 f"infra failure for the whole mutation observation, never "
                 f"evidence. Next: read {cal_dir}/err, then re-run the pair."
             )
-        code = _read_mutation_int(exit_path, "an exit code")
         if code == 0:
             continue
         if selection == FULL_SUITE and code == 1:
@@ -1209,7 +1126,7 @@ def _guard_calibration(
             f"an infra failure, never evidence: the red candidate is "
             f"evidence for t1_outcomes to report rather than for this "
             f"check. Next: read the t1_outcomes artifact for this pair, "
-            f"then re-run the mutation batch once the selection is green."
+            f"then re-run mutation once the selection is green."
         )
     return voided
 
@@ -1218,52 +1135,26 @@ def observe_mutation(
     spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
     mutants: Sequence[Mutant], selections: Mapping[str, tuple[str, ...] | None],
 ) -> MutationReport:
-    """Run a budgeted mutant batch and read back one record per mutant.
+    """Run each calibration and non-void mutant in a fresh sealed capture.
 
-    One fresh `RunContainer` for the whole batch (row 72's sibling: one tree
-    state, so paying the overlay install once is safe), reused for as many
-    mutants as `mutants` names. `mutants` is expected to already be the
-    sampled, budget-capped set (`mutation.sample_mutants`'s output); this
-    function does not sample. `selections[mutant_id]` is `None` for a mutant
-    `mutation.select_tests` could not cover (uncovered, never run) and
-    `mutation.FULL_SUITE` for a caller-population mutant (no per-line
-    context to select from).
+    ``mutants`` is already the sampled, budget-capped set. Invalid and
+    uncovered mutants never start a container. Each distinct runnable
+    selection calibrates once against the unmutated candidate. A green
+    selection supplies the existing 3x/floor/ceiling mutant timeout; a red
+    ``FULL_SUITE`` retains the caller-population calibration void, while every
+    other nonzero calibration retains the existing whole-observation refusal.
 
-    Invalid and uncovered mutants short-circuit before any container work:
-    when nothing in `mutants` is runnable, no container is started at all.
-    Every runnable mutant's exit file is required after the run; a missing
-    one is INFRA for the whole batch (`observe_variant`'s `_read_exit`
-    pattern), since a partial batch says nothing trustworthy about any
-    mutant in it, run or not. `_INSTALL_OK`'s own absence is checked first,
-    the way `observe_variant` checks it for the unit script, so a failed
-    overlay install reads as exactly that rather than as a mid-batch death
-    pointing at exit files that were never written (DECISIONS row 121). A
-    mutant's own `exit` file can also carry `_CP_INSTALL_FAILED` or
-    `_CP_RESTORE_FAILED` instead of a real exit code, when the script's own
-    cp into or out of `/workspace` failed; either sentinel is a
-    whole-observation INFRA too, naming the mutant and which copy failed.
+    Mutated sources and selections are host-written inputs mounted read-only.
+    One mutated source overlays exactly ``/workspace/<path>`` in one fresh
+    container. Output exists only in that container's private capture root and
+    is admitted into a fresh sealed directory before the next execution can
+    start. No candidate container can address the sealed root, and no copy or
+    restore ever mutates the candidate tree.
 
-    A mutant whose own selection's calibration came back red over
-    `FULL_SUITE` (DECISIONS row 119) is voided rather than scored:
-    `_guard_calibration` names it, and this function excludes it from both
-    container read-back and `records` entirely, carrying it instead in the
-    returned report's `calibration_void`. The batch script still emits lines
-    for a voided mutant the same as any other runnable one, so its own
-    `exit` file can still carry a cp sentinel; that check runs on every
-    runnable mutant, ahead of the voided skip, since a corrupted
-    restore reaches every mutant the batch runs afterward regardless of
-    whether the mutant whose restore failed was itself voided. Only past
-    that point does voided mean "skip entirely": a voided mutant's own
-    absent exit file is not INFRA, since its selection never calibrated
-    green in the first place.
-
-    The candidate tree is left byte-identical to how it started: every
-    mutant's own script lines restore the original file before the next
-    mutant's lines run, so a mutant that timed out under `timeout` (which
-    always returns control to the shell) never skips its own restore. Only a
-    container-level failure external to the script (caught by the host-side
-    timeout below) can leave the tree mutated, and that failure is already
-    INFRA for the pair.
+    All captures share one monotonic host deadline computed from
+    ``_mutation_host_budget``. Inner calibration and mutant commands retain
+    their independent 5--60 second timeout contract; an outer capture receives
+    only the total budget left by preceding executions.
     """
     if artifacts.exists():
         shutil.rmtree(artifacts)
@@ -1271,6 +1162,8 @@ def observe_mutation(
 
     records: dict[str, MutantRecord] = {}
     runnable: list[Mutant] = []
+    selected: dict[str, tuple[str, ...]] = {}
+    voided: dict[tuple[str, ...], int] = {}
     for m in mutants:
         if not m.valid:
             records[m.mutant_id] = MutantRecord(
@@ -1285,95 +1178,140 @@ def observe_mutation(
         runnable.append(m)
 
     if runnable:
-        selected: dict[str, tuple[str, ...]] = {m.mutant_id: selections[m.mutant_id] for m in runnable}
-        _write_mutation_inputs(tree, artifacts, runnable, selected)
-        distinct = {selected[m.mutant_id] for m in runnable}
-        script = _mutation_script(spec.environment.test_cmd, runnable, selected)
+        selected = {m.mutant_id: selections[m.mutant_id] for m in runnable}
+        distinct = sorted({selected[m.mutant_id] for m in runnable})
+        budget_s = _mutation_host_budget(len(runnable), len(distinct))
+        deadline = time.monotonic() + budget_s
+
+        input_root = artifacts.parent / f".{artifacts.name}-mutation-inputs"
+        quarantine_root = artifacts.parent / f".{artifacts.name}-mutation-quarantine"
+        for private_root in (input_root, quarantine_root):
+            if private_root.exists():
+                shutil.rmtree(private_root)
+            private_root.mkdir(mode=0o700)
+        _write_mutation_inputs(input_root, runnable, selected)
+
         ro = (tuple(spec.environment.test_dirs)
               + tuple(spec.environment.config_files)
               + tuple(spec.environment.golden_dirs))
-        container = RunContainer(
-            image_tag, tree, ro_subpaths=ro,
-            extra_mounts=((artifacts, ARTIFACTS, "rw"),), missing_ro="drop")
-        budget_s = _mutation_host_budget(len(runnable), len(distinct))
-        result = container.run(script, timeout_s=budget_s)
-        if result.exit_code == -1:
-            raise SkepticInfraError(
-                f"The mutation batch of {len(runnable)} mutant(s) over {len(distinct)} "
-                f"selection set(s) timed out after {budget_s}s. That budget is the "
-                f"worst case of every mutant and every calibration run hitting the "
-                f"60s ceiling, plus 120s slack, so reaching it means the container "
-                f"itself stopped responding rather than any one mutant running long. "
-                f"This is an infra failure, never evidence. Next: `docker ps -a` "
-                f"and `docker system df` to check the daemon, then re-run the pair."
-            )
-        if not (artifacts / _INSTALL_OK).is_file():
-            raise SkepticInfraError(
-                f"The mutation batch of {len(runnable)} mutant(s) over {len(distinct)} "
-                f"selection set(s) never reached its first step (container exit "
-                f"{result.exit_code}): the overlay install failed, or the container "
-                f"did not start. The batch script writes {_INSTALL_OK} before any "
-                f"calibration or mutant runs, the way observe_variant's own unit "
-                f"script does, so its absence here means none of this batch's "
-                f"calibration or per-mutant exit files exist either, a different "
-                f"failure than the container dying partway through them. This is "
-                f"an infra failure, never evidence. Next: `docker run --rm "
-                f"{image_tag} true`, then "
-                f"re-run the pair.\n"
-                f"stderr tail:\n{result.stderr[-1500:]}"
-            )
-        voided = _guard_calibration(artifacts, distinct)
-        for m in runnable:
-            mdir = artifacts / _MUT_MUTANTS / m.mutant_id
-            exit_path = mdir / "exit"
-            # A cp sentinel is checked before the voided skip below, on every
-            # runnable mutant, voided or not: the batch script emits lines for
-            # every runnable mutant regardless of whether its own selection
-            # later calibrates void, so a voided mutant still ran inside the
-            # container, and a restore-cp failure there corrupts the workspace
-            # for every mutant the batch runs after it, voided or scored,
-            # exactly the same as a non-voided mutant's own would. Reading it
-            # after the skip would let that corruption reach a later mutant's
-            # exit code undetected (review finding on batch 1).
-            if exit_path.is_file():
-                raw_exit = exit_path.read_text().strip()
-                if raw_exit == _CP_INSTALL_FAILED:
-                    raise SkepticInfraError(
-                        f"Mutant {m.mutant_id} ({m.path}:{m.line})'s install copy (its "
-                        f"mutated source into /workspace) failed before its test "
-                        f"command ran. Running the selection anyway would have scored "
-                        f"it against whatever unmutated source was already sitting "
-                        f"there instead, an exit 0 that would silently manufacture "
-                        f"`survived` for a mutant that never actually ran. This is an "
-                        f"infra failure for the whole mutation observation, never "
-                        f"evidence. Next: read {mdir}/err, then re-run the pair."
-                    )
-                if raw_exit == _CP_RESTORE_FAILED:
-                    raise SkepticInfraError(
-                        f"Mutant {m.mutant_id} ({m.path}:{m.line})'s restore copy (the "
-                        f"original source back into /workspace) failed after its test "
-                        f"command ran. {m.path} is left mutated for every mutant the "
-                        f"batch runs after this one, so their own exit codes are no "
-                        f"longer trustworthy either. This is an infra failure for the "
-                        f"whole mutation observation, never evidence. Next: read "
-                        f"{mdir}/err, then re-run the pair."
-                    )
-            if selected[m.mutant_id] in voided:
-                continue
-            # A voided mutant's own absent exit file says nothing about the
-            # others (its selection never calibrated green, so nothing about
-            # it ran to completion either way); this guard only applies once
-            # the voided skip above has already passed.
-            if not exit_path.is_file():
+
+        def remaining(phase: str) -> int:
+            left = deadline - time.monotonic()
+            if left <= 0:
                 raise SkepticInfraError(
-                    f"Mutant {m.mutant_id} ({m.path}:{m.line}) left no exit code at "
-                    f"{exit_path}. The batch script records one after every mutant "
-                    f"it runs, so an absent file means the container stopped "
-                    f"mid-batch before reaching this mutant. This is an infra "
-                    f"failure for the whole mutation observation, never evidence. "
-                    f"Next: read {mdir}/err, then re-run the pair."
+                    f"The mutation {phase} execution could not start before the "
+                    f"shared {budget_s}s host deadline expired. That budget is the "
+                    f"worst case of all {len(runnable)} runnable mutant(s) and "
+                    f"{len(distinct)} calibration(s) hitting 60s, plus "
+                    f"{_MUT_SLACK_S}s slack. This is an infra failure, never "
+                    f"evidence. Next: inspect Docker daemon health, then re-run "
+                    f"the pair."
                 )
-            code = _read_mutation_int(exit_path, "an exit code")
+            return max(1, int(left))
+
+        def run_phase(*, label: str, container: RunContainer, script: str,
+                      quarantine: Path, sealed: Path,
+                      output_specs: Sequence[ArtifactSpec]) -> ExecResult:
+            result = _run_private_phase(
+                container=container, script=script, quarantine=quarantine,
+                sealed=sealed, output_specs=output_specs,
+                timeout_s=remaining(label), output_prefix="",
+                env={"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"},
+            )
+            if result.exit_code == -1 or time.monotonic() > deadline:
+                raise SkepticInfraError(
+                    f"The mutation {label} execution timed out under the shared "
+                    f"{budget_s}s host deadline. Its private output was sealed at "
+                    f"{sealed}; a partial execution is never mutation evidence. "
+                    f"Next: inspect Docker daemon health, then re-run the pair."
+                )
+            install_ok = read_artifact_bytes(
+                sealed, _INSTALL_OK, CONTROL_MAX, required=False)
+            if install_ok is None:
+                raise SkepticInfraError(
+                    f"The mutation {label} execution never reached its command "
+                    f"(container exit {result.exit_code}): the overlay install "
+                    f"failed, or the container did not start. Its stdout and "
+                    f"stderr are sealed at {sealed}/out and {sealed}/err. This "
+                    f"is an infra failure, never evidence. Next: `docker run "
+                    f"--rm {image_tag} true`, then re-run the pair.\n"
+                    f"stderr tail:\n{result.stderr[-1500:]}"
+                )
+            return result
+
+        selection_target = f"{_OBSERVATION_INPUTS}/{_MUT_SELECTION}"
+        caps: dict[tuple[str, ...], int] = {}
+        for selection in distinct:
+            key = _selection_key(selection)
+            cal_input = input_root / _MUT_CALIBRATION / key / _MUT_SELECTION
+            selection_file = None if selection == FULL_SUITE else selection_target
+            input_mounts = () if selection_file is None else ((cal_input, selection_target),)
+            cal_dir = artifacts / _MUT_CALIBRATION / key
+            cal_dir.parent.mkdir(parents=True, exist_ok=True)
+            run_phase(
+                label=f"calibration {selection}",
+                container=RunContainer(
+                    image_tag, tree, ro_subpaths=ro, input_mounts=input_mounts,
+                    missing_ro="drop"),
+                script=_calibration_script(spec.environment.test_cmd, selection_file),
+                quarantine=quarantine_root / f"calibration-{key}",
+                sealed=cal_dir,
+                output_specs=(
+                    ArtifactSpec("calibration_ms", CONTROL_MAX, required=False),),
+            )
+            voided.update(_guard_calibration(artifacts, (selection,)))
+            calibration_ms = _read_mutation_int(
+                cal_dir / "calibration_ms", "a calibration duration in ms",
+                required=False)
+            if calibration_ms is None:
+                raise SkepticInfraError(
+                    f"The calibration run for selection {selection} left no "
+                    f"duration at {cal_dir}/calibration_ms after its overlay "
+                    f"installed successfully. Without that measurement Skeptic "
+                    f"cannot compute the mutant timeout cap. This is an infra "
+                    f"failure, never evidence. Next: read {cal_dir}/err, then "
+                    f"re-run the pair."
+                )
+            caps[selection] = min(
+                _MUT_CAP_CEILING_S,
+                max(_MUT_CAP_FLOOR_S, calibration_ms * 3 // 1000),
+            )
+
+        for m in runnable:
+            selection = selected[m.mutant_id]
+            if selection in voided:
+                continue
+            input_dir = input_root / _MUT_MUTANTS / m.mutant_id
+            source = input_dir / Path(m.path).name
+            selection_input = input_dir / _MUT_SELECTION
+            selection_file = None if selection == FULL_SUITE else selection_target
+            input_mounts = (
+                () if selection_file is None
+                else ((selection_input, selection_target),)
+            )
+            mdir = artifacts / _MUT_MUTANTS / m.mutant_id
+            mdir.parent.mkdir(parents=True, exist_ok=True)
+            run_phase(
+                label=f"mutant {m.mutant_id} ({m.path}:{m.line})",
+                container=RunContainer(
+                    image_tag, tree, ro_subpaths=ro, input_mounts=input_mounts,
+                    workspace_overlays=((source, m.path),), missing_ro="drop"),
+                script=_mutant_script(
+                    spec.environment.test_cmd, selection_file, caps[selection]),
+                quarantine=quarantine_root / f"mutant-{m.mutant_id}",
+                sealed=mdir,
+                output_specs=(ArtifactSpec("dur_ms", CONTROL_MAX, required=False),),
+            )
+            exit_path = mdir / "exit"
+            code = _read_mutation_int(exit_path, "an exit code", required=False)
+            if code is None:
+                raise SkepticInfraError(
+                    f"Mutant {m.mutant_id} ({m.path}:{m.line}) left no sealed "
+                    f"exit code at {exit_path}. Host publication records one "
+                    f"after every private execution, so absence is a harness "
+                    f"lifecycle failure, never evidence. Next: read {mdir}/err, "
+                    f"then re-run the pair."
+                )
             status = _status_for_exit(code)
             if status is None:
                 raise SkepticInfraError(
@@ -1391,11 +1329,15 @@ def observe_mutation(
                     f"{mdir}/err, then re-run the pair."
                 )
             dur_path = mdir / "dur_ms"
-            dur_ms = _read_mutation_int(dur_path, "a duration in ms") if dur_path.is_file() else None
+            dur_ms = _read_mutation_int(
+                dur_path, "a duration in ms", required=False)
             records[m.mutant_id] = MutantRecord(
                 mutant_id=m.mutant_id, path=m.path, line=m.line, operator=m.operator,
                 population=m.population, status=status,
                 tests_run=selected[m.mutant_id], dur_ms=dur_ms)
+
+        shutil.rmtree(input_root)
+        quarantine_root.rmdir()
 
     calibration_void = tuple(
         CalibrationVoid(

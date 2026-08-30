@@ -1,11 +1,10 @@
-"""The bridge, the batch runner, and the check: Task 9's three layers.
+"""The bridge, isolated mutation runner, and check: Task 9's three layers.
 
 Bridge tests build a bare `CoverageReport` and never touch a container.
-Execution tests fake the subprocess boundary the way `tests/test_collector.py`
-does (`sandbox._run` replaced with a function that writes the exit files the
-batch script would have written), so `collector.observe_mutation`'s read-back
-and status-mapping logic runs for real against a real `RunContainer` and a
-real docker argv, minus the daemon. Check tests build `MutationReport`/
+Execution tests fake the private-capture boundary the way
+`tests/test_collector.py` does, so `collector.observe_mutation`'s admission,
+read-back, and status-mapping logic runs against real fresh `RunContainer`
+declarations without invoking the daemon. Check tests build `MutationReport`/
 `MutantRecord` by hand and read `t2_mutation.run`'s artifact back to verify
 its rates are hand-computable. Docker tests run the whole pipeline for real
 against the minirepo fixture corpus, through the session-scoped `enriched_pair`
@@ -157,69 +156,46 @@ def test_select_tests_raises_on_an_ambiguous_module_prefix():
 # --- execution: collector.observe_mutation, subprocess boundary faked ------
 
 
-def _artifacts_of(argv: list[str]) -> Path:
-    mount = next(a for a in argv if a.endswith(":/artifacts:rw"))
-    return Path(mount.split(":")[0])
-
-
 def fake_mutation_run(
     monkeypatch, exits: dict[str, int],
     selections: dict[str, tuple[str, ...]] | None = None, *,
-    write_exit: bool = True, calibration_exit: int = 0,
+    calibration_exit: int = 0,
     calibration_exits: dict[tuple[str, ...], int] | None = None,
-    install_ok: bool = True, raw_exits: dict[str, str] | None = None,
+    install_ok: bool = True, calibration_ms: int | None = 1000,
+    dur_ms: int | None = 42,
 ):
-    """Answer one `docker run` by writing the exit files the batch script
-    would have written for the mutants named in `exits`, ignoring the actual
-    script content: the fast tests pin `observe_mutation`'s read-back and
-    status-mapping contract, not the shell it composes (the docker rows do
-    that, for real, against the minirepo fixture).
+    """Answer each private calibration/mutant capture at its real boundary."""
+    calls: list[dict[str, object]] = []
 
-    `install_ok` writes the batch's own `install.ok` marker before anything
-    else, the way the real script's first line now does; `install_ok=False`
-    answers the run the way a failed overlay install would, with no marker
-    and no calibration or mutant files at all, for the tests pinning that
-    failure's own message.
-
-    `selections` (when given) also writes a healthy calibration exit for
-    every distinct selection in it, since `observe_mutation` now refuses the
-    whole batch on a missing or nonzero calibration exit before it ever reads
-    a mutant's own: `calibration_exit` overrides that value for every
-    selection uniformly, for the tests pinning the calibration-guard contract
-    itself; `calibration_exits` overrides it per selection instead, for a
-    batch that needs one selection green and another red in the same run
-    (DECISIONS row 119's `FULL_SUITE`-voids-not-INFRAs split).
-
-    `raw_exits` writes its string values verbatim to a mutant's own `exit`
-    file instead of an integer from `exits`, for the tests pinning the cp
-    guard's sentinel values (DECISIONS row 121) rather than a real exit code.
-    """
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, cwd, timeout_s, env):
-        calls.append(cmd)
-        artifacts = _artifacts_of(cmd)
+    def fake_capture(self, script, timeout_s, quarantine, env=None):
+        calls.append({
+            "script": script,
+            "timeout_s": timeout_s,
+            "quarantine": quarantine,
+            "input_mounts": self.input_mounts,
+            "workspace_overlays": self.workspace_overlays,
+            "extra_mounts": self.extra_mounts,
+            "env": env,
+        })
+        quarantine.mkdir(mode=0o700)
         if not install_ok:
             return ExecResult(1, "", "overlay install failed", 100)
-        (artifacts / "install.ok").write_text("ok\n")
-        for selection in {selections[mid] for mid in selections} if selections else ():
-            cal_dir = artifacts / "calibration" / collector._selection_key(selection)
-            cal_dir.mkdir(parents=True, exist_ok=True)
-            code = (calibration_exits or {}).get(selection, calibration_exit)
-            (cal_dir / "exit").write_text(f"{code}\n")
-        if write_exit:
-            for mutant_id, code in exits.items():
-                mdir = artifacts / "mutants" / mutant_id
-                mdir.mkdir(parents=True, exist_ok=True)
-                (mdir / "exit").write_text(f"{code}\n")
-                (mdir / "dur_ms").write_text("42\n")
-            for mutant_id, raw in (raw_exits or {}).items():
-                mdir = artifacts / "mutants" / mutant_id
-                mdir.mkdir(parents=True, exist_ok=True)
-                (mdir / "exit").write_text(f"{raw}\n")
-        return ExecResult(0, "", "", 500)
+        (quarantine / "install.ok").write_text("ok\n")
+        if self.workspace_overlays:
+            mutant_id = self.workspace_overlays[0][0].parent.name
+            if dur_ms is not None:
+                (quarantine / "dur_ms").write_text(f"{dur_ms}\n")
+            return ExecResult(exits[mutant_id], "", "", 500)
+        if self.input_mounts:
+            selection = tuple(self.input_mounts[0][0].read_text().splitlines())
+        else:
+            selection = mutation.FULL_SUITE
+        if calibration_ms is not None:
+            (quarantine / "calibration_ms").write_text(f"{calibration_ms}\n")
+        code = (calibration_exits or {}).get(selection, calibration_exit)
+        return ExecResult(code, "", "", 500)
 
-    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
     return calls
 
 
@@ -237,80 +213,76 @@ def _tree(root: Path) -> Path:
     return tree
 
 
-# --- the batch script: pycache staleness (M4 follow-up batch 2) ------------
+# --- one-execution scripts --------------------------------------------------
 
 
-def test_mutation_script_clears_pycache_between_install_and_timed_run():
-    """Root cause of the h5 minirepo docker row's load-flake: every mutant in
-    a batch overwrites the same path, and CPython's default `.pyc`
-    invalidation truncates the source mtime to whole seconds, so two `cp`s
-    landing in the same wall-clock second (the normal case here: a mutant's
-    own run took ~110ms uncontended, measured) can leave a fresh process
-    reading a stale compile from whatever the file held a moment earlier.
-    The script has to force a fresh compile on every mutant run rather than
-    trust the timestamp."""
-    m = _mutant("mut1", path="src/a.py")
-    script = collector._mutation_script(
-        "python -m pytest -q", [m], {"mut1": ("tests/test_a.py::test_x",)})
+def test_calibration_script_loads_selection_before_its_timed_window():
+    selection_file = "/opt/skeptic-observation-inputs/selection.txt"
+
+    script = collector._calibration_script("python -m pytest -q", selection_file)
     lines = script.splitlines()
-    cp_idx = next(i for i, line in enumerate(lines) if line.startswith("if cp "))
-    timeout_idx = next(i for i, line in enumerate(lines) if 'timeout "$CAP"' in line)
 
-    assert cp_idx < timeout_idx
-    between = lines[cp_idx + 1:timeout_idx]
-    assert any("rm -rf" in line and "/workspace/src/__pycache__" in line
-              for line in between)
-
-
-def test_mutation_script_clears_pycache_for_a_root_level_path():
-    """A mutated file with no directory component (`minirepo.py`, the real
-    h5 fixture's own shape) still gets a `__pycache__` next to it at
-    `/workspace`, not `/workspace/.`."""
-    m = _mutant("mut1", path="minirepo.py")
-    script = collector._mutation_script(
-        "python -m pytest -q", [m], {"mut1": ("tests/test_minirepo.py::test_x",)})
-
-    assert "rm -rf /workspace/__pycache__" in script
-    assert "/workspace/./__pycache__" not in script
+    load = next(i for i, line in enumerate(lines) if "while IFS= read -r nid" in line)
+    start = lines.index("START=$(date +%s%N)")
+    assert load < start
+    assert "timeout 60 python -m pytest -q \"$@\"" in lines
+    assert lines[-2:] == [
+        ("echo $(( (END - START) / 1000000 )) > "
+         "/tmp/skeptic-artifacts/calibration_ms"),
+        'exit "$CODE"',
+    ]
 
 
-# --- the batch script: selection transport (task 7f) ------------------------
+def test_mutant_script_uses_the_calibrated_inner_timeout_and_private_duration():
+    selection_file = "/opt/skeptic-observation-inputs/selection.txt"
+
+    script = collector._mutant_script(
+        "python -m pytest -q", selection_file, timeout_s=17)
+    lines = script.splitlines()
+
+    assert "timeout 17 python -m pytest -q \"$@\"" in lines
+    assert lines[-2:] == [
+        "echo $(( (END - START) / 1000000 )) > /tmp/skeptic-artifacts/dur_ms",
+        'exit "$CODE"',
+    ]
 
 
-def test_mutation_script_stays_bounded_for_a_large_covering_selection():
+# --- phase-script selection transport (task 7f) -----------------------------
+
+
+def test_mutation_phase_scripts_stay_bounded_for_a_large_covering_selection():
     """click-0004's regression: its seeded line (`BoolParamType.str_to_bool`)
     is hot, and one sampled mutant's covering selection came back as 1,181
-    nodeids (92,088 bytes). `RunContainer.run` hands the whole batch script to
+    nodeids (92,088 bytes). `RunContainer.run_capture` hands each phase script to
     the container as ONE `sh -c` argument, and Linux caps a single exec
     argument at 128KB (MAX_ARG_STRLEN), so a script that inlines the selection
     dies at exec (`argument list too long`, container exit 255) and the VERIFY
     exits 3 INFRA. The script has to stay bounded no matter how large a
-    selection gets: nodeids travel on the artifacts mount, never in the
+    selection gets: nodeids travel on a read-only input mount, never in the
     script."""
     selection = tuple(
         f"tests/test_types.py::test_str_to_bool[case-{i:04d}- padded  value ]"
         for i in range(2000)
     )
-    mutants = [_mutant("mut1"), _mutant("mut2")]
-    script = collector._mutation_script(
-        "python -m pytest -q", mutants, {"mut1": selection, "mut2": selection})
+    selection_file = "/opt/skeptic-observation-inputs/selection.txt"
+    scripts = (
+        collector._calibration_script("python -m pytest -q", selection_file),
+        collector._mutant_script("python -m pytest -q", selection_file, 5),
+    )
 
-    assert len(script.encode()) < 32 * 1024
-    assert "case-1999" not in script
+    assert all(len(script.encode()) < 32 * 1024 for script in scripts)
+    assert all(selection[-1] not in script for script in scripts)
 
 
-def test_mutation_script_reads_each_selection_from_the_mount():
-    """The paths the script reads are the paths `_write_mutation_inputs`
-    writes: the calibration run loads its selection from its own
-    `calibration/<key>/selection.txt`, each mutant's timed run from its own
-    `mutants/<id>/selection.txt`."""
-    selection = ("tests/test_a.py::test_x",)
-    script = collector._mutation_script(
-        "python -m pytest -q", [_mutant("mut1")], {"mut1": selection})
-    key = collector._selection_key(selection)
+def test_mutation_phase_scripts_read_selection_from_the_fixed_input_mount():
+    selection_file = "/opt/skeptic-observation-inputs/selection.txt"
+    scripts = (
+        collector._calibration_script("python -m pytest -q", selection_file),
+        collector._mutant_script("python -m pytest -q", selection_file, 5),
+    )
 
-    assert f"/artifacts/calibration/{key}/selection.txt" in script
-    assert "/artifacts/mutants/mut1/selection.txt" in script
+    assert all(selection_file in script for script in scripts)
+    assert all("/artifacts" not in script for script in scripts)
 
 
 def test_full_suite_mutants_never_read_a_selection_file():
@@ -318,18 +290,20 @@ def test_full_suite_mutants_never_read_a_selection_file():
     caller-population mutant's command stays the plain full-suite run, and
     `<full-suite>` must never reach pytest as a positional argument it would
     treat as a test path."""
-    m = _mutant("mut1", population="caller")
-    script = collector._mutation_script(
-        "python -m pytest -q", [m], {"mut1": mutation.FULL_SUITE})
+    scripts = (
+        collector._calibration_script("python -m pytest -q", None),
+        collector._mutant_script("python -m pytest -q", None, 5),
+    )
 
-    assert "selection.txt" not in script
-    assert "<full-suite>" not in script
-    assert '"$@"' not in script
+    for script in scripts:
+        assert "selection.txt" not in script
+        assert "<full-suite>" not in script
+        assert '"$@"' not in script
 
 
 def test_selection_loader_reconstructs_the_exact_argv(tmp_path):
     """The transport's fidelity, run under a real `sh`: the loader lines the
-    batch script embeds rebuild the positional parameters byte-for-byte from
+    phase scripts embed rebuild the positional parameters byte-for-byte from
     the selection file, through every shape a parametrize id can throw at a
     shell (spaces, brackets, quotes, globs, dollar signs, backslashes, tabs),
     with none of it expanded or split."""
@@ -358,22 +332,20 @@ def test_every_per_line_load_carries_the_empty_guard():
     bare `"$@"` run would degenerate to the full suite recorded as the
     mutant's own kill status: an error direction that inflates the kill rate.
     Every per-line load must be followed immediately by the guard that aborts
-    the batch instead, surfacing through the missing-exit-file INFRA path."""
-    sel_a = ("tests/test_a.py::test_x",)
-    sel_b = ("tests/test_b.py::test_y",)
-    mutants = [_mutant("mut1"), _mutant("mut2"), _mutant("mut3", population="caller")]
-    script = collector._mutation_script(
-        "python -m pytest -q", mutants,
-        {"mut1": sel_a, "mut2": sel_b, "mut3": mutation.FULL_SUITE})
-    lines = script.splitlines()
-    load_idxs = [i for i, line in enumerate(lines) if "while IFS= read -r nid" in line]
-
-    # Two per-line calibrations plus two per-line mutants; the FULL_SUITE
-    # mutant loads nothing and so needs no guard.
-    assert len(load_idxs) == 4
-    for i in load_idxs:
+    that private phase rather than running an unintended full suite."""
+    selection_file = "/opt/skeptic-observation-inputs/selection.txt"
+    scripts = (
+        collector._calibration_script("python -m pytest -q", selection_file),
+        collector._mutant_script("python -m pytest -q", selection_file, 5),
+    )
+    for script in scripts:
+        lines = script.splitlines()
+        load_idxs = [
+            i for i, line in enumerate(lines) if "while IFS= read -r nid" in line]
+        assert len(load_idxs) == 1
+        i = load_idxs[0]
         assert lines[i + 1] == '[ "$#" -gt 0 ] || exit'
-    assert script.count('[ "$#" -gt 0 ] || exit') == 4
+        assert script.count('[ "$#" -gt 0 ] || exit') == 1
 
 
 @pytest.mark.parametrize("state", ["missing", "empty"])
@@ -398,16 +370,15 @@ def test_selection_load_runs_before_the_timed_window():
     their guards) sit ahead of their run's own timing start, so reading a
     large selection file never counts against the calibration measurement or
     a mutant's cap."""
-    script = collector._mutation_script(
-        "python -m pytest -q", [_mutant("mut1")], {"mut1": ("tests/test_a.py::test_x",)})
-    lines = script.splitlines()
-    cal_load, mut_load = (i for i, line in enumerate(lines)
-                          if "while IFS= read -r nid" in line)
-    cstart = lines.index("CSTART=$(date +%s%N)")
-    mstart = next(i for i, line in enumerate(lines) if line.strip() == "MSTART=$(date +%s%N)")
-
-    assert cal_load < cstart
-    assert mut_load < mstart
+    selection_file = "/opt/skeptic-observation-inputs/selection.txt"
+    scripts = (
+        collector._calibration_script("python -m pytest -q", selection_file),
+        collector._mutant_script("python -m pytest -q", selection_file, 5),
+    )
+    for script in scripts:
+        lines = script.splitlines()
+        load = next(i for i, line in enumerate(lines) if "while IFS= read -r nid" in line)
+        assert load < lines.index("START=$(date +%s%N)")
 
 
 def test_write_mutation_inputs_writes_the_calibration_selection(tmp_path):
@@ -415,17 +386,19 @@ def test_write_mutation_inputs_writes_the_calibration_selection(tmp_path):
     `selection.txt` per distinct per-line selection, byte-identical in content
     and order to the inlined argv it replaces, and none for `FULL_SUITE`
     (whose command carries no nodeids at all)."""
-    tree = _tree(tmp_path)
     selection = ("tests/test_a.py::test_x", "tests/test_a.py::test_y")
     selections = {"mut1": selection, "mut2": mutation.FULL_SUITE}
+    inputs = tmp_path / "inputs"
 
     collector._write_mutation_inputs(
-        tree, tmp_path / "artifacts", [_mutant("mut1"), _mutant("mut2")], selections)
+        inputs, [_mutant("mut1"), _mutant("mut2")], selections)
 
-    cal = tmp_path / "artifacts" / "calibration"
+    cal = inputs / "calibration"
     assert (cal / collector._selection_key(selection) / "selection.txt").read_text() == (
         "tests/test_a.py::test_x\ntests/test_a.py::test_y\n")
     assert not (cal / collector._selection_key(mutation.FULL_SUITE) / "selection.txt").exists()
+    assert (inputs / "mutants" / "mut1" / "a.py").read_text() == "x = 2\n"
+    assert not (inputs / "originals").exists()
 
 
 @pytest.mark.parametrize("exit_code, status", [
@@ -468,6 +441,27 @@ def test_timeout_is_never_a_kill(tmp_path, monkeypatch):
     assert report.records[0].status != "killed"
 
 
+@pytest.mark.parametrize("calibration_ms, cap", [
+    (0, 5),
+    (2_000, 6),
+    (30_000, 60),
+])
+def test_calibration_duration_clamps_the_mutant_inner_timeout(
+    tmp_path, monkeypatch, calibration_ms, cap
+):
+    tree = _tree(tmp_path)
+    m = _mutant("mut1")
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    calls = fake_mutation_run(
+        monkeypatch, {"mut1": 0}, selections, calibration_ms=calibration_ms)
+
+    collector.observe_mutation(
+        make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+
+    mutant_call = next(call for call in calls if call["workspace_overlays"])
+    assert f"timeout {cap} python -m pytest -q \"$@\"" in mutant_call["script"]
+
+
 def test_invalid_and_uncovered_mutants_never_run(tmp_path, monkeypatch):
     tree = _tree(tmp_path)
     invalid = _mutant("inv1", valid=False, mutated_source="")
@@ -486,16 +480,16 @@ def test_invalid_and_uncovered_mutants_never_run(tmp_path, monkeypatch):
     assert by_id["inv1"].dur_ms is None and by_id["unc1"].dur_ms is None
 
 
-def test_missing_exit_file_is_infra(tmp_path, monkeypatch):
+def test_missing_optional_mutant_duration_remains_null(tmp_path, monkeypatch):
     tree = _tree(tmp_path)
-    m = _mutant("missing1")
-    selections = {"missing1": ("tests/test_a.py::test_x",)}
-    fake_mutation_run(monkeypatch, {}, selections, write_exit=False)
+    m = _mutant("mut1")
+    selections = {"mut1": ("tests/test_a.py::test_x",)}
+    fake_mutation_run(monkeypatch, {"mut1": 0}, selections, dur_ms=None)
 
-    with pytest.raises(SkepticInfraError, match="missing1") as exc:
-        collector.observe_mutation(
-            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
-    assert "infra failure" in str(exc.value)
+    report = collector.observe_mutation(
+        make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
+
+    assert report.records[0].dur_ms is None
 
 
 def test_calibration_exit_nonzero_raises_naming_the_selection(tmp_path, monkeypatch):
@@ -538,17 +532,25 @@ def test_calibration_exit_124_is_reported_as_a_timeout_not_a_red_candidate(
     assert "already red" not in message
 
 
-def test_calibration_missing_exit_file_is_also_infra(tmp_path, monkeypatch):
+def test_calibration_missing_exit_file_is_also_infra(tmp_path):
+    selection = ("tests/test_a.py::test_x",)
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+
+    with pytest.raises(SkepticInfraError, match=re.escape(str(selection))) as exc:
+        collector._guard_calibration(artifacts, (selection,))
+    assert "infra failure" in str(exc.value)
+
+
+def test_calibration_missing_duration_is_infra(tmp_path, monkeypatch):
     tree = _tree(tmp_path)
     m = _mutant("mut1")
     selection = ("tests/test_a.py::test_x",)
     selections = {"mut1": selection}
-    # No `selections` passed to the fake: no calibration exit file lands at
-    # all, the same shape a container that died before calibration finished
-    # would leave.
-    fake_mutation_run(monkeypatch, {"mut1": 0})
+    fake_mutation_run(
+        monkeypatch, {"mut1": 0}, selections, calibration_ms=None)
 
-    with pytest.raises(SkepticInfraError, match=re.escape(str(selection))) as exc:
+    with pytest.raises(SkepticInfraError, match="left no duration") as exc:
         collector.observe_mutation(
             make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
     assert "infra failure" in str(exc.value)
@@ -587,32 +589,24 @@ def test_full_suite_calibration_exit_voids_the_caller_population_not_infra(
     assert "killed" in void.reason
 
 
-def test_voided_mutants_restore_sentinel_still_infras_the_batch(tmp_path, monkeypatch):
-    """Review finding on batch 1 (Important): the batch script emits lines
-    for every runnable mutant regardless of whether its selection later
-    calibrates void, so a voided mutant still ran inside the container and
-    its own `cp-restore-failed` sentinel is just as real as a non-voided
-    mutant's. Skipping straight to `continue` on a voided mutant before ever
-    reading its exit file would let that corruption reach every mutant the
-    batch runs after it undetected: here, `c1`'s own real exit 1 would
-    otherwise read as a scored `killed` despite running against a workspace
-    `k1`'s failed restore left mutated. This is click's normal shape
-    (DECISIONS row 119 voids its caller population every run), so it is
-    exactly the configuration this fix protects."""
+def test_voided_mutants_never_start_a_mutant_capture(tmp_path, monkeypatch):
+    """A voided caller has calibration evidence but no mutant execution."""
     tree = _tree(tmp_path)
     changed = _mutant("c1", population="changed")
     caller = _mutant("k1", population="caller")
     selections = {"c1": ("tests/test_a.py::test_x",), "k1": mutation.FULL_SUITE}
-    fake_mutation_run(
+    calls = fake_mutation_run(
         monkeypatch, {"c1": 1}, selections,
-        calibration_exits={mutation.FULL_SUITE: 1},
-        raw_exits={"k1": collector._CP_RESTORE_FAILED})
+        calibration_exits={mutation.FULL_SUITE: 1})
 
-    with pytest.raises(SkepticInfraError, match="k1") as exc:
-        collector.observe_mutation(
-            make_task_spec(), "img", tree, tmp_path / "artifacts", [changed, caller], selections)
-    assert "infra failure" in str(exc.value)
-    assert "restore copy" in str(exc.value)
+    report = collector.observe_mutation(
+        make_task_spec(), "img", tree, tmp_path / "artifacts", [changed, caller], selections)
+
+    overlay_ids = [
+        call["workspace_overlays"][0][0].parent.name
+        for call in calls if call["workspace_overlays"]]
+    assert overlay_ids == ["c1"]
+    assert report.calibration_void[0].excluded_mutant_ids == ("k1",)
 
 
 @pytest.mark.parametrize("exit_code", [2, 3, 4, 124])
@@ -660,66 +654,33 @@ def test_per_line_calibration_exit_still_infras_even_with_a_voided_full_suite(
     assert "infra failure" in str(exc.value)
 
 
-def test_original_is_restored_and_batch_inputs_land_on_the_artifacts_mount(
+def test_mutation_inputs_are_read_only_and_absent_from_sealed_output(
     tmp_path, monkeypatch
 ):
-    """Past the six named tests: the host-side layout the batch contract
-    describes, faked at the same boundary."""
+    """Source and selection are inputs; neither is evidence output."""
     tree = _tree(tmp_path)
     m = _mutant("mut1")
     selections = {"mut1": ("tests/test_a.py::test_x",)}
-    fake_mutation_run(monkeypatch, {"mut1": 1}, selections)
+    calls = fake_mutation_run(monkeypatch, {"mut1": 1}, selections)
 
     collector.observe_mutation(
         make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
 
     artifacts = tmp_path / "artifacts"
-    assert (artifacts / "originals" / "src" / "a.py").read_text() == "x = 1\n"
-    assert (artifacts / "mutants" / "mut1" / "a.py").read_text() == "x = 2\n"
-    assert (artifacts / "mutants" / "mut1" / "selection.txt").read_text() == (
-        "tests/test_a.py::test_x\n")
-    # The fake never touched /workspace (it only wrote exit/dur_ms), so this
-    # only proves the batch never assumed the restore already happened; the
-    # docker rows prove the real script's own restore line.
+    mutant_call = next(call for call in calls if call["workspace_overlays"])
+    overlay_source, overlay_target = mutant_call["workspace_overlays"][0]
+    assert overlay_source.name == "a.py"
+    assert overlay_target == "src/a.py"
+    assert mutant_call["input_mounts"][0][1] == (
+        "/opt/skeptic-observation-inputs/selection.txt")
+    assert mutant_call["extra_mounts"] == ()
+    assert not (artifacts / "mutants" / "mut1" / "a.py").exists()
+    assert not (artifacts / "mutants" / "mut1" / "selection.txt").exists()
     assert (tree / "src" / "a.py").read_text() == "x = 1\n"
 
 
-def test_install_cp_failure_is_infra_not_a_manufactured_survival(tmp_path, monkeypatch):
-    """DECISIONS row 121, half one. A failed install copy must not let the
-    selection run against whatever unmutated source is already sitting in
-    /workspace, an exit 0 that would silently manufacture `survived`."""
-    tree = _tree(tmp_path)
-    m = _mutant("mut1")
-    selections = {"mut1": ("tests/test_a.py::test_x",)}
-    fake_mutation_run(monkeypatch, {}, selections,
-                      raw_exits={"mut1": collector._CP_INSTALL_FAILED})
-
-    with pytest.raises(SkepticInfraError, match="mut1") as exc:
-        collector.observe_mutation(
-            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
-    assert "infra failure" in str(exc.value)
-    assert "install copy" in str(exc.value)
-
-
-def test_restore_cp_failure_is_infra_for_the_whole_batch(tmp_path, monkeypatch):
-    """DECISIONS row 121, half two. A failed restore leaves the mutated file
-    in place for every mutant that runs after it, so it refuses the whole
-    observation rather than just this one mutant's own record."""
-    tree = _tree(tmp_path)
-    m = _mutant("mut1")
-    selections = {"mut1": ("tests/test_a.py::test_x",)}
-    fake_mutation_run(monkeypatch, {}, selections,
-                      raw_exits={"mut1": collector._CP_RESTORE_FAILED})
-
-    with pytest.raises(SkepticInfraError, match="mut1") as exc:
-        collector.observe_mutation(
-            make_task_spec(), "img", tree, tmp_path / "artifacts", [m], selections)
-    assert "infra failure" in str(exc.value)
-    assert "restore copy" in str(exc.value)
-
-
 def test_missing_install_marker_blames_the_overlay_install(tmp_path, monkeypatch):
-    """A failed overlay install for the mutation batch itself leaves zero
+    """A failed overlay install for the first mutation phase leaves zero
     exit files (calibration or per-mutant): before this fix, the missing
     calibration exit file made `_guard_calibration` blame a mid-batch death
     and point at a `.../err` that never existed."""
@@ -1033,10 +994,10 @@ def test_h5_hardcoded_produces_no_mutation_row(enriched_pair):  # noqa: F811
     mutant. That let this survivor inherit a neighboring mutant's failing
     result often enough to read as `killed` almost every run, with the true
     result surfacing only on the rare timing where the cache actually
-    invalidated, which is what M4 wave A logged as a flake. `_mutation_script`
-    now clears `__pycache__` before every mutant's timed run, and this
-    fixture's rate is 2/3 on every run since (measured: 16 consecutive real
-    docker runs, this fix, one result)."""
+    invalidated, which is what M4 wave A logged as a flake. Every fresh
+    calibration/mutant container now gets a private `PYTHONPYCACHEPREFIX`, so
+    no run reads or writes another run's cache; this fixture's rate remains
+    2/3."""
     pair = enriched_pair("h5-hardcoded")
 
     result = t2_mutation.run(pair)
@@ -1051,17 +1012,80 @@ def test_h5_hardcoded_produces_no_mutation_row(enriched_pair):  # noqa: F811
 
 @pytest.mark.docker
 @pytest.mark.slow
-def test_a_real_cp_failure_writes_the_real_sentinel(tmp_path, monkeypatch, layer_pair):  # noqa: F811
-    """Batch 1 review fold-in: the fast `test_install_cp_failure_is_infra_
-    not_a_manufactured_survival` above pins `observe_mutation`'s read-back of
-    `_CP_INSTALL_FAILED` by writing the sentinel directly at the
-    fake-subprocess boundary, which proves the read side but never the
-    write side: that a real `cp` failure inside a real container actually
-    produces that exact string. This test removes a mutant's own staged
-    source under `artifacts/mutants/<id>/` right after `_write_mutation_inputs`
-    writes it and before the real container runs, so the batch script's own
-    install `cp` has nothing to copy and fails for real, against a real
-    minirepo image."""
+def test_later_mutant_cannot_overwrite_first_mutants_sealed_record(
+    tmp_path, layer_pair  # noqa: F811
+):
+    """A later mutant cannot rewrite an earlier mutant's observation.
+
+    The first literal mutant is killed by the selected basic-range test. The
+    second literal mutant imports an otherwise-correct module that attempts to
+    replace the first mutant's known legacy ``/artifacts/.../exit`` path with
+    exit 0. A shared writable batch would therefore relabel the first mutant as
+    survived during host read-back. Per-mutant private capture must seal the
+    first exit before the second container exists and expose no writable path
+    by which the second can address it.
+    """
+    from skeptic.image import repo_image_tag
+
+    pair = layer_pair("gold")
+    first_id = "111111111111"
+    second_id = "222222222222"
+    first = mutation.Mutant(
+        mutant_id=first_id,
+        path="minirepo.py",
+        line=4,
+        operator="return_substitution",
+        function="parse_range",
+        population="changed",
+        mutated_source=(
+            '"""First literal mutant."""\n\n'
+            "def parse_range(s: str) -> tuple[int, int]:\n"
+            "    return 999, 999\n\n"
+            "def clamp(value: int, lo: int, hi: int) -> int:\n"
+            "    return max(lo, min(hi, value))\n"
+        ),
+        valid=True,
+    )
+    second = mutation.Mutant(
+        mutant_id=second_id,
+        path="minirepo.py",
+        line=4,
+        operator="return_substitution",
+        function="parse_range",
+        population="changed",
+        mutated_source=(
+            '"""Second literal mutant."""\n'
+            "from pathlib import Path as _Path\n\n"
+            f"_Path('/artifacts/mutants/{first_id}/exit').write_text('0\\n')\n\n"
+            "def parse_range(s: str) -> tuple[int, int]:\n"
+            "    lo, hi = s.split('-', 1)\n"
+            "    return int(lo), int(hi)\n\n"
+            "def clamp(value: int, lo: int, hi: int) -> int:\n"
+            "    return max(lo, min(hi, value))\n"
+        ),
+        valid=True,
+    )
+    selected = ("tests/test_minirepo.py::test_parse_range_basic",)
+
+    report = collector.observe_mutation(
+        pair.spec,
+        repo_image_tag(pair.spec),
+        pair.candidate.tree,
+        tmp_path / "artifacts",
+        [first, second],
+        {first_id: selected, second_id: selected},
+    )
+
+    by_id = {record.mutant_id: record for record in report.records}
+    assert by_id[first_id].status == "killed"
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_a_missing_mutation_overlay_source_is_infra_before_mutant_execution(
+    tmp_path, monkeypatch, layer_pair  # noqa: F811
+):
+    """A disappeared host input cannot degrade into an unmutated test run."""
     from skeptic.image import repo_image_tag
 
     pair = layer_pair("gold")
@@ -1071,9 +1095,9 @@ def test_a_real_cp_failure_writes_the_real_sentinel(tmp_path, monkeypatch, layer
     selections = {"realcpfail001": ("tests/test_minirepo.py::test_parse_range_basic",)}
     real_write = collector._write_mutation_inputs
 
-    def sabotage(tree, artifacts, mutants, sels):
-        real_write(tree, artifacts, mutants, sels)
-        (artifacts / "mutants" / "realcpfail001" / "minirepo.py").unlink()
+    def sabotage(inputs, mutants, sels):
+        real_write(inputs, mutants, sels)
+        (inputs / "mutants" / "realcpfail001" / "minirepo.py").unlink()
 
     monkeypatch.setattr(collector, "_write_mutation_inputs", sabotage)
 
@@ -1081,4 +1105,4 @@ def test_a_real_cp_failure_writes_the_real_sentinel(tmp_path, monkeypatch, layer
         collector.observe_mutation(
             pair.spec, repo_image_tag(pair.spec), pair.candidate.tree,
             tmp_path / "artifacts", [m], selections)
-    assert "install copy" in str(exc.value)
+    assert "workspace overlay source" in str(exc.value)

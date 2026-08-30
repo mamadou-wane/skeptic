@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from skeptic import collector, mutation
 from skeptic.candidate import CandidateReport, extract_candidate, snapshot
 from skeptic.checks.observations import AdvCandidate, VariantObservations
 from skeptic.collector import (
@@ -488,6 +489,66 @@ def test_observe_variant_uses_one_monotonic_deadline_across_all_phases(
     _observed(spec, tmp_path, "candidate")
 
     assert [call["timeout_s"] for call in calls] == [29, 20, 10]
+
+
+def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(
+    tmp_path, monkeypatch
+):
+    """One calibration and each mutant consume the same total host budget."""
+    tree = _tree(tmp_path, with_tests=True)
+    (tree / "src").mkdir()
+    (tree / "src" / "a.py").write_text("x = 1\n")
+    mutants = [
+        mutation.Mutant(
+            mutant_id="111111111111", path="src/a.py", line=1,
+            operator="off_by_one", function="", population="changed",
+            mutated_source="x = 2\n", valid=True),
+        mutation.Mutant(
+            mutant_id="222222222222", path="src/a.py", line=1,
+            operator="off_by_one", function="", population="changed",
+            mutated_source="x = 3\n", valid=True),
+    ]
+    selection = (NODE_A,)
+    calls = []
+
+    def fake_capture(self, script, timeout_s, quarantine, env=None):
+        calls.append({
+            "timeout_s": timeout_s,
+            "quarantine": quarantine,
+            "input_mounts": self.input_mounts,
+            "workspace_overlays": self.workspace_overlays,
+            "extra_mounts": self.extra_mounts,
+            "env": env,
+        })
+        quarantine.mkdir(mode=0o700)
+        (quarantine / "install.ok").write_text("ok\n")
+        if self.workspace_overlays:
+            (quarantine / "dur_ms").write_text("42\n")
+            mutant_id = self.workspace_overlays[0][0].parent.name
+            code = 1 if mutant_id == "111111111111" else 0
+        else:
+            (quarantine / "calibration_ms").write_text("1000\n")
+            code = 0
+        return ExecResult(code, "phase out", "phase err", 10)
+
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
+    readings = iter((0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+    monkeypatch.setattr("skeptic.collector.time.monotonic", lambda: next(readings))
+
+    report = collector.observe_mutation(
+        make_task_spec(), "img", tree, tmp_path / "artifacts", mutants,
+        {mutant.mutant_id: selection for mutant in mutants},
+    )
+
+    budget = collector._mutation_host_budget(2, 1)
+    assert [call["timeout_s"] for call in calls] == [budget - 1, budget - 3, budget - 5]
+    assert len({call["quarantine"] for call in calls}) == 3
+    assert calls[0]["workspace_overlays"] == ()
+    assert all(len(call["workspace_overlays"]) == 1 for call in calls[1:])
+    assert all(call["extra_mounts"] == () for call in calls)
+    assert all(call["env"] == {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
+               for call in calls)
+    assert [record.status for record in report.records] == ["killed", "survived"]
 
 
 def test_coverage_test_cmd_refuses_a_non_pytest_test_cmd():

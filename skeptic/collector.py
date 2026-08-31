@@ -84,10 +84,6 @@ from skeptic.testgen import screen_imports
 from skeptic.trace import config_hash
 from skeptic.workspace import apply_candidate, apply_patch, materialize
 
-# Legacy multi-output collectors still mount their artifact root here. T1 uses
-# container-private output plus host sealing instead; its two fixed paths below
-# separate writable private output from individually mounted read-only inputs.
-ARTIFACTS = "/artifacts"
 _PRIVATE_ARTIFACTS = "/tmp/skeptic-artifacts"
 _OBSERVATION_INPUTS = "/opt/skeptic-observation-inputs"
 _JUNIT = "junit.xml"
@@ -869,13 +865,11 @@ def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
                  workdir: Path, baseline_cache: Path | None = None) -> ObservationPair:
     """Materialize both trees, observe each once, and pair the results.
 
-    Two trees and two containers per pair by default, which is two overlay
-    installs. The alternative is one container reused across both tree
-    states, and row 72 scoped that to BUILD: a container that outlived one of
-    the two states is contamination in the one place Skeptic is comparing
-    them. `baseline_cache` trades one of those two containers for disk when
-    the baseline has already been observed at the same key; see
-    `_observe_baseline`.
+    Two canonical trees exist per pair. Every candidate-executing observation
+    phase gets its own disposable snapshot and container; a container or
+    writable snapshot that outlived one phase would contaminate the comparison.
+    `baseline_cache` trades the baseline side's phase executions for disk when
+    that side has already been observed at the same key; see `_observe_baseline`.
     """
     if candidate.is_empty:
         raise SkepticInfraError(

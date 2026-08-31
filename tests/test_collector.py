@@ -1853,7 +1853,7 @@ def test_report_phase_ignores_suite_workspace_rewrite_and_coverage_shadow(
 @pytest.mark.docker
 @pytest.mark.slow
 def test_collect_pair_on_the_minirepo_gold_fixture(tmp_path, minirepo_spec_and_repo):
-    """Both sides for real: two trees, two containers, one image.
+    """Both sides for real: two canonical trees, isolated phases, one image.
 
     Wall time for the pair is what `--durations` reports for this test, minus
     the one-time image build the session fixture shares.

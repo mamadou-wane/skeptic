@@ -498,6 +498,40 @@ def test_run_capture_preserves_primary_failure_when_private_root_is_empty(
     ) == primary
 
 
+def test_run_capture_refuses_failed_copy_after_primary_test_failure(
+    tmp_path, monkeypatch
+):
+    """A partial copy can never become admissible pytest output."""
+    workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
+    workspace.mkdir()
+    _fixed_capture_name(monkeypatch)
+    primary = ExecResult(1, "pytest primary stdout", "pytest primary stderr", 22)
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        if cmd[:2] == ["docker", "run"]:
+            return primary
+        if cmd[:2] == ["docker", "cp"]:
+            (quarantine / "junit.xml").write_text(
+                '<testsuite tests="1"><testcase name="plausible"/></testsuite>')
+            return ExecResult(1, "copied one file", "archive read failed", 3)
+        return ExecResult(0, "", "", 1)
+
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError, match="private output copy failed") as exc:
+        RunContainer("img", workspace).run_capture(
+            "python -m pytest -q", 60, quarantine)
+
+    detail = str(exc.value)
+    assert "primary exit 1" in detail
+    assert "pytest primary stdout" in detail
+    assert "pytest primary stderr" in detail
+    assert "copy exit 1" in detail
+    assert "copied one file" in detail
+    assert "archive read failed" in detail
+    assert (quarantine / "junit.xml").is_file()
+
+
 def test_run_capture_mounts_inputs_and_contained_workspace_overlay_read_only(
     tmp_path, monkeypatch
 ):

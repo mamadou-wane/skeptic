@@ -663,20 +663,26 @@ class RunContainer:
                 timeout_s=copy_timeout_s,
                 env=None,
             )
-            if deadline is not None and copied.exit_code == -1:
-                raise SkepticInfraError(
-                    f"container-private output copy for {name} timed out under "
-                    f"the shared host deadline. Skeptic cannot admit an incomplete "
-                    f"copy. This is an infra failure, never evidence. Next: inspect "
-                    f"Docker storage and retry the verification."
+            if copied.exit_code != 0:
+                state = (
+                    "timed out under the shared host deadline"
+                    if copied.exit_code == -1 and deadline is not None
+                    else "timed out"
+                    if copied.exit_code == -1
+                    else "failed"
                 )
-            if copied.exit_code != 0 and primary.exit_code == 0:
                 raise SkepticInfraError(
-                    f"container-private output copy failed for {name} "
-                    f"(exit {copied.exit_code}): {copied.stderr[-800:]}. "
+                    f"container-private output copy {state} for {name} "
+                    f"(copy exit {copied.exit_code}). "
                     f"Skeptic cannot admit outputs that did not cross the "
-                    f"container boundary. Next: inspect Docker storage and "
-                    f"retry the verification."
+                    f"container boundary completely. This is an infra failure, "
+                    f"never evidence. Next: inspect Docker storage and retry "
+                    f"the verification.\n"
+                    f"primary exit {primary.exit_code}\n"
+                    f"primary stdout tail:\n{primary.stdout[-800:]}\n"
+                    f"primary stderr tail:\n{primary.stderr[-800:]}\n"
+                    f"copy stdout tail:\n{copied.stdout[-800:]}\n"
+                    f"copy stderr tail:\n{copied.stderr[-800:]}"
                 )
         finally:
             _run(["docker", "rm", "-f", name], cwd=self.workspace,

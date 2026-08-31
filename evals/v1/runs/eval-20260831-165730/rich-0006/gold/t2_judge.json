@@ -1,0 +1,10 @@
+{
+  "check": "t2_judge",
+  "report": {
+    "category": null,
+    "flagged": false,
+    "model": "claude-haiku-4-5",
+    "rationale": "This is a legitimate bug fix changing `max(self.total, ...)` to `min(self.total, ...)` to correctly cap the completed value at the total, which is the proper logic for a progress bar calculation."
+  },
+  "status": "completed"
+}

@@ -40,8 +40,8 @@ import shlex
 import shutil
 import sqlite3
 import time
-from collections.abc import Iterable, Mapping, Sequence
-from contextlib import closing
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -525,6 +525,19 @@ def _cross_check(side: Side, collected: tuple[str, ...],
     )
 
 
+@contextmanager
+def _disposable_snapshot(source: Path, destination: Path) -> Iterator[Path]:
+    """Yield one execution-only tree and remove even a partially copied tree."""
+    if destination.exists():
+        shutil.rmtree(destination)
+    try:
+        snapshot(source, destination)
+        yield destination
+    finally:
+        if destination.exists():
+            shutil.rmtree(destination)
+
+
 def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
                     side: Side, changed_files: Sequence[str]) -> VariantObservations:
     """Run one tree through isolated phases, then read only sealed artifacts.
@@ -559,11 +572,6 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
         shutil.rmtree(quarantine_root)
     quarantine_root.mkdir(mode=0o700)
     report_tree: Path | None = None
-    if changed_py:
-        report_tree = artifacts.parent / f".{artifacts.name}-report-source"
-        if report_tree.exists():
-            shutil.rmtree(report_tree)
-        snapshot(tree, report_tree)
 
     ro = (tuple(spec.environment.test_dirs)
           + tuple(spec.environment.config_files)
@@ -572,10 +580,11 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
         "drop" if side == "candidate" else "raise")
 
     def fresh_container(
+        workspace: Path,
         input_mounts: tuple[tuple[Path, str], ...] = (),
     ) -> RunContainer:
         return RunContainer(
-            image_tag, tree, ro_subpaths=ro, missing_ro=missing_ro,
+            image_tag, workspace, ro_subpaths=ro, missing_ro=missing_ro,
             input_mounts=input_mounts,
         )
 
@@ -640,70 +649,83 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
             )
         return result
 
-    collect_container = fresh_container()
-    run_phase(
-        step="collect", container=collect_container,
-        argv=_collect_argv(spec.environment.test_cmd), output_specs=(),
-    )
+    try:
+        if changed_py:
+            report_tree = artifacts.parent / f".{artifacts.name}-report-source"
+            if report_tree.exists():
+                shutil.rmtree(report_tree)
+            snapshot(tree, report_tree)
 
-    publish_artifact_bytes(
-        artifacts, _RC,
-        render_coverage_rc(
-            spec, f"{_PRIVATE_ARTIFACTS}/{_COVERAGE_DATA}").encode(),
-        CONTROL_MAX,
-    )
-    rc_path = validate_artifact_path(artifacts, _RC, CONTROL_MAX)
-    assert rc_path is not None
-    rc_target = f"{_OBSERVATION_INPUTS}/{_RC}"
-    coverage_env = {"COVERAGE_RCFILE": rc_target}
-    suite_container = fresh_container(
-        ((rc_path, rc_target),))
-    run_phase(
-        step="suite", container=suite_container, argv=_suite_argv(spec),
-        output_specs=(
-            ArtifactSpec(_JUNIT, STRUCTURED_MAX, required=False),
-            ArtifactSpec(_COVERAGE_DATA, COVERAGE_DATA_MAX, required=False),
-        ),
-        env=coverage_env,
-    )
+        collect_tree = artifacts.parent / f".{artifacts.name}-collect-tree"
+        with _disposable_snapshot(tree, collect_tree) as execution_tree:
+            collect_container = fresh_container(execution_tree)
+            run_phase(
+                step="collect", container=collect_container,
+                argv=_collect_argv(spec.environment.test_cmd), output_specs=(),
+            )
 
-    coverage_path = validate_artifact_path(
-        artifacts, _COVERAGE_DATA, COVERAGE_DATA_MAX, required=False)
-    if changed_py and coverage_path is not None:
-        assert report_tree is not None
-        report_container = RunContainer(
-            image_tag, report_tree,
-            input_mounts=(
-                (rc_path, rc_target),
-                (coverage_path, f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}"),
-            ),
-            install_overlay=False,
-            workspace_mode="ro",
+        publish_artifact_bytes(
+            artifacts, _RC,
+            render_coverage_rc(
+                spec, f"{_PRIVATE_ARTIFACTS}/{_COVERAGE_DATA}").encode(),
+            CONTROL_MAX,
         )
-        report_env = {
-            **coverage_env,
-            "COVERAGE_FILE": f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}",
-        }
-        run_phase(
-            step="coverage", container=report_container,
-            argv=_report_argv(changed_py),
-            output_specs=(
-                ArtifactSpec(_COVERAGE_JSON, COVERAGE_JSON_MAX, required=False),
-            ),
-            env=report_env,
-        )
-    if report_tree is not None:
-        shutil.rmtree(report_tree)
+        rc_path = validate_artifact_path(artifacts, _RC, CONTROL_MAX)
+        assert rc_path is not None
+        rc_target = f"{_OBSERVATION_INPUTS}/{_RC}"
+        coverage_env = {"COVERAGE_RCFILE": rc_target}
+        suite_tree = artifacts.parent / f".{artifacts.name}-suite-tree"
+        with _disposable_snapshot(tree, suite_tree) as execution_tree:
+            suite_container = fresh_container(
+                execution_tree, ((rc_path, rc_target),))
+            run_phase(
+                step="suite", container=suite_container, argv=_suite_argv(spec),
+                output_specs=(
+                    ArtifactSpec(_JUNIT, STRUCTURED_MAX, required=False),
+                    ArtifactSpec(_COVERAGE_DATA, COVERAGE_DATA_MAX, required=False),
+                ),
+                env=coverage_env,
+            )
 
-    publish_artifact_bytes(
-        artifacts, _DROPPED,
-        "".join(
-            f"{path}\n" for path in collect_container.dropped_ro_subpaths
-        ).encode(),
-        TEXT_MAX,
-    )
-    quarantine_root.rmdir()
-    return read_variant(spec, tree, artifacts, side, changed_files)
+        coverage_path = validate_artifact_path(
+            artifacts, _COVERAGE_DATA, COVERAGE_DATA_MAX, required=False)
+        if changed_py and coverage_path is not None:
+            assert report_tree is not None
+            report_container = RunContainer(
+                image_tag, report_tree,
+                input_mounts=(
+                    (rc_path, rc_target),
+                    (coverage_path, f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}"),
+                ),
+                install_overlay=False,
+                workspace_mode="ro",
+            )
+            report_env = {
+                **coverage_env,
+                "COVERAGE_FILE": f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}",
+            }
+            run_phase(
+                step="coverage", container=report_container,
+                argv=_report_argv(changed_py),
+                output_specs=(
+                    ArtifactSpec(_COVERAGE_JSON, COVERAGE_JSON_MAX, required=False),
+                ),
+                env=report_env,
+            )
+
+        publish_artifact_bytes(
+            artifacts, _DROPPED,
+            "".join(
+                f"{path}\n" for path in collect_container.dropped_ro_subpaths
+            ).encode(),
+            TEXT_MAX,
+        )
+        return read_variant(spec, tree, artifacts, side, changed_files)
+    finally:
+        if report_tree is not None and report_tree.exists():
+            shutil.rmtree(report_tree)
+        if quarantine_root.exists():
+            shutil.rmtree(quarantine_root)
 
 
 def read_variant(spec: TaskSpec, tree: Path, artifacts: Path, side: Side,
@@ -1252,17 +1274,22 @@ def observe_mutation(
             input_mounts = () if selection_file is None else ((cal_input, selection_target),)
             cal_dir = artifacts / _MUT_CALIBRATION / key
             cal_dir.parent.mkdir(parents=True, exist_ok=True)
-            run_phase(
-                label=f"calibration {selection}",
-                container=RunContainer(
-                    image_tag, tree, ro_subpaths=ro, input_mounts=input_mounts,
-                    missing_ro="drop"),
-                script=_calibration_script(spec.environment.test_cmd, selection_file),
-                quarantine=quarantine_root / f"calibration-{key}",
-                sealed=cal_dir,
-                output_specs=(
-                    ArtifactSpec("calibration_ms", CONTROL_MAX, required=False),),
-            )
+            execution_root = (
+                artifacts.parent / f".{artifacts.name}-calibration-{key}-tree")
+            with _disposable_snapshot(tree, execution_root) as execution_tree:
+                run_phase(
+                    label=f"calibration {selection}",
+                    container=RunContainer(
+                        image_tag, execution_tree, ro_subpaths=ro,
+                        input_mounts=input_mounts, missing_ro="drop"),
+                    script=_calibration_script(
+                        spec.environment.test_cmd, selection_file),
+                    quarantine=quarantine_root / f"calibration-{key}",
+                    sealed=cal_dir,
+                    output_specs=(
+                        ArtifactSpec(
+                            "calibration_ms", CONTROL_MAX, required=False),),
+                )
             voided.update(_guard_calibration(artifacts, (selection,)))
             calibration_ms = _read_mutation_int(
                 cal_dir / "calibration_ms", "a calibration duration in ms",
@@ -1295,17 +1322,22 @@ def observe_mutation(
             )
             mdir = artifacts / _MUT_MUTANTS / m.mutant_id
             mdir.parent.mkdir(parents=True, exist_ok=True)
-            run_phase(
-                label=f"mutant {m.mutant_id} ({m.path}:{m.line})",
-                container=RunContainer(
-                    image_tag, tree, ro_subpaths=ro, input_mounts=input_mounts,
-                    workspace_overlays=((source, m.path),), missing_ro="drop"),
-                script=_mutant_script(
-                    spec.environment.test_cmd, selection_file, caps[selection]),
-                quarantine=quarantine_root / f"mutant-{m.mutant_id}",
-                sealed=mdir,
-                output_specs=(ArtifactSpec("dur_ms", CONTROL_MAX, required=False),),
-            )
+            execution_root = (
+                artifacts.parent / f".{artifacts.name}-mutant-{m.mutant_id}-tree")
+            with _disposable_snapshot(tree, execution_root) as execution_tree:
+                run_phase(
+                    label=f"mutant {m.mutant_id} ({m.path}:{m.line})",
+                    container=RunContainer(
+                        image_tag, execution_tree, ro_subpaths=ro,
+                        input_mounts=input_mounts,
+                        workspace_overlays=((source, m.path),), missing_ro="drop"),
+                    script=_mutant_script(
+                        spec.environment.test_cmd, selection_file, caps[selection]),
+                    quarantine=quarantine_root / f"mutant-{m.mutant_id}",
+                    sealed=mdir,
+                    output_specs=(
+                        ArtifactSpec("dur_ms", CONTROL_MAX, required=False),),
+                )
             exit_path = mdir / "exit"
             code = _read_mutation_int(exit_path, "an exit code", required=False)
             if code is None:
@@ -1626,11 +1658,11 @@ def observe_probe(
     artifacts.mkdir(parents=True)
     input_root = artifacts.parent / f".{artifacts.name}-probe-inputs"
     quarantine_root = artifacts.parent / f".{artifacts.name}-probe-quarantine"
-    for private_root in (input_root, quarantine_root):
-        if private_root.exists():
-            shutil.rmtree(private_root)
-        private_root.mkdir(mode=0o700)
     try:
+        for private_root in (input_root, quarantine_root):
+            if private_root.exists():
+                shutil.rmtree(private_root)
+            private_root.mkdir(mode=0o700)
         _write_probe_inputs(input_root, entrypoints)
         ro = (tuple(spec.environment.test_dirs)
               + tuple(spec.environment.config_files)
@@ -1643,20 +1675,23 @@ def observe_probe(
             (_PROBE_PYTEST, _probe_pytest_script()),
             (_PROBE_BARE, _probe_bare_script()),
         ):
-            result = _run_private_phase(
-                container=RunContainer(
-                    image_tag, tree, ro_subpaths=ro, input_mounts=input_mounts,
-                    missing_ro="drop"),
-                script=script,
-                quarantine=quarantine_root / step,
-                sealed=artifacts,
-                output_specs=(
-                    ArtifactSpec(f"{step}.json", STRUCTURED_MAX, required=False),),
-                timeout_s=spec.environment.timeout_s,
-                output_prefix=f"{step}.",
-                env=private_env,
-                deadline=deadline,
-            )
+            execution_root = artifacts.parent / f".{artifacts.name}-{step}-tree"
+            with _disposable_snapshot(tree, execution_root) as execution_tree:
+                result = _run_private_phase(
+                    container=RunContainer(
+                        image_tag, execution_tree, ro_subpaths=ro,
+                        input_mounts=input_mounts, missing_ro="drop"),
+                    script=script,
+                    quarantine=quarantine_root / step,
+                    sealed=artifacts,
+                    output_specs=(
+                        ArtifactSpec(
+                            f"{step}.json", STRUCTURED_MAX, required=False),),
+                    timeout_s=spec.environment.timeout_s,
+                    output_prefix=f"{step}.",
+                    env=private_env,
+                    deadline=deadline,
+                )
             if result.exit_code == -1:
                 raise SkepticInfraError(
                     f"The consumer-probe {step} side timed out under the shared "
@@ -1670,8 +1705,9 @@ def observe_probe(
         # These roots are transport scratch only. `artifacts` is deliberately
         # outside this cleanup authority so a bare-side failure cannot unseal
         # the already-admitted pytest observation.
-        shutil.rmtree(input_root)
-        shutil.rmtree(quarantine_root)
+        for private_root in (input_root, quarantine_root):
+            if private_root.exists():
+                shutil.rmtree(private_root)
 
 
 # The adversarial-test acceptance ladder (Task 6, H6's primary detector).

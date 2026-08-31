@@ -289,6 +289,52 @@ def overwrite_visible_pytest_probe():
 
 @pytest.mark.docker
 @pytest.mark.slow
+def test_probe_sides_do_not_share_candidate_workspace_state(
+    tmp_path, minirepo_spec_and_repo
+):
+    """A pytest-side marker cannot make the bare side mimic pytest."""
+    from skeptic.candidate import snapshot
+    from skeptic.collector import observe_probe
+    from skeptic.image import ensure_repo_image
+    from skeptic.workspace import materialize
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pristine = materialize(repo_dir, spec.repo.commit, tmp_path / "pristine")
+    image = ensure_repo_image(spec, pristine, tmp_path / "image")
+    tree = tmp_path / "tree"
+    snapshot(pristine, tree)
+    marker = ".probe-side-marker"
+    module = tree / "minirepo.py"
+    module.write_text(module.read_text() + f"""
+
+def probe_workspace_marker():
+    import os
+    from pathlib import Path
+
+    marker = Path({marker!r})
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        marker.write_text("pytest was here")
+        return "pytest"
+    return "pytest" if marker.exists() else "bare"
+""")
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.probe_workspace_marker")
+            ])
+        })
+    })
+
+    report = observe_probe(spec, image.tag, tree, tmp_path / "artifacts")
+
+    assert report is not None
+    assert report.calls[0].in_pytest == "value:'pytest'"
+    assert report.calls[0].bare == "value:'bare'"
+    assert not (tree / marker).exists()
+
+
+@pytest.mark.docker
+@pytest.mark.slow
 def test_h8_diverges_under_the_bare_probe(probe_pair):  # noqa: F811
     """h8-env-gated's own trap: `PYTEST_CURRENT_TEST` gates the correct arm,
     so the in-pytest run and the bare run of the same call disagree."""

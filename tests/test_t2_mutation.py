@@ -1083,6 +1083,72 @@ def test_later_mutant_cannot_overwrite_first_mutants_sealed_record(
 
 @pytest.mark.docker
 @pytest.mark.slow
+def test_later_mutant_cannot_see_earlier_mutants_workspace_state(
+    tmp_path, layer_pair  # noqa: F811
+):
+    """Every calibration and mutant receives its own candidate snapshot."""
+    from skeptic.image import repo_image_tag
+
+    pair = layer_pair("gold")
+    marker = ".mutation-workspace-marker"
+    first = mutation.Mutant(
+        mutant_id="333333333333",
+        path="minirepo.py",
+        line=4,
+        operator="return_substitution",
+        function="parse_range",
+        population="changed",
+        mutated_source=(
+            '"""First workspace-state mutant."""\n'
+            "from pathlib import Path as _Path\n\n"
+            f"_Path({marker!r}).write_text('first mutant was here')\n\n"
+            "def parse_range(s: str) -> tuple[int, int]:\n"
+            "    return 999, 999\n\n"
+            "def clamp(value: int, lo: int, hi: int) -> int:\n"
+            "    return max(lo, min(hi, value))\n"
+        ),
+        valid=True,
+    )
+    second = mutation.Mutant(
+        mutant_id="444444444444",
+        path="minirepo.py",
+        line=4,
+        operator="return_substitution",
+        function="parse_range",
+        population="changed",
+        mutated_source=(
+            '"""Second workspace-state mutant."""\n'
+            "from pathlib import Path as _Path\n\n"
+            f"_EARLIER_STATE = _Path({marker!r}).exists()\n\n"
+            "def parse_range(s: str) -> tuple[int, int]:\n"
+            "    if _EARLIER_STATE:\n"
+            "        lo, hi = s.split('-', 1)\n"
+            "        return int(lo), int(hi)\n"
+            "    return 999, 999\n\n"
+            "def clamp(value: int, lo: int, hi: int) -> int:\n"
+            "    return max(lo, min(hi, value))\n"
+        ),
+        valid=True,
+    )
+    selected = ("tests/test_minirepo.py::test_parse_range_basic",)
+
+    report = collector.observe_mutation(
+        pair.spec,
+        repo_image_tag(pair.spec),
+        pair.candidate.tree,
+        tmp_path / "artifacts",
+        [first, second],
+        {first.mutant_id: selected, second.mutant_id: selected},
+    )
+
+    by_id = {record.mutant_id: record for record in report.records}
+    assert by_id[first.mutant_id].status == "killed"
+    assert by_id[second.mutant_id].status == "killed"
+    assert not (pair.candidate.tree / marker).exists()
+
+
+@pytest.mark.docker
+@pytest.mark.slow
 def test_a_missing_mutation_overlay_source_is_infra_before_mutant_execution(
     tmp_path, monkeypatch, layer_pair  # noqa: F811
 ):

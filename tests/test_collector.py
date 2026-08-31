@@ -667,6 +667,37 @@ def test_probe_removes_temporary_roots_after_first_side_failure(
     assert list(artifacts.iterdir()) == []
 
 
+def test_probe_cleans_first_temporary_root_when_second_root_creation_fails(
+    tmp_path, monkeypatch
+):
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.parse_range", args=["1-5"])
+            ])
+        })
+    })
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = tmp_path / "artifacts"
+    input_root = tmp_path / ".artifacts-probe-inputs"
+    quarantine_root = tmp_path / ".artifacts-probe-quarantine"
+    real_mkdir = Path.mkdir
+
+    def fail_second_root(path, *args, **kwargs):
+        if path == quarantine_root:
+            raise OSError("second scratch root failed")
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_second_root)
+
+    with pytest.raises(OSError, match="second scratch root failed"):
+        collector.observe_probe(spec, "img", tree, artifacts)
+
+    assert not input_root.exists()
+    assert not quarantine_root.exists()
+
+
 def test_probe_removes_temporary_roots_after_second_side_failure_without_unsealing_pytest(
     tmp_path, monkeypatch
 ):
@@ -1599,6 +1630,59 @@ def test_sealed_collect_resists_suite_time_overwrite(
     }
     assert set(pair.candidate.collected) == real
     assert forged not in pair.candidate.collected
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_collection_workspace_writes_do_not_reach_suite_or_canonical_tree(
+    tmp_path, minirepo_spec_and_repo
+):
+    """Collection and suite execute against independent disposable snapshots.
+
+    The collection-only hook plants a marker and replaces the measured source
+    after pytest has collected. Reusing that writable workspace for the suite
+    makes the added test observe both writes and fail; mounting the canonical
+    candidate tree itself also leaves those bytes corrupted after collection.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    baseline = materialize(repo_dir, spec.repo.commit, tmp_path / "seeded")
+    apply_patch(baseline, Path(spec.seed.bug_patch))
+    fixed = tmp_path / "fixed"
+    snapshot(baseline, fixed)
+    apply_patch(fixed, Path(next(
+        variant.patch for variant in spec.evaluation.variants
+        if variant.label == "clean"
+    )))
+    canonical_source = (fixed / "minirepo.py").read_bytes()
+    marker = ".collection-workspace-marker"
+    (fixed / "conftest.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        "def pytest_collection_finish(session):\n"
+        "    if '--collect-only' not in sys.argv:\n"
+        "        return\n"
+        f"    Path({marker!r}).write_text('collection was here')\n"
+        "    Path('minirepo.py').write_text('COLLECTION_REWRITE = True\\n')\n"
+    )
+    (fixed / "tests" / "test_phase_isolation.py").write_text(
+        "from pathlib import Path\n\n"
+        "def test_suite_receives_pristine_candidate_snapshot():\n"
+        f"    assert not Path({marker!r}).exists()\n"
+        "    assert 'COLLECTION_REWRITE' not in Path('minirepo.py').read_text()\n"
+    )
+    candidate = extract_candidate(
+        baseline, fixed, tmp_path / "candidate.diff",
+        allowed_paths=spec.builder_input.allowed_paths,
+    )
+
+    pair = collect_pair(spec, repo_dir, candidate, tmp_path / "work")
+
+    assert pair.candidate.suite_exit == 0
+    assert pair.candidate.outcomes[
+        "tests/test_phase_isolation.py::test_suite_receives_pristine_candidate_snapshot"
+    ] == "passed"
+    assert (pair.candidate.tree / "minirepo.py").read_bytes() == canonical_source
+    assert not (pair.candidate.tree / marker).exists()
 
 
 @pytest.mark.docker

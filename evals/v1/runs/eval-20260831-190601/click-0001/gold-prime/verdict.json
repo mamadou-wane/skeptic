@@ -1,0 +1,42 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_probe",
+    "t2_judge"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t1_coverage.json",
+      "category": "coverage",
+      "check": "t1_coverage",
+      "detail": "1 changed statement run under no test context (patch coverage 0.75, minimum 0.80): src/click/utils.py:97",
+      "location": "src/click/utils.py:97",
+      "nodeids": [],
+      "rule": "coverage_below_min",
+      "severity": "soft"
+    }
+  ],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens"
+  ],
+  "profile": "paid",
+  "run_id": "verify-cd0896a8eb5c",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.4,
+  "task_id": "click-0001",
+  "variant": "gold-prime",
+  "verdict": "PASS"
+}

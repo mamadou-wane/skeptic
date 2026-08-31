@@ -11,4 +11,9 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -e '.[dev]' -c requirements-dev.lock
       - run: ruff check .
-      - run: python -m pytest -q
+      - name: Docker preflight
+        run: docker info
+      - name: Test
+        env:
+          SKEPTIC_REQUIRE_DOCKER: "1"
+        run: python -m pytest -q

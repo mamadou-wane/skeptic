@@ -148,7 +148,7 @@ def test_docker_run_args_reject_missing_ro_source(tmp_path):
         docker_run_args("img", tmp_path, ro_subpaths=("tests/", "pyproject.toml"))
 
 
-from skeptic.sandbox import ExecResult, SessionContainer
+from skeptic.sandbox import INSTALL_FAILURE_EXIT, ExecResult, SessionContainer
 
 
 def test_session_container_start_args_are_detached_and_hardened(tmp_path, monkeypatch):
@@ -382,9 +382,8 @@ def test_run_capture_never_mounts_quarantine(tmp_path, monkeypatch):
     assert script.index("mkdir -p /tmp/skeptic-artifacts") < script.index(
         overlay_install_cmd("/tmp/sv")
     )
-    assert script.index(overlay_install_cmd("/tmp/sv")) < script.index(
-        "printf 'ok\\n' > /tmp/skeptic-artifacts/install.ok"
-    )
+    assert f"{overlay_install_cmd('/tmp/sv')} || exit {INSTALL_FAILURE_EXIT}" in script
+    assert "install.ok" not in script
 
 
 def test_run_capture_stops_timeout_before_copy(tmp_path, monkeypatch):
@@ -574,7 +573,7 @@ def test_run_capture_can_skip_install_with_a_read_only_workspace(tmp_path, monke
     run = calls[0]
     assert f"{workspace}:/workspace:ro" in run
     assert overlay_install_cmd("/tmp/sv") not in run[-1]
-    assert "printf 'ok\\n' > /tmp/skeptic-artifacts/install.ok" in run[-1]
+    assert "install.ok" not in run[-1]
     assert "python -P -m coverage json" in run[-1]
 
 
@@ -630,6 +629,48 @@ def test_run_capture_returns_regular_private_output(tmp_path, minirepo_spec_and_
     )
     assert result.exit_code == 0, result.stderr[-800:]
     assert (quarantine / "result").read_bytes() == b"harmless"
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_run_capture_uses_reserved_exit_when_build_hook_spoofs_old_marker(
+    tmp_path, minirepo_spec_and_repo
+):
+    """Candidate packaging cannot authorize a failed editable install."""
+    from skeptic.candidate import snapshot
+    from skeptic.image import ensure_repo_image
+    from skeptic.workspace import materialize
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pristine = materialize(repo_dir, spec.repo.commit, tmp_path / "pristine")
+    image = ensure_repo_image(spec, pristine, tmp_path / "image")
+    workspace = tmp_path / "workspace"
+    snapshot(pristine, workspace)
+    (workspace / "spoof_backend.py").write_text(
+        "from pathlib import Path\n"
+        "Path('/tmp/skeptic-artifacts/install.ok').write_text('spoofed\\n')\n"
+        "raise RuntimeError('forced editable-install failure')\n"
+    )
+    (workspace / "pyproject.toml").write_text(
+        "[build-system]\n"
+        "requires = []\n"
+        "build-backend = 'spoof_backend'\n"
+        "backend-path = ['.']\n"
+        "[project]\n"
+        "name = 'malicious-minirepo'\n"
+        "version = '0.0.0'\n"
+    )
+    quarantine = tmp_path / "quarantine"
+
+    result = RunContainer(image.tag, workspace).run_capture(
+        "printf phase-ran > /tmp/skeptic-artifacts/phase-ran",
+        300,
+        quarantine,
+    )
+
+    assert result.exit_code == 125
+    assert (quarantine / "install.ok").read_text() == "spoofed\n"
+    assert not (quarantine / "phase-ran").exists()
 
 
 def test_run_container_runs_once_and_removes_itself(tmp_path, monkeypatch):

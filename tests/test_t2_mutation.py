@@ -29,7 +29,7 @@ from skeptic.checks.observations import (
     MutationReport,
 )
 from skeptic.errors import SkepticInfraError
-from skeptic.sandbox import ExecResult
+from skeptic.sandbox import INSTALL_FAILURE_EXIT, ExecResult
 from tests.helpers import make_observed_pair, make_task_spec
 
 # `enriched_pair` depends on `layer_pair` by fixture name, and pytest resolves
@@ -161,7 +161,7 @@ def fake_mutation_run(
     selections: dict[str, tuple[str, ...]] | None = None, *,
     calibration_exit: int = 0,
     calibration_exits: dict[tuple[str, ...], int] | None = None,
-    install_ok: bool = True, calibration_ms: int | None = 1000,
+    install_succeeds: bool = True, calibration_ms: int | None = 1000,
     dur_ms: int | None = 42,
 ):
     """Answer each private calibration/mutant capture at its real boundary."""
@@ -179,9 +179,9 @@ def fake_mutation_run(
             "deadline": deadline,
         })
         quarantine.mkdir(mode=0o700)
-        if not install_ok:
-            return ExecResult(1, "", "overlay install failed", 100)
-        (quarantine / "install.ok").write_text("ok\n")
+        if not install_succeeds:
+            return ExecResult(
+                INSTALL_FAILURE_EXIT, "", "overlay install failed", 100)
         if self.workspace_overlays:
             mutant_id = self.workspace_overlays[0][0].parent.name
             if dur_ms is not None:
@@ -680,15 +680,13 @@ def test_mutation_inputs_are_read_only_and_absent_from_sealed_output(
     assert (tree / "src" / "a.py").read_text() == "x = 1\n"
 
 
-def test_missing_install_marker_blames_the_overlay_install(tmp_path, monkeypatch):
-    """A failed overlay install for the first mutation phase leaves zero
-    exit files (calibration or per-mutant): before this fix, the missing
-    calibration exit file made `_guard_calibration` blame a mid-batch death
-    and point at a `.../err` that never existed."""
+def test_reserved_install_failure_blames_the_overlay_install(tmp_path, monkeypatch):
+    """A failed first install is diagnosed before calibration read-back."""
     tree = _tree(tmp_path)
     m = _mutant("mut1")
     selections = {"mut1": ("tests/test_a.py::test_x",)}
-    fake_mutation_run(monkeypatch, {"mut1": 0}, selections, install_ok=False)
+    fake_mutation_run(
+        monkeypatch, {"mut1": 0}, selections, install_succeeds=False)
 
     with pytest.raises(SkepticInfraError, match="overlay install") as exc:
         collector.observe_mutation(

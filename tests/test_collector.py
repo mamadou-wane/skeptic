@@ -42,7 +42,7 @@ from skeptic.collector import (
 )
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ImageRef
-from skeptic.sandbox import ExecResult, docker_run_args
+from skeptic.sandbox import INSTALL_FAILURE_EXIT, ExecResult, docker_run_args
 from skeptic.spec import ConsumerProbeSpec, ProbeEntrypoint, TaskSpec
 from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
 from tests.helpers import (
@@ -124,7 +124,7 @@ def _write_coverage_data(path: Path, contexts: tuple[str, ...]) -> None:
 
 
 def fake_unit(monkeypatch, *, collected=(), collect_exit=0, suite_exit=0,
-              outcomes=None, install_ok=True, timed_out=False, covered=None):
+              outcomes=None, install_succeeds=True, timed_out=False, covered=None):
     """Answer each private phase capture at the transport boundary."""
     calls: list[dict[str, object]] = []
 
@@ -148,9 +148,10 @@ def fake_unit(monkeypatch, *, collected=(), collect_exit=0, suite_exit=0,
         quarantine.mkdir(mode=0o700)
         if timed_out:
             return ExecResult(-1, "", f"command timed out after {timeout_s}s", 1000)
-        if not install_ok:
-            return ExecResult(1, "", "pip: could not install /workspace offline", 900)
-        (quarantine / "install.ok").write_text("ok\n")
+        if not install_succeeds:
+            return ExecResult(
+                INSTALL_FAILURE_EXIT, "",
+                "pip: could not install /workspace offline", 900)
         if "--collect-only" in script:
             manifest = "".join(f"{nodeid}\n" for nodeid in collected)
             stdout = f"{manifest}\n{len(collected)} tests collected\n"
@@ -192,7 +193,6 @@ def _stale_artifacts(root: Path, side: str) -> Path:
     """A complete, self-consistent artifact set from an earlier run."""
     stale = root / "artifacts" / side
     stale.mkdir(parents=True)
-    (stale / "install.ok").write_text("ok\n")
     (stale / "collect.out").write_text(f"{NODE_A}\n\n1 test collected\n")
     (stale / "collect.exit").write_text("0\n")
     (stale / "suite.out").write_text("1 passed\n")
@@ -319,8 +319,7 @@ def test_observe_variant_writes_artifacts_outside_the_tree(tmp_path, monkeypatch
     # container-authored file named by argv is suite-local JUnit.
     assert len(calls) == 3
     assert all(call["extra_mounts"] == () for call in calls)
-    assert all((obs.artifacts / f"{step}.install.ok").read_text() == "ok\n"
-               for step in ("collect", "suite", "coverage"))
+    assert not list(obs.artifacts.glob("*.install.ok"))
     suite_script = calls[1]["script"]
     assert "--junitxml=/tmp/skeptic-artifacts/junit.xml" in suite_script
     assert all("/artifacts" not in str(call["script"]) for call in calls)
@@ -445,13 +444,13 @@ def test_observe_variant_distinguishes_a_failed_install_from_a_failed_step(
 ):
     """The separability invariant at the point it is hardest to hold.
 
-    A failed overlay install leaves no `install.ok` and no step files at all,
-    so the message has to name the install and neither pytest step. Past the
+    A failed overlay install returns the reserved host exit before pytest, so
+    the message has to name the install and neither pytest step. Past the
     brief's 12 names: the install, timeout, and unreadable-exit branches were
     the ones the named tests left uncovered.
     """
     spec = make_task_spec()
-    fake_unit(monkeypatch, install_ok=False)
+    fake_unit(monkeypatch, install_succeeds=False)
     # An earlier run's artifacts are on disk and every one of them is
     # consistent. Reading them back would report run 1 as run 2's observation.
     _stale_artifacts(tmp_path / "install", "candidate")
@@ -473,6 +472,30 @@ def test_observe_variant_distinguishes_a_failed_install_from_a_failed_step(
     fake_unit(monkeypatch, collect_exit="")
     with pytest.raises(SkepticInfraError, match="where an exit code belongs"):
         _observed(spec, tmp_path / "truncated", "candidate")
+
+
+def test_spoofed_install_marker_cannot_authorize_a_failed_install(
+    tmp_path, monkeypatch
+):
+    spec = make_task_spec()
+    calls = []
+
+    def spoofed_failure(self, script, timeout_s, quarantine, env=None):
+        calls.append(script)
+        quarantine.mkdir(mode=0o700)
+        (quarantine / "install.ok").write_text("candidate-spoofed\n")
+        return ExecResult(
+            125, "build hook stdout", "forced editable-install failure", 10)
+
+    monkeypatch.setattr(
+        "skeptic.sandbox.RunContainer.run_capture", spoofed_failure)
+
+    with pytest.raises(SkepticInfraError, match="overlay install failed"):
+        _observed(spec, tmp_path, "candidate")
+
+    artifacts = tmp_path / "artifacts" / "candidate"
+    assert calls == [shlex.join(_collect_argv(spec.environment.test_cmd))]
+    assert not list(artifacts.glob("*.install.ok"))
 
 
 def test_observe_variant_uses_one_monotonic_deadline_across_all_phases(
@@ -522,7 +545,6 @@ def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(
             "env": env,
         })
         quarantine.mkdir(mode=0o700)
-        (quarantine / "install.ok").write_text("ok\n")
         if self.workspace_overlays:
             (quarantine / "dur_ms").write_text("42\n")
             mutant_id = self.workspace_overlays[0][0].parent.name
@@ -583,7 +605,6 @@ def test_probe_admits_each_private_side_before_starting_the_next(
             "deadline": deadline,
         })
         quarantine.mkdir(mode=0o700)
-        (quarantine / "install.ok").write_text("ok\n")
         if len(calls) == 1:
             name, outcome = "probe-pytest.json", "value:(1, 5)"
         else:
@@ -592,7 +613,6 @@ def test_probe_admits_each_private_side_before_starting_the_next(
             } == {
                 "probe-pytest.json": json.dumps([{
                     "call": "minirepo.parse_range", "outcome": "value:(1, 5)"}]),
-                "probe-pytest.install.ok": "ok\n",
                 "probe-pytest.out": "probe-pytest.json out",
                 "probe-pytest.err": "probe-pytest.json err",
                 "probe-pytest.exit": "0\n",
@@ -722,7 +742,6 @@ def test_probe_removes_temporary_roots_after_second_side_failure_without_unseali
         calls += 1
         quarantine.mkdir(mode=0o700)
         if calls == 1:
-            (quarantine / "install.ok").write_text("ok\n")
             (quarantine / "probe-pytest.json").write_text(pytest_json)
             return ExecResult(0, "pytest stdout", "pytest stderr", 10)
         (quarantine / "partial").write_text("bare-side partial output")
@@ -738,7 +757,6 @@ def test_probe_removes_temporary_roots_after_second_side_failure_without_unseali
     assert not quarantine_root.exists()
     assert {path.name: path.read_text() for path in artifacts.iterdir()} == {
         "probe-pytest.json": pytest_json,
-        "probe-pytest.install.ok": "ok\n",
         "probe-pytest.out": "pytest stdout",
         "probe-pytest.err": "pytest stderr",
         "probe-pytest.exit": "0\n",
@@ -1340,7 +1358,6 @@ def _advtest_fake_runs(monkeypatch, plans: list[dict[str, dict]]):
         })
 
         quarantine.mkdir(mode=0o700)
-        (quarantine / "install.ok").write_text("ok\n")
         if "coverage json" in script:
             code = spec_["coverage_exit"]
             if code == 0:

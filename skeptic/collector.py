@@ -78,7 +78,7 @@ from skeptic.checks.observations import (
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ensure_repo_image
 from skeptic.mutation import FULL_SUITE, Mutant
-from skeptic.sandbox import ExecResult, HostDeadline, RunContainer
+from skeptic.sandbox import INSTALL_FAILURE_EXIT, ExecResult, HostDeadline, RunContainer
 from skeptic.seedcheck import parse_junit, parse_junit_bytes
 from skeptic.spec import ProbeEntrypoint, TaskSpec
 from skeptic.testgen import screen_imports
@@ -91,7 +91,6 @@ from skeptic.workspace import apply_candidate, apply_patch, materialize
 ARTIFACTS = "/artifacts"
 _PRIVATE_ARTIFACTS = "/tmp/skeptic-artifacts"
 _OBSERVATION_INPUTS = "/opt/skeptic-observation-inputs"
-_INSTALL_OK = "install.ok"
 _JUNIT = "junit.xml"
 _DROPPED = "dropped-ro-subpaths.txt"
 _RC = "coveragerc"
@@ -329,15 +328,8 @@ def _run_private_phase(*, container: RunContainer, script: str,
         if deadline is not None:
             deadline.require_active(operation)
 
-    require_active("private capture install-marker admission")
-    install_marker = read_artifact_bytes(
-        quarantine, _INSTALL_OK, CONTROL_MAX, required=False)
     require_active("private capture declared-artifact admission")
     admit_artifacts(quarantine, sealed, output_specs)
-    if install_marker is not None:
-        require_active("private capture install-marker publication")
-        publish_artifact_bytes(
-            sealed, f"{output_prefix}{_INSTALL_OK}", install_marker, CONTROL_MAX)
     require_active("private capture stdout publication")
     publish_artifact_bytes(
         sealed, f"{output_prefix}out", result.stdout.encode(), TEXT_MAX)
@@ -623,9 +615,7 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
                 f"Next: raise environment.timeout_s in the task spec, or run "
                 f"`{spec.environment.test_cmd}` in {tree} by hand and time it."
             )
-        install_ok = read_artifact_bytes(
-            artifacts, f"{step}.{_INSTALL_OK}", CONTROL_MAX, required=False)
-        if install_ok is None:
+        if result.exit_code == INSTALL_FAILURE_EXIT:
             setup_failure = (
                 "the overlay install failed or the container did not start"
                 if container.install_overlay
@@ -976,7 +966,7 @@ def _selection_load_lines(selection_file: str) -> list[str]:
     phase script to the container as ONE `sh -c` argv string, and Linux caps
     a single exec argument at 128KB (MAX_ARG_STRLEN), so a hot seeded line's
     covering selection (measured: 1,181 nodeids, 92,088 bytes, twice) blew
-    the limit and the container died at exec, before `install.ok`. Loaded
+    the limit and the container died at exec, before the phase command. Loaded
     from the mount, each nodeid is its own argument inside the container,
     where the per-argument cap applies per nodeid and the total sits far
     under ARG_MAX. `IFS=` and `-r` keep every byte of a parametrize id
@@ -1251,9 +1241,7 @@ def observe_mutation(
                     f"{sealed}; a partial execution is never mutation evidence. "
                     f"Next: inspect Docker daemon health, then re-run the pair."
                 )
-            install_ok = read_artifact_bytes(
-                sealed, _INSTALL_OK, CONTROL_MAX, required=False)
-            if install_ok is None:
+            if result.exit_code == INSTALL_FAILURE_EXIT:
                 raise SkepticInfraError(
                     f"The mutation {label} execution never reached its command "
                     f"(container exit {result.exit_code}): the overlay install "
@@ -1699,6 +1687,17 @@ def observe_probe(
                     f"output was sealed at {artifacts}; a partial probe is never "
                     f"evidence. Next: `docker ps -a`, then re-run the pair."
                 )
+            if result.exit_code == INSTALL_FAILURE_EXIT:
+                raise SkepticInfraError(
+                    f"The consumer-probe {step} side never reached its command "
+                    f"(container exit {result.exit_code}): the overlay install "
+                    f"failed, or the container did not start. Its stdout and "
+                    f"stderr are sealed at {artifacts}/{step}.out and "
+                    f"{artifacts}/{step}.err. This is an infra failure, never "
+                    f"evidence. Next: `docker run --rm {image_tag} true`, then "
+                    f"re-run the pair.\n"
+                    f"stderr tail:\n{result.stderr[-1500:]}"
+                )
 
         return _read_probe(artifacts, entrypoints)
     finally:
@@ -2111,9 +2110,7 @@ def _run_advtest_candidate(
                 f"execution is never evidence. Next: inspect Docker daemon "
                 f"health, then re-run the pair."
             )
-        install_ok = read_artifact_bytes(
-            sealed, f"capture.{_INSTALL_OK}", CONTROL_MAX, required=False)
-        if install_ok is None:
+        if result.exit_code == INSTALL_FAILURE_EXIT:
             raise SkepticInfraError(
                 f"The adversarial-test ladder's {tree_label} execution for "
                 f"candidate {candidate_id} never reached its command "
@@ -2177,9 +2174,7 @@ def _run_advtest_reference_report(
             f"was admitted at {sealed}; a partial report is never evidence. "
             f"Next: inspect Docker daemon health, then re-run the pair."
         )
-    install_ok = read_artifact_bytes(
-        sealed, f"coverage.{_INSTALL_OK}", CONTROL_MAX, required=False)
-    if install_ok is None:
+    if result.exit_code == INSTALL_FAILURE_EXIT:
         raise SkepticInfraError(
             f"Candidate {candidate_id}'s trusted reference coverage report "
             f"never reached its command (container exit {result.exit_code}): "

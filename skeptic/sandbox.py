@@ -188,6 +188,11 @@ ExtraMount = tuple[Path, str, Literal["ro", "rw"]]
 InputMount = tuple[Path, str]
 WorkspaceOverlay = tuple[Path, str]
 
+# Reserved by the outer capture shell for editable-install failure. Collector
+# phase contracts accept only pytest/coverage exits 0-5 and GNU timeout's 124;
+# 125 already denotes a container/exec-level infrastructure failure there.
+INSTALL_FAILURE_EXIT = 125
+
 
 def _resolve_ro_subpath(workspace: Path, raw: str) -> tuple[str, Path]:
     """Return normalized mount spelling and a source contained by workspace.
@@ -626,13 +631,12 @@ class RunContainer:
         name = f"skeptic-{os.getpid()}-{uuid.uuid4().hex}"
         args[2:2] = ["--name", name]
         install = (
-            f"{overlay_install_cmd(self._VENV)} && "
+            f"{overlay_install_cmd(self._VENV)} || exit {INSTALL_FAILURE_EXIT}\n"
             if self.install_overlay else ""
         )
         prepared = (
-            "mkdir -p /tmp/skeptic-artifacts && "
+            f"mkdir -p /tmp/skeptic-artifacts || exit {INSTALL_FAILURE_EXIT}\n"
             f"{install}"
-            "printf 'ok\\n' > /tmp/skeptic-artifacts/install.ok && "
             f"{{ {script}\n}}"
         )
         full = args + ["sh", "-c", prepared]

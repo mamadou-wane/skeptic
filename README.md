@@ -15,9 +15,10 @@ unreachable from inside the sandbox.
 
 - Seeds known bugs into pinned commits of two real repos (pallets/click,
   Textualize/rich), so every verdict has ground truth for free.
-- Splits verification in two: containers collect test results and coverage
-  once, then every check runs as a pure function over the collected artifacts
-  and emits per-rule evidence you can audit.
+- Splits verification in two: isolated candidate phases produce test and
+  coverage observations that the host admits and seals, then every check runs
+  as a pure function over those artifacts and emits per-rule evidence you can
+  audit.
 - Publishes false-positive rates split by clean-variant kind (gold and
   gold-prime), never pooled, next to three baselines run on the same rows.
 - Costs $0.00 by default: the deterministic profile makes no API calls. An
@@ -58,18 +59,32 @@ Builder run. `skeptic doctor` checks each one and prints the exact next
 command per failure. Measured from a fresh clone on 2026-08-29: 11 s to the
 demo, 67 s to the first real Docker verdict with the build cache pruned
 and the base image pull excluded ([the table](docs/evaluation.md#the-lanes)).
+The repository's CI requires Docker and fails collection if it is unavailable;
+ordinary local test runs keep the convenience of skipping Docker-marked tests
+when no daemon is available.
 
 ## How it works
 
 Verification consists of two stages.
 
-1. A collector materializes the seeded tree and the patched tree, runs one
-   throwaway container per tree with the network off, and writes what each
-   produced (a collection manifest, a junit outcome map, coverage with
-   per-test contexts) into a host artifacts directory outside both trees.
+1. A collector materializes canonical seeded and patched trees. Each
+   candidate-executing phase gets a disposable snapshot, a fresh network-off
+   container and container-private output. Once the container stops, the host
+   copies declared outputs into quarantine, validates their path, regular-file
+   type and typed size cap, then publishes them without replacement into
+   sealed host storage before the next phase starts. Coverage measurement runs
+   with the candidate; report generation runs separately from an untouched
+   read-only snapshot and admitted measurement data.
 2. Checks execute as pure functions over the collected artifacts, emitting
    per-rule evidence. No check runs code, and no check reads another's
    result.
+
+Protected test, configuration and golden-file mounts must resolve strictly
+beneath the intended workspace; absolute, parent-traversing, dangling and
+escaping paths are refused before Docker starts. Candidate code can still
+influence JUnit and coverage data produced during its own executing phase.
+Sealing guarantees that a later phase cannot rewrite that admitted evidence;
+it does not claim candidate-independent authenticity for the current phase.
 
 A task spec, one yaml per task, pins the repo commit, the seed bug, the
 budgets and the expected verdicts for clean and hacked variants;
@@ -77,9 +92,12 @@ budgets and the expected verdicts for clean and hacked variants;
 Python package. Twelve checks read the
 artifacts: eight deterministic, four heavier, and exactly two of the four
 call an LLM, only under the paid profile. The aggregator folds evidence into
-a verdict: any hard rule is FAIL, soft weights summing to the 1.0 threshold
-are SUSPECT, and a mandatory check that never completed is INFRA_ERROR
-rather than a silent pass.
+a verdict: any hard rule is FAIL, and a seeded candidate that did not fix its
+declared failing tests is also FAIL without fabricating hack evidence. Only a
+verified seeded fix can reach soft scoring or PASS; soft weights summing to the
+1.0 threshold are SUSPECT, and a mandatory check that never completed is
+INFRA_ERROR rather than a silent pass. Seedless `verify --diff` keeps its
+vacuously verified behavior.
 
 The full design, its tradeoffs and its limits:
 [docs/architecture.md](docs/architecture.md).

@@ -140,7 +140,7 @@ PROBE_SCRUB: tuple[str, ...] = ("PYTEST_CURRENT_TEST", "CI")
 # verifier_revision with no re-collection, while a collector behavior change
 # needs this bumped by hand to invalidate a baseline cached under the old
 # behavior. Precedent: `skeptic.builder.GREEN_RULE_VERSION`.
-COLLECTOR_VERSION = "3"
+COLLECTOR_VERSION = "4"
 
 # `-q`, `-qq`, `-v`, `-vv`: pytest counts these, so they compose.
 _VERBOSITY = re.compile(r"^-[qv]+$")

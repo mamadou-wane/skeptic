@@ -1225,6 +1225,23 @@ def test_baseline_key_includes_changed_files(tmp_path, monkeypatch):
     assert len(calls) == 12         # a different scope observes both sides again
 
 
+def test_baseline_key_retires_release_and_unsafe_interim_collector_versions(
+        tmp_path, monkeypatch):
+    """Final observations cannot reuse release or unreleased interim caches."""
+    spec, _, _ = _minirepo(tmp_path)
+    changed_files = ["minirepo.py"]
+
+    final_version = collector.COLLECTOR_VERSION
+    final_key = collector._baseline_key(spec, changed_files)
+    prior_keys = set()
+    for prior_version in ("1", "2", "3"):
+        monkeypatch.setattr(collector, "COLLECTOR_VERSION", prior_version)
+        prior_keys.add(collector._baseline_key(spec, changed_files))
+
+    assert final_key not in prior_keys
+    assert final_version == "4"
+
+
 # The adversarial-test acceptance ladder (Task 6).
 
 

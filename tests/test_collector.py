@@ -128,7 +128,9 @@ def fake_unit(monkeypatch, *, collected=(), collect_exit=0, suite_exit=0,
     """Answer each private phase capture at the transport boundary."""
     calls: list[dict[str, object]] = []
 
-    def fake_capture(self, script, timeout_s, quarantine, env=None):
+    def fake_capture(
+        self, script, timeout_s, quarantine, env=None, *, deadline=None
+    ):
         for subpath in self.ro_subpaths:
             source = self.workspace / subpath
             if not source.exists():
@@ -144,6 +146,7 @@ def fake_unit(monkeypatch, *, collected=(), collect_exit=0, suite_exit=0,
             "extra_mounts": self.extra_mounts,
             "input_mounts": self.input_mounts,
             "ro_subpaths": self.ro_subpaths,
+            "deadline": deadline,
         })
         quarantine.mkdir(mode=0o700)
         if timed_out:
@@ -480,7 +483,9 @@ def test_spoofed_install_marker_cannot_authorize_a_failed_install(
     spec = make_task_spec()
     calls = []
 
-    def spoofed_failure(self, script, timeout_s, quarantine, env=None):
+    def spoofed_failure(
+        self, script, timeout_s, quarantine, env=None, *, deadline=None
+    ):
         calls.append(script)
         quarantine.mkdir(mode=0o700)
         (quarantine / "install.ok").write_text("candidate-spoofed\n")
@@ -506,12 +511,98 @@ def test_observe_variant_uses_one_monotonic_deadline_across_all_phases(
     spec = spec.model_copy(update={
         "environment": spec.environment.model_copy(update={"timeout_s": 30})})
     calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
-    readings = iter((0.0, 1.0, 2.0, 10.0, 11.0, 20.0, 21.0))
-    monkeypatch.setattr("skeptic.collector.time.monotonic", lambda: next(readings))
+    readings = iter((
+        0.0,
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+        10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+        20.0, 21.0, 22.0, 23.0, 24.0, 25.0,
+    ))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
 
     _observed(spec, tmp_path, "candidate")
 
     assert [call["timeout_s"] for call in calls] == [29, 20, 10]
+    assert calls[0]["deadline"] is not None
+    assert all(call["deadline"] is calls[0]["deadline"] for call in calls)
+
+
+def test_observe_variant_refuses_fractional_remainder_before_capture(
+    tmp_path, monkeypatch
+):
+    """A positive sub-second remainder is not a new one-second T1 phase."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    calls = []
+
+    def capture_started(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        calls.append((script, timeout_s, deadline))
+        raise SkepticInfraError("capture started with a fractional remainder")
+
+    readings = iter((0.0, 29.5))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr(
+        "skeptic.sandbox.RunContainer.run_capture", capture_started)
+
+    with pytest.raises(SkepticInfraError) as exc:
+        _observed(spec, tmp_path, "candidate")
+
+    assert "whole second" in str(exc.value)
+    assert calls == []
+
+
+def test_observe_variant_does_not_start_copy_after_side_deadline(
+    tmp_path, monkeypatch
+):
+    """T1 passes its side deadline into capture before Docker copy."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append(cmd[:2])
+        if cmd[:2] == ["docker", "cp"]:
+            raise SkepticInfraError("copy started after the T1 deadline")
+        return ExecResult(0, f"{NODE_A}\n\n1 test collected\n", "", 1)
+
+    readings = iter((0.0, 1.0, 2.0, 30.5))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError) as exc:
+        _observed(spec, tmp_path, "candidate")
+
+    assert "shared host deadline" in str(exc.value)
+    assert ["docker", "cp"] not in calls
+
+
+def test_observe_variant_does_not_admit_after_side_deadline(
+    tmp_path, monkeypatch
+):
+    """A copy completed before expiry is still not authority after cleanup."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    admitted = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        return ExecResult(0, f"{NODE_A}\n\n1 test collected\n", "", 1)
+
+    def admission_started(*args, **kwargs):
+        admitted.append((args, kwargs))
+        raise SkepticInfraError("admission started after the T1 deadline")
+
+    readings = iter((0.0, 1.0, 2.0, 3.0, 30.5))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    monkeypatch.setattr("skeptic.collector.admit_artifacts", admission_started)
+
+    with pytest.raises(SkepticInfraError) as exc:
+        _observed(spec, tmp_path, "candidate")
+
+    assert "shared host deadline" in str(exc.value)
+    assert admitted == []
 
 
 def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(

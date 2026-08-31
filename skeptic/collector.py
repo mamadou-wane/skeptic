@@ -39,7 +39,6 @@ import re
 import shlex
 import shutil
 import sqlite3
-import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -348,12 +347,13 @@ def _run_observation_phase(*, step: str, container: RunContainer, argv: list[str
                            quarantine: Path, sealed: Path,
                            output_specs: Sequence[ArtifactSpec],
                            timeout_s: int,
+                           deadline: HostDeadline,
                            env: dict[str, str] | None = None) -> ExecResult:
     """Capture, admit, and seal one observation phase before another starts."""
     return _run_private_phase(
         container=container, script=shlex.join(argv), quarantine=quarantine,
         sealed=sealed, output_specs=output_specs, timeout_s=timeout_s,
-        output_prefix=f"{step}.", env=env,
+        output_prefix=f"{step}.", env=env, deadline=deadline,
     )
 
 
@@ -580,21 +580,23 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
             input_mounts=input_mounts,
         )
 
-    deadline = time.monotonic() + spec.environment.timeout_s
+    deadline = HostDeadline.after(spec.environment.timeout_s)
 
     def remaining(step: str) -> int:
-        left = deadline - time.monotonic()
-        if left <= 0:
+        try:
+            return deadline.remaining_timeout_s(
+                f"The {side} {step} observation phase")
+        except SkepticInfraError as exc:
             raise SkepticInfraError(
                 f"The {side} {step} observation phase could not start before "
                 f"the shared environment.timeout_s deadline of "
-                f"{spec.environment.timeout_s}s expired. Earlier phases are "
-                f"sealed, but a partial observation says nothing about the "
-                f"candidate. This is an infra failure, never evidence. Next: "
-                f"raise environment.timeout_s in the task spec, or run "
+                f"{spec.environment.timeout_s}s expired or had less than one "
+                f"whole second remaining. Earlier phases are sealed, but a "
+                f"partial observation says nothing about the candidate. This "
+                f"is an infra failure, never evidence. Next: raise "
+                f"environment.timeout_s in the task spec, or run "
                 f"`{spec.environment.test_cmd}` in {tree} by hand and time it."
-            )
-        return max(1, int(left))
+            ) from exc
 
     def run_phase(*, step: str, container: RunContainer, argv: list[str],
                   output_specs: Sequence[ArtifactSpec],
@@ -603,8 +605,9 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
             step=step, container=container, argv=argv,
             quarantine=quarantine_root / step, sealed=artifacts,
             output_specs=output_specs, timeout_s=remaining(step), env=env,
+            deadline=deadline,
         )
-        if result.exit_code == -1 or time.monotonic() > deadline:
+        if result.exit_code == -1:
             raise SkepticInfraError(
                 f"The {side} {step} observation phase timed out under the "
                 f"shared environment.timeout_s budget of "

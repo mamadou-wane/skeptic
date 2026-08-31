@@ -72,7 +72,8 @@ def test_evaldoc_and_readme_carry_the_per_run_counts_and_no_pooled_rate():
     for line in judge_alone.render(records).splitlines():
         if line.startswith("| ") and "---" not in line:
             assert line in section, f"judge-alone row drifted from the record: {line[:60]}"
-    assert f"scored {prior['2026-08-16']} of 12 on gold in the 2026-08-16 run and {prior['2026-08-22']} of\n12 in this one" in section
+    assert f"scored {prior['2026-08-16']} of 12 on gold in the 2026-08-16 run" in section
+    assert f"{prior['2026-08-22']} of 12 in the 2026-08-22 collector-1 run" in section
 
     sequence = [prior["2026-08-16"], prior["2026-08-22"]] + [r["fp_gold"] for r in records]
     phrase = ", ".join(str(n) for n in sequence[:-1]) + f" and {sequence[-1]} of 12"

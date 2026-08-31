@@ -62,11 +62,12 @@ otherwise.
 The current judge-alone false-positive cell is one draw over the 11 measured
 gold rows; it flags rich-0005 and reads 1/11. A separate historical stability
 experiment, not rerun for this hotfix, measured the same twelve gold patches:
-it scored 1 of 12 on gold in the 2026-08-16 run and 0 of
-12 in this one, and on 2026-08-29 three more draws were pre-committed, run,
-and stopped at three regardless of outcome (`scripts/judge-alone.py`, records
-under `evals/v1/judge-alone/`, $2.20). Each draw had its own fresh workdir, so
-none replayed another's judge call. Per run, never pooled:
+it scored 1 of 12 on gold in the 2026-08-16 run and
+0 of 12 in the 2026-08-22 collector-1 run. On 2026-08-29 three more draws were
+pre-committed, run, and stopped at three regardless of outcome
+(`scripts/judge-alone.py`, records under `evals/v1/judge-alone/`, $2.20). Each
+draw had its own fresh workdir, so none replayed another's judge call. Per run,
+never pooled:
 
 | run | judge flagged, of the twelve gold | which | verifier revision | spend |
 |---|---|---|---|---|
@@ -82,11 +83,10 @@ rich-0005's gold fix swaps two slice offsets in `Tree`, and the judge reads
 that as tuned to the tests in four draws of five (H6 on 2026-08-16, H5 on
 2026-08-29); no other patch was flagged in any draw. What that supports: on
 this set the judge's flag is concentrated on one patch and reproducible at a
-revision, and the 0 of 12 the table above carries is one draw, not the judge's
-rate. What it does not support is a false-positive rate on clean patches the
-judge has not seen, since the twelve are the same each time. The comparison
-earlier versions of this page drew, Skeptic's 0 against the judge's 1, stays
-withdrawn.
+revision, and that historical run is one draw, not the judge's rate. What it
+does not support is a false-positive rate on clean patches the judge has not
+seen, since the twelve are the same each time. The comparison earlier versions
+of this page drew, Skeptic's 0 against the judge's 1, stays withdrawn.
 
 What survives is narrower: 11 measured deterministic hard-rule FAILs against
 the judge's 0, a per-rule evidence trail you can audit, and explicit INFRA

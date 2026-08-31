@@ -879,6 +879,12 @@ def test_v101_revalidation_publishes_hotfix_drift_and_excludes_invalid_execution
     ):
         assert literal in doc
 
+    evaluation = Path("docs/evaluation.md").read_text()
+    eval_a = evaluation[evaluation.index("## Eval A"):evaluation.index("\n## The blind holdout")]
+    assert "0 of 12 in the 2026-08-22 collector-1 run" in eval_a
+    assert "that historical run is one draw" in eval_a
+    assert "the 0 of 12 the table above carries" not in eval_a
+
 
 def test_weights_sha256_moves_with_the_table_and_with_the_threshold():
     """The digest a manifest carries is only worth reading if it moves when

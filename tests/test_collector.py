@@ -42,7 +42,7 @@ from skeptic.collector import (
 )
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ImageRef
-from skeptic.sandbox import ExecResult
+from skeptic.sandbox import ExecResult, docker_run_args
 from skeptic.spec import ConsumerProbeSpec, ProbeEntrypoint, TaskSpec
 from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
 from tests.helpers import (
@@ -1029,49 +1029,43 @@ def test_baseline_key_includes_changed_files(tmp_path, monkeypatch):
 
 
 def test_advtest_script_copies_candidates_in_and_removes_scratch_last():
-    script = _advtest_script(make_task_spec(), "seeded", ["c1", "c2"])
+    script = _advtest_script(make_task_spec(), "c1")
     lines = script.splitlines()
 
-    # The shared scratch dir is set up once, before either candidate's own
-    # guarded copy.
-    assert lines[2] == "mkdir -p .skeptic-advtests"
-    for cid in ("c1", "c2"):
-        copy_i = next(i for i, ln in enumerate(lines)
-                      if ln.strip().startswith("if cp") and f"test_{cid}.py" in ln)
-        run_i = next(i for i, ln in enumerate(lines)
-                    if ln.strip().startswith("timeout") and f"test_{cid}.py" in ln)
-        assert copy_i < run_i
-    # The scratch dir comes off last, after every candidate has run.
+    assert lines[0] == "mkdir -p .skeptic-advtests"
+    copy_i = next(i for i, ln in enumerate(lines) if ln.strip().startswith("if cp"))
+    run_i = next(i for i, ln in enumerate(lines) if ln.strip().startswith("timeout"))
+    assert "/opt/skeptic-observation-inputs/test_c1.py" in lines[copy_i]
+    assert copy_i < run_i
     assert lines[-1] == "rm -rf .skeptic-advtests"
     assert lines.count("rm -rf .skeptic-advtests") == 1
 
 
 def test_advtest_script_never_touches_paths_outside_scratch():
-    script = _advtest_script(make_task_spec(), "gold", ["c1"])
+    script = _advtest_script(make_task_spec(), "c1")
 
     for raw in script.splitlines():
         line = raw.strip()
         if line.startswith("if cp "):
             tokens = line.split()
             src, dest = tokens[2], tokens[3].rstrip(";")
-            assert src.startswith("/artifacts/")
+            assert src == "/opt/skeptic-observation-inputs/test_c1.py"
             assert dest.startswith(".skeptic-advtests/")
         elif line in ("else", "fi"):
             continue
         elif ">" in line:
-            # Every redirect target (`> x`, `2> y`) sits under /artifacts,
-            # whether it is the timeout-wrapped run or the guard's own
-            # `echo cp-failed > .../exit` line.
+            # Candidate execution writes only container-private output.
             targets = re.findall(r"[12]?>\s*(\S+)", line)
             assert targets, line
-            assert all(t.startswith("/artifacts/") for t in targets)
+            assert all(t.startswith("/tmp/skeptic-artifacts/") for t in targets)
         elif line.startswith(("mkdir -p", "rm -rf")):
             target = line.split(None, 2)[-1]
-            assert target.startswith("/artifacts/") or target == ".skeptic-advtests"
+            assert target == ".skeptic-advtests"
+    assert "/artifacts" not in script
 
 
 def test_advtest_script_guards_the_copy_in_with_a_cp_failed_sentinel():
-    script = _advtest_script(make_task_spec(), "gold", ["c1"])
+    script = _advtest_script(make_task_spec(), "c1")
     lines = script.splitlines()
 
     guard_i = next(i for i, ln in enumerate(lines) if ln.strip().startswith("if cp "))
@@ -1079,39 +1073,32 @@ def test_advtest_script_guards_the_copy_in_with_a_cp_failed_sentinel():
     assert lines[guard_i + 1].strip().startswith("timeout")
     else_i = next(i for i, ln in enumerate(lines) if ln.strip() == "else")
     assert else_i > guard_i
-    assert lines[else_i + 1].strip() == f"echo {_ADV_CP_FAILED} > /artifacts/gold/c1/exit"
+    assert lines[else_i + 1].strip() == (
+        f"echo {_ADV_CP_FAILED} > /tmp/skeptic-artifacts/exit")
     assert lines[else_i + 2].strip() == "fi"
 
 
 def test_advtest_reference_script_wraps_coverage_and_junit():
     spec = make_task_spec()
-    script = _advtest_reference_script(spec, ["c1"], ["src/click/mod.py"])
+    script = _advtest_reference_script(spec, "c1")
 
     assert "python -m coverage run" in script
-    assert "--junitxml=/artifacts/reference/c1/junit.xml" in script
-    assert "COVERAGE_RCFILE=/artifacts/reference/c1/coveragerc" in script
-    report_line = next(ln for ln in script.splitlines() if "coverage json" in ln)
-    assert "--show-contexts" in report_line
-    assert "--include=src/click/mod.py" in report_line
-    assert "-o /artifacts/reference/c1/coverage.json" in report_line
-    # The report step reads already-collected data rather than running
-    # candidate code, so only the suite step carries its own timeout: with
-    # both capped, the tree's own worst case would double what the shared
-    # `n * 60 + 120` host-budget formula accounts for.
-    assert "timeout" not in report_line
+    assert "--junitxml=/tmp/skeptic-artifacts/junit.xml" in script
+    assert "COVERAGE_RCFILE=/opt/skeptic-observation-inputs/coveragerc" in script
+    assert "coverage json" not in script
     suite_line = next(ln for ln in script.splitlines() if "--junitxml" in ln)
-    assert suite_line.strip().startswith("COVERAGE_RCFILE=/artifacts/reference/c1/coveragerc timeout")
+    assert suite_line.strip().startswith(
+        "COVERAGE_RCFILE=/opt/skeptic-observation-inputs/coveragerc timeout")
     assert script.splitlines()[-1] == "rm -rf .skeptic-advtests"
-    # Guarded the same way the plain script's copy-in is.
     assert any(ln.strip().startswith("if cp ") for ln in script.splitlines())
-    assert f"echo {_ADV_CP_FAILED} > /artifacts/reference/c1/exit" in script
+    assert f"echo {_ADV_CP_FAILED} > /tmp/skeptic-artifacts/exit" in script
 
 
-def test_advtest_reference_script_skips_the_report_step_with_no_measurable_file():
-    script = _advtest_reference_script(make_task_spec(), ["c1"], [])
+def test_advtest_reference_script_never_runs_the_trusted_report():
+    script = _advtest_reference_script(make_task_spec(), "c1")
 
     assert "coverage json" not in script
-    assert "python -m coverage run" in script  # rung 1 still runs coverage-wrapped
+    assert "python -m coverage run" in script
 
 
 def test_advtest_rung_reader_rejects_skipped_candidates():
@@ -1216,7 +1203,7 @@ def test_advtest_cp_failed_sentinel_routes_to_whole_observation_infra(tmp_path):
     exit_path = tmp_path / "exit"
     exit_path.write_text(f"{_ADV_CP_FAILED}\n")
 
-    with pytest.raises(SkepticInfraError, match="copy from the shared mount"):
+    with pytest.raises(SkepticInfraError, match="copy from the read-only input mount"):
         _read_ladder_exit(exit_path, who="candidate c1 on the reference tree")
 
 
@@ -1272,45 +1259,76 @@ def test_advtest_rescreen_recovers_a_basename_false_rejection():
 
 
 def _advtest_fake_runs(monkeypatch, plans: list[dict[str, dict]]):
-    """Answer each expected `container.run` call with the next plan entry, in
-    order: reference, seeded, each clean variant, then the candidate tree.
+    """Answer isolated captures from tree-ordered candidate plans.
 
-    Each plan entry maps candidate id to the files that candidate's run
-    should produce: `exit` always, `outcomes` for a junit report, and
-    `coverage_exit`/`covered` for the reference tree's report step.
+    Each plan maps candidate id to candidate-phase output, plus the trusted
+    reference report's `coverage_exit`/`covered`. The fake writes only the
+    current capture quarantine and records the actual Docker argv generated
+    from the collector-supplied RunContainer configuration.
     """
-    state = {"i": 0}
+    state: dict[str, object] = {"labels": {}, "calls": []}
 
-    def fake_run(cmd, cwd, timeout_s, env):
-        script = cmd[-1]
-        mount = next(a for a in cmd if a.endswith(":/artifacts:rw"))
-        host_root = Path(mount.split(":")[0])
-        install_line = next(
-            ln for ln in script.splitlines() if ln.startswith("echo ok > /artifacts/"))
-        tree_key = install_line.removeprefix("echo ok > /artifacts/").removesuffix("/install.ok")
-        plan = plans[state["i"]]
-        state["i"] += 1
-        tree_dir = host_root / tree_key
-        tree_dir.mkdir(parents=True, exist_ok=True)
-        (tree_dir / "install.ok").write_text("ok\n")
-        for cid, spec_ in plan.items():
-            cdir = tree_dir / cid
-            cdir.mkdir(parents=True, exist_ok=True)
-            (cdir / "out").write_text("")
-            (cdir / "err").write_text("")
-            (cdir / "exit").write_text(f"{spec_['exit']}\n")
-            if "outcomes" in spec_:
-                (cdir / "junit.xml").write_text(_junit(spec_["outcomes"]))
-            if "coverage_exit" in spec_:
-                (cdir / "coverage.exit").write_text(f"{spec_['coverage_exit']}\n")
-                (cdir / "coverage.out").write_text("")
-                (cdir / "coverage.err").write_text("")
-                if spec_["coverage_exit"] == 0:
-                    (cdir / "coverage.json").write_text(_coverage_json(spec_["covered"]))
-                    _write_coverage_data(cdir / ".coverage", spec_.get("contexts", ("",)))
+    def fake_capture(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        tree_key = quarantine.parent.name
+        labels = state["labels"]
+        assert isinstance(labels, dict)
+        if tree_key not in labels:
+            labels[tree_key] = len(labels)
+        plan = plans[labels[tree_key]]
+        candidate_id = quarantine.name.removeprefix(".").split("-", 1)[0]
+        spec_ = plan[candidate_id]
+        argv = docker_run_args(
+            self.image,
+            self.workspace,
+            self.ro_subpaths,
+            self.extra_mounts,
+            {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"},
+            self.input_mounts,
+            self.workspace_overlays,
+            self.workspace_mode,
+        )
+        calls = state["calls"]
+        assert isinstance(calls, list)
+        calls.append({
+            "tree": tree_key,
+            "candidate": candidate_id,
+            "report": "coverage json" in script,
+            "script": script,
+            "timeout_s": timeout_s,
+            "env": env,
+            "argv": argv,
+            "extra_mounts": self.extra_mounts,
+            "input_mounts": self.input_mounts,
+            "input_names": tuple(
+                sorted(path.name for path in self.input_mounts[0][0].iterdir())
+            ) if self.install_overlay else (),
+            "install_overlay": self.install_overlay,
+            "workspace_mode": self.workspace_mode,
+            "workspace": self.workspace,
+            "deadline": deadline,
+        })
+
+        quarantine.mkdir(mode=0o700)
+        (quarantine / "install.ok").write_text("ok\n")
+        if "coverage json" in script:
+            code = spec_["coverage_exit"]
+            if code == 0:
+                (quarantine / "coverage.json").write_text(
+                    _coverage_json(spec_["covered"]))
+            return ExecResult(code, "", "", 100)
+
+        (quarantine / "out").write_text("")
+        (quarantine / "err").write_text("")
+        (quarantine / "exit").write_text(f"{spec_['exit']}\n")
+        if "outcomes" in spec_:
+            (quarantine / "junit.xml").write_text(_junit(spec_["outcomes"]))
+        if tree_key == "reference" and "coverage_exit" in spec_:
+            _write_coverage_data(
+                quarantine / ".coverage", spec_.get("contexts", ("",)))
         return ExecResult(0, "", "", 500)
 
-    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
+    return state["calls"]
 
 
 def test_advtest_report_orders_trusted_and_divergences_by_candidate(tmp_path, monkeypatch):
@@ -1336,16 +1354,17 @@ def test_advtest_report_orders_trusted_and_divergences_by_candidate(tmp_path, mo
         "c3": {"exit": 0, "outcomes": {".skeptic-advtests/test_c3.py::test_c": "passed"},
               "coverage_exit": 0, "covered": covered},
     }
-    # Every tree run covers every still-provisional candidate, c1 included,
-    # even though it already failed `reference`: the ladder does not shrink
-    # the batch between rungs, only the final candidate-tree run does.
+    # Every control tree covers every still-provisional candidate, c1
+    # included, even though it already fails `reference`; only the final
+    # candidate-tree set shrinks to ladder survivors.
     seeded_plan = {"c1": {"exit": 0}, "c2": {"exit": 1}, "c3": {"exit": 1}}
     gold_plan = {"c1": {"exit": 0}, "c2": {"exit": 0}, "c3": {"exit": 0}}
     candidate_plan = {
         "c2": {"exit": 1, "outcomes": {".skeptic-advtests/test_c2.py::test_b": "failed"}},
         "c3": {"exit": 0},
     }
-    _advtest_fake_runs(monkeypatch, [reference_plan, seeded_plan, gold_plan, candidate_plan])
+    calls = _advtest_fake_runs(
+        monkeypatch, [reference_plan, seeded_plan, gold_plan, candidate_plan])
 
     # Mount containment validates the workspace before the subprocess fake is
     # reached, so this pair needs a literal contained minirepo tree even
@@ -1380,14 +1399,53 @@ def test_advtest_report_orders_trusted_and_divergences_by_candidate(tmp_path, mo
     assert report.trusted == tuple(
         c.candidate_id for c in report.candidates if c.status == "trusted")
 
+    candidate_calls = [call for call in calls if not call["report"]]
+    assert [(call["tree"], call["candidate"]) for call in candidate_calls] == [
+        ("reference", "c2"), ("reference", "c1"), ("reference", "c3"),
+        ("seeded", "c2"), ("seeded", "c1"), ("seeded", "c3"),
+        ("gold", "c2"), ("gold", "c1"), ("gold", "c3"),
+        ("candidate", "c2"), ("candidate", "c3"),
+    ]
+    assert all(call["input_names"] == (
+        "coveragerc", f"test_{call['candidate']}.py") for call in candidate_calls)
+    assert all(call["extra_mounts"] == () for call in calls)
+    for call in calls:
+        argv = call["argv"]
+        mounts = [argv[i + 1] for i, token in enumerate(argv[:-1]) if token == "-v"]
+        assert all(
+            mount.endswith(":ro")
+            for mount in mounts
+            if not mount.split(":", 1)[1].startswith("/workspace")
+        )
+    for tree_label in ("reference", "seeded", "gold", "candidate"):
+        deadlines = {id(call["deadline"]) for call in calls if call["tree"] == tree_label}
+        assert len(deadlines) == 1
+    report_calls = [call for call in calls if call["report"]]
+    assert [(call["tree"], call["candidate"]) for call in report_calls] == [
+        ("reference", "c2"), ("reference", "c3")]
+    assert all(call["install_overlay"] is False for call in report_calls)
+    assert all(call["workspace_mode"] == "ro" for call in report_calls)
+    assert all(call["timeout_s"] == 120 for call in report_calls)
+    assert all("python -P -s -m coverage json" in call["script"]
+               for call in report_calls)
+    assert all(
+        {path.name for path, _ in call["input_mounts"]}
+        == {"coveragerc", ".coverage"}
+        for call in report_calls
+    )
+    assert all(
+        set(call["env"]) == {"COVERAGE_RCFILE", "COVERAGE_FILE"}
+        for call in report_calls
+    )
 
-def test_advtest_gold_prime_rung_short_circuits_after_the_first_rejected_variant(
+
+def test_advtest_gold_prime_rung_keeps_the_first_rejected_variant_detail(
     tmp_path, monkeypatch
 ):
-    """Two clean variants (`gold`, `gold2`): `gold` rejects c1 and the loop
-    never reads a second exit file for it against `gold2`; c2 passes `gold`
-    but fails `gold2`, proving the loop keeps checking later variants for a
-    candidate that has not failed yet; c3 clears both.
+    """Every candidate executes on both variants, while detail stays first.
+
+    `gold` rejects c1 and `gold2` cannot replace that earlier detail; c2
+    passes `gold` but fails `gold2`; c3 clears both.
     """
     pristine_source = (FIXTURE / "minirepo.py").read_text()
     tasks_dir, task_id = make_minirepo_task(
@@ -1410,9 +1468,10 @@ def test_advtest_gold_prime_rung_short_circuits_after_the_first_rejected_variant
     }
     seeded_plan = {cid: {"exit": 1} for cid in ("c1", "c2", "c3")}
     gold_plan = {"c1": {"exit": 1}, "c2": {"exit": 0}, "c3": {"exit": 0}}
-    # c1 is deliberately absent from gold2's plan: the loop must reject c1 at
-    # "gold" and never attempt to read a second exit file for it.
-    gold2_plan = {"c2": {"exit": 1}, "c3": {"exit": 0}}
+    # c1 still executes on gold2 because every provisional candidate runs on
+    # every control tree. Its already-established gold rejection means the
+    # reader does not let this later result replace the first variant detail.
+    gold2_plan = {"c1": {"exit": 0}, "c2": {"exit": 1}, "c3": {"exit": 0}}
     candidate_plan = {"c3": {"exit": 0}}
     _advtest_fake_runs(
         monkeypatch, [reference_plan, seeded_plan, gold_plan, gold2_plan, candidate_plan])
@@ -1714,6 +1773,18 @@ _ADV_GOOD_SOURCE = (
     "def test_parse_range_upper_bound_is_inclusive():\n"
     '    assert minirepo.parse_range("2-8") == (2, 8)\n'
 )
+_ADV_LATER_OVERWRITER_SOURCE = (
+    "import sys\n"
+    "from pathlib import Path\n\n"
+    "import minirepo\n\n\n"
+    "def test_parse_range_upper_bound_is_inclusive():\n"
+    "    junit = next(Path(arg.split('=', 1)[1]) for arg in sys.argv "
+    "if arg.startswith('--junitxml='))\n"
+    "    earlier_seeded_exit = junit.parents[1] / 'c1' / 'exit'\n"
+    "    if junit.parents[1].name == 'seeded' and earlier_seeded_exit.exists():\n"
+    "        earlier_seeded_exit.write_text('0\\n')\n"
+    '    assert minirepo.parse_range("2-8") == (2, 8)\n'
+)
 _ADV_ASSERTION_FREE_SOURCE = (
     "import minirepo\n\n\n"
     "def test_parse_range_runs():\n"
@@ -1736,8 +1807,8 @@ def _hand_built(candidate_id: str, source: str) -> AdvCandidate:
 @pytest.mark.slow
 def test_advtests_ladder_end_to_end_on_the_minirepo(tmp_path, minirepo_spec_and_repo):
     """A good discriminating test ends trusted; an assertion-free test rejects
-    at `seeded_green`; a skipping test rejects at `reference`; all three run
-    against the real gold candidate tree.
+    at `seeded_green`; a skipping test rejects at `reference`. All three run
+    on every control tree; only the ladder survivor runs on the candidate.
     """
     from skeptic.image import repo_image_tag
 
@@ -1769,15 +1840,48 @@ def test_advtests_ladder_end_to_end_on_the_minirepo(tmp_path, minirepo_spec_and_
 
 @pytest.mark.docker
 @pytest.mark.slow
-def test_advtests_reference_tree_isolates_coverage_between_candidates_in_one_batch(
+def test_advtests_later_candidate_cannot_overwrite_an_earlier_seeded_result(
     tmp_path, minirepo_spec_and_repo
 ):
-    """Two candidates share the reference tree's one container: one that
-    executes `minirepo.parse_range` (rung `target_coverage` passes) and one
-    that asserts something trivial without touching `minirepo` at all (rung
-    `target_coverage` has to reject it). A shared, unscoped data file would
-    let either candidate's result leak into the other's; a fresh,
-    per-candidate `coveragerc`/data-file pair is what keeps them apart.
+    """c2 cannot demote c1 by rewriting c1's already-recorded seeded exit.
+
+    The attack derives the shared tree output root from c2's real junit
+    argument, then changes c1's seeded exit from the discriminating ``1`` to
+    the non-discriminating ``0``. A batch with one host-writable evidence
+    mount accepts that rewrite. Fresh candidate/tree captures seal c1 before
+    c2 starts and expose no earlier output for c2 to address.
+    """
+    from skeptic.image import repo_image_tag
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pair = collect_pair(spec, repo_dir, _gold_candidate(spec), tmp_path / "work")
+
+    report = observe_advtests(
+        spec,
+        repo_image_tag(spec),
+        repo_dir,
+        pair,
+        tmp_path / "advtests-artifacts",
+        (
+            _hand_built("c1", _ADV_GOOD_SOURCE),
+            _hand_built("c2", _ADV_LATER_OVERWRITER_SOURCE),
+        ),
+        model="test-model",
+    )
+
+    assert report.trusted == ("c1", "c2")
+    assert all(candidate.status == "trusted" for candidate in report.candidates)
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_advtests_reference_tree_isolates_coverage_between_candidates(
+    tmp_path, minirepo_spec_and_repo
+):
+    """Each candidate's admitted measurement feeds only its trusted report.
+
+    One executes `minirepo.parse_range` and clears `target_coverage`; the
+    other asserts something trivial without touching `minirepo` and rejects.
     """
     from skeptic.image import repo_image_tag
 

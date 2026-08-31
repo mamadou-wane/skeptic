@@ -1675,18 +1675,12 @@ def observe_probe(
 
 
 # The adversarial-test acceptance ladder (Task 6, H6's primary detector).
-# `observe_advtests` runs the four container rungs after generation and the
-# host-side import screen (Task 5, which already set each candidate's
-# provisional status): `reference`, `target_coverage`, `seeded_green`, and
-# `gold_prime`, in that order, then a final trusted run against the real
-# candidate tree. One `RunContainer` batch script per tree, looping over
-# every still-alive candidate, so the container count is fixed at
-# 3 + len(clean variants) regardless of how many candidates the ladder ends
-# up rejecting along the way. Layout under the shared `/artifacts` mount:
-# `candidates/c<i>/test_c<i>.py` (host-written once, read by every tree's
-# script) and `<tree-key>/c<i>/{out,err,exit,junit.xml,...}` (one subtree per
-# tree: "reference", "seeded", each clean variant's own id, and "candidate").
-_ADV_CANDIDATES = "candidates"
+# Every candidate/tree pair runs in its own fresh source snapshot and private
+# capture. Host-authored generated tests and coverage configuration are the
+# only shared inputs, mounted read-only; admitted output is never mounted back
+# into candidate execution. The reference measurement's coverage database is
+# admitted before a separate trusted no-install report phase receives it
+# read-only with an untouched source snapshot.
 _ADV_SCRATCH = ".skeptic-advtests"
 _ADV_REFERENCE = "reference"
 _ADV_SEEDED = "seeded"
@@ -1711,7 +1705,7 @@ _LADDER_EXIT_DETAIL: dict[int, str] = {
 }
 
 # Written to a candidate's own `exit` file in place of a real exit code when
-# the script's own copy from the shared mount into the scratch dir failed
+# the script's own copy from the read-only input mount into scratch failed
 # (DECISIONS row 121's mutation-script guard, restated here): running the
 # test command anyway would read whatever (if anything) already sat at that
 # scratch path as this candidate's rung result, crediting a harness copy
@@ -1819,119 +1813,56 @@ def _rescreen_import_rejections(
 
 
 def _advtest_host_budget(n_candidates: int) -> int:
-    """The outer `container.run` timeout for one tree's batch: every
-    candidate at the 60s per-candidate cap, plus slack for the overlay
-    install and the file copies."""
+    """One tree batch: every candidate command cap plus shared transport slack."""
     return n_candidates * _ADV_CANDIDATE_CAP_S + _ADV_HOST_SLACK_S
 
 
-def _advtest_run_line(argv: list[str], cdir: str, cid: str) -> list[str]:
-    """One candidate's guarded copy-in plus invocation: junit only, capped at
-    60s, exit and both streams captured under its own subtree of
-    `/artifacts`.
+def _advtest_run_script(argv: list[str], cid: str, *, coverage: bool) -> str:
+    """One candidate's guarded copy-in and private invocation.
 
-    `cp SOURCE DEST` is guarded (DECISIONS row 121's mutation-script guard,
-    restated): a failed copy writes `_ADV_CP_FAILED` to `exit` instead of
-    running the test command at all, since running it anyway would score
-    whatever (if anything) already happened to sit at the scratch path as
-    this candidate's own result. `candidate_ids` are always `"c<i>"`
-    (`testgen.generate_candidates`'s own enumeration), never model-produced
-    text, so they are safe unquoted in a path the same way `mutation.py`'s
-    `mutant_id` is (that script's own comment makes the identical argument);
-    the candidate's source text itself never reaches this string, only its
-    id.
+    The generated test and optional coverage rc live on one read-only input
+    mount. The candidate can influence this execution's private output and
+    disposable workspace snapshot only. A failed copy writes the existing
+    distinct sentinel and never executes a stale scratch file.
     """
-    src = f"{ARTIFACTS}/{_ADV_CANDIDATES}/{cid}/test_{cid}.py"
+    src = f"{_OBSERVATION_INPUTS}/test_{cid}.py"
     dest = f"{_ADV_SCRATCH}/test_{cid}.py"
-    full = [*argv, f"--junitxml={cdir}/{_JUNIT}", "-o", "junit_family=xunit1", dest]
-    return [
-        f"mkdir -p {cdir}",
-        f"if cp {src} {dest}; then",
-        f"  timeout {_ADV_CANDIDATE_CAP_S} {shlex.join(full)} > {cdir}/out 2> {cdir}/err",
-        f"  echo $? > {cdir}/exit",
-        "else",
-        f"  echo {_ADV_CP_FAILED} > {cdir}/exit",
-        "fi",
+    full = [
+        *argv,
+        f"--junitxml={_PRIVATE_ARTIFACTS}/{_JUNIT}",
+        "-o",
+        "junit_family=xunit1",
+        dest,
     ]
+    command = (
+        f"COVERAGE_RCFILE={_OBSERVATION_INPUTS}/{_RC} "
+        if coverage else ""
+    )
+    command += f"timeout {_ADV_CANDIDATE_CAP_S} {shlex.join(full)}"
+    return "\n".join([
+        f"mkdir -p {_ADV_SCRATCH}",
+        f"if cp {src} {dest}; then",
+        f"  {command} > {_PRIVATE_ARTIFACTS}/out 2> {_PRIVATE_ARTIFACTS}/err",
+        f"  echo $? > {_PRIVATE_ARTIFACTS}/exit",
+        "else",
+        f"  echo {_ADV_CP_FAILED} > {_PRIVATE_ARTIFACTS}/exit",
+        "fi",
+        f"rm -rf {_ADV_SCRATCH}",
+    ])
 
 
-def _advtest_script(spec: TaskSpec, tree_key: str, candidate_ids: Sequence[str]) -> str:
-    """The plain ladder script for a non-reference tree (seeded, a clean
-    variant, or the candidate): copy each candidate in and run it in
-    isolation, remove the scratch dir last so the tree is left
-    byte-identical (the mutation contract restated). The script never writes
-    anywhere outside `/artifacts/<tree_key>/...` or `.skeptic-advtests/...`.
-    """
-    argv = shlex.split(spec.environment.test_cmd)
-    lines = [f"mkdir -p {ARTIFACTS}/{tree_key}",
-             f"echo ok > {ARTIFACTS}/{tree_key}/{_INSTALL_OK}",
-             f"mkdir -p {_ADV_SCRATCH}"]
-    for cid in candidate_ids:
-        lines += _advtest_run_line(argv, f"{ARTIFACTS}/{tree_key}/{cid}", cid)
-    lines.append(f"rm -rf {_ADV_SCRATCH}")
-    return "\n".join(lines)
+def _advtest_script(spec: TaskSpec, candidate_id: str) -> str:
+    """One non-reference candidate/tree execution."""
+    return _advtest_run_script(
+        shlex.split(spec.environment.test_cmd), candidate_id, coverage=False)
 
 
 def _advtest_reference_script(
-    spec: TaskSpec, candidate_ids: Sequence[str], changed_py: Sequence[str],
+    spec: TaskSpec, candidate_id: str,
 ) -> str:
-    """The reference tree's script: rungs `reference` and `target_coverage`
-    from one coverage-wrapped run per candidate, so both read from the same
-    execution. Each candidate gets its own `coveragerc`, written host-side
-    before the run and pointed at that candidate's own data file
-    (`observe_advtests` writes these; this function only reads the paths back
-    out of `_RC`/`_COVERAGE_DATA`'s naming), so N candidates sharing one
-    container never share one data file. `COVERAGE_RCFILE=<path> cmd` is plain
-    POSIX sh: the assignment sets
-    that one command's environment only, which is what lets each candidate's
-    two steps (the coverage-wrapped suite, then the report) point at a
-    different file than the next candidate's, all under the container's one
-    `container.run` env.
-
-    Only the suite step carries its own `timeout`. The report step runs
-    unbounded, governed by the outer per-tree budget instead
-    (`_advtest_host_budget`, `n_candidates * 60 + 120`): with both steps
-    individually capped at 60s, this tree's own worst case would be
-    `n_candidates * 120`, double what the shared budget formula accounts
-    for, and a batch that actually needed the full 120s per candidate would
-    time out at the host level and read as the container itself having
-    stopped responding when the real cause was two capped steps against a
-    one-capped-step budget. The report step reads already-collected data
-    rather than running candidate code, so it has no equivalent of a
-    candidate's own test hanging to guard against.
-
-    The report step (and the copy-in/suite step guard around it) is skipped
-    entirely when `changed_py` is empty: nothing in the patch is measurable,
-    so no candidate's test could prove it executed target code either way,
-    and `observe_advtests` rejects every candidate at `target_coverage` for
-    that reason without needing a report to read.
-    """
-    argv = coverage_test_cmd(spec.environment.test_cmd)
-    lines = [f"mkdir -p {ARTIFACTS}/{_ADV_REFERENCE}",
-             f"echo ok > {ARTIFACTS}/{_ADV_REFERENCE}/{_INSTALL_OK}",
-             f"mkdir -p {_ADV_SCRATCH}"]
-    for cid in candidate_ids:
-        cdir = f"{ARTIFACTS}/{_ADV_REFERENCE}/{cid}"
-        rc = f"{cdir}/{_RC}"
-        src = f"{ARTIFACTS}/{_ADV_CANDIDATES}/{cid}/test_{cid}.py"
-        dest = f"{_ADV_SCRATCH}/test_{cid}.py"
-        full = [*argv, f"--junitxml={cdir}/{_JUNIT}", "-o", "junit_family=xunit1", dest]
-        lines.append(f"mkdir -p {cdir}")
-        lines.append(f"if cp {src} {dest}; then")
-        lines.append(f"  COVERAGE_RCFILE={rc} timeout {_ADV_CANDIDATE_CAP_S} "
-                     f"{shlex.join(full)} > {cdir}/out 2> {cdir}/err")
-        lines.append(f"  echo $? > {cdir}/exit")
-        if changed_py:
-            report = ["python", "-m", "coverage", "json", "--show-contexts",
-                     f"--include={','.join(changed_py)}", "-o", f"{cdir}/{_COVERAGE_JSON}"]
-            lines.append(f"  COVERAGE_RCFILE={rc} {shlex.join(report)} "
-                         f"> {cdir}/coverage.out 2> {cdir}/coverage.err")
-            lines.append(f"  echo $? > {cdir}/coverage.exit")
-        lines.append("else")
-        lines.append(f"  echo {_ADV_CP_FAILED} > {cdir}/exit")
-        lines.append("fi")
-    lines.append(f"rm -rf {_ADV_SCRATCH}")
-    return "\n".join(lines)
+    """One candidate-executing reference measurement; reporting is separate."""
+    return _advtest_run_script(
+        coverage_test_cmd(spec.environment.test_cmd), candidate_id, coverage=True)
 
 
 def _read_ladder_exit(path: Path, who: str) -> int:
@@ -1949,14 +1880,14 @@ def _read_ladder_exit(path: Path, who: str) -> int:
         raise SkepticInfraError(
             f"{who} left no exit code at {path}. The ladder script records "
             f"one after every candidate it runs, so an absent file means the "
-            f"container stopped mid-batch before reaching it. This is an "
+            f"private execution stopped before recording it. This is an "
             f"infra failure, never evidence. Next: read {path.parent}/err, "
             f"then re-run the pair."
         )
     raw = path.read_text().strip()
     if raw == _ADV_CP_FAILED:
         raise SkepticInfraError(
-            f"{who}'s own copy from the shared mount into the scratch dir "
+            f"{who}'s own copy from the read-only input mount into scratch "
             f"failed before its test command ran. Running the test command "
             f"anyway would have read whatever (if anything) already sat at "
             f"that scratch path as this candidate's rung result, crediting a "
@@ -2085,43 +2016,141 @@ def _gold_prime_rung_detail(code: int) -> str | None:
     return _LADDER_EXIT_DETAIL[code]
 
 
-def _run_advtest_tree(
-    image_tag: str, tree: Path, artifacts: Path, ro: tuple[str, ...],
-    missing_ro: Literal["raise", "drop"], script: str, n_candidates: int, tree_label: str,
+def _run_advtest_candidate(
+    image_tag: str,
+    tree: Path,
+    inputs: Path,
+    sealed: Path,
+    ro: Sequence[str],
+    missing_ro: Literal["raise", "drop"],
+    script: str,
+    candidate_id: str,
+    tree_label: str,
+    *,
+    deadline: HostDeadline,
 ) -> None:
-    """Run one tree's ladder batch script in a fresh container; raise INFRA
-    on a container-level failure. A no-op when `n_candidates` is 0: the final
-    trusted run only covers ladder survivors, and an empty batch starts no
-    container at all (`observe_mutation`'s own short-circuit, restated)."""
-    if n_candidates == 0:
+    """Run and seal one candidate/tree pair before any later pair starts."""
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    execution_tree = sealed.parent / f".{candidate_id}-execution-tree"
+    quarantine = sealed.parent / f".{candidate_id}-quarantine"
+    for private_root in (execution_tree, quarantine):
+        if private_root.exists():
+            shutil.rmtree(private_root)
+    snapshot(tree, execution_tree)
+
+    budget = _advtest_host_budget(1)
+    try:
+        output_specs = [
+            ArtifactSpec("out", TEXT_MAX, required=False),
+            ArtifactSpec("err", TEXT_MAX, required=False),
+            ArtifactSpec("exit", CONTROL_MAX),
+            ArtifactSpec(_JUNIT, STRUCTURED_MAX, required=False),
+        ]
+        if tree_label == _ADV_REFERENCE:
+            output_specs.append(
+                ArtifactSpec(_COVERAGE_DATA, COVERAGE_DATA_MAX, required=False))
+        result = _run_private_phase(
+            container=RunContainer(
+                image_tag,
+                execution_tree,
+                ro_subpaths=tuple(ro),
+                input_mounts=((inputs, _OBSERVATION_INPUTS),),
+                missing_ro=missing_ro,
+            ),
+            script=script,
+            quarantine=quarantine,
+            sealed=sealed,
+            output_specs=tuple(output_specs),
+            timeout_s=budget,
+            output_prefix="capture.",
+            env={"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"},
+            deadline=deadline,
+        )
+        if result.exit_code == -1:
+            raise SkepticInfraError(
+                f"The adversarial-test ladder's {tree_label} execution for "
+                f"candidate {candidate_id} timed out within its {budget}s "
+                f"capture cap under the tree's shared host deadline. "
+                f"Its private output was admitted at {sealed}; a partial "
+                f"execution is never evidence. Next: inspect Docker daemon "
+                f"health, then re-run the pair."
+            )
+        install_ok = read_artifact_bytes(
+            sealed, f"capture.{_INSTALL_OK}", CONTROL_MAX, required=False)
+        if install_ok is None:
+            raise SkepticInfraError(
+                f"The adversarial-test ladder's {tree_label} execution for "
+                f"candidate {candidate_id} never reached its command "
+                f"(container exit {result.exit_code}): the overlay install "
+                f"failed, or the container did not start. Its stdout and "
+                f"stderr are sealed at {sealed}/capture.out and "
+                f"{sealed}/capture.err. Next: `docker run --rm {image_tag} "
+                f"true`, then re-run the pair.\n"
+                f"stderr tail:\n{result.stderr[-1500:]}"
+            )
+    finally:
+        shutil.rmtree(execution_tree)
+
+
+def _run_advtest_reference_report(
+    image_tag: str,
+    report_tree: Path,
+    inputs: Path,
+    sealed: Path,
+    changed_py: Sequence[str],
+    candidate_id: str,
+    *,
+    deadline: HostDeadline,
+) -> None:
+    """Report one admitted reference measurement without candidate code."""
+    coverage_path = validate_artifact_path(
+        sealed, _COVERAGE_DATA, COVERAGE_DATA_MAX, required=False)
+    if coverage_path is None:
         return
-    container = RunContainer(
-        image_tag, tree, ro_subpaths=ro,
-        extra_mounts=((artifacts, ARTIFACTS, "rw"),), missing_ro=missing_ro)
-    budget = _advtest_host_budget(n_candidates)
-    result = container.run(script, timeout_s=budget)
+    rc_path = validate_artifact_path(inputs, _RC, CONTROL_MAX)
+    assert rc_path is not None
+    rc_target = f"{_OBSERVATION_INPUTS}/{_RC}"
+    data_target = f"{_OBSERVATION_INPUTS}/{_COVERAGE_DATA}"
+    budget = _ADV_HOST_SLACK_S
+    result = _run_private_phase(
+        container=RunContainer(
+            image_tag,
+            report_tree,
+            input_mounts=((rc_path, rc_target), (coverage_path, data_target)),
+            install_overlay=False,
+            workspace_mode="ro",
+        ),
+        script=shlex.join(_report_argv(list(changed_py))),
+        quarantine=sealed.parent / f".{candidate_id}-coverage-quarantine",
+        sealed=sealed,
+        output_specs=(
+            ArtifactSpec(_COVERAGE_JSON, COVERAGE_JSON_MAX, required=False),),
+        timeout_s=budget,
+        output_prefix="coverage.",
+        env={
+            "COVERAGE_RCFILE": rc_target,
+            "COVERAGE_FILE": data_target,
+        },
+        deadline=deadline,
+    )
     if result.exit_code == -1:
         raise SkepticInfraError(
-            f"The adversarial-test ladder's {tree_label} batch of "
-            f"{n_candidates} candidate(s) timed out after {budget}s ("
-            f"{n_candidates} candidate(s) at the 60s per-candidate cap plus "
-            f"120s slack). Every step this batch runs either carries that "
-            f"same 60s cap or reads already-collected data with no candidate "
-            f"code running, so a batch built correctly should finish inside "
-            f"this budget; reaching it anyway means either the container "
-            f"itself stopped responding or the batch's own script hung on a "
-            f"step this budget assumed would be fast. This is an infra "
-            f"failure, never evidence. Next: `docker ps -a` and `docker "
-            f"system df` to check the daemon; if this is the reference tree, "
-            f"also read every candidate's own {tree_label}/*/coverage.err; "
-            f"then re-run the pair."
+            f"Candidate {candidate_id}'s trusted reference coverage report "
+            f"timed out within its {budget}s report cap under the reference "
+            f"tree's shared host deadline. Its private output "
+            f"was admitted at {sealed}; a partial report is never evidence. "
+            f"Next: inspect Docker daemon health, then re-run the pair."
         )
-    if not (artifacts / tree_label / _INSTALL_OK).is_file():
+    install_ok = read_artifact_bytes(
+        sealed, f"coverage.{_INSTALL_OK}", CONTROL_MAX, required=False)
+    if install_ok is None:
         raise SkepticInfraError(
-            f"The adversarial-test ladder's {tree_label} batch never reached "
-            f"its first step (container exit {result.exit_code}): the "
-            f"overlay install failed, or the container did not start. Next: "
-            f"`docker run --rm {image_tag} true`, then re-run the pair.\n"
+            f"Candidate {candidate_id}'s trusted reference coverage report "
+            f"never reached its command (container exit {result.exit_code}): "
+            f"the no-install report container did not start. Its stdout and "
+            f"stderr are sealed at {sealed}/coverage.out and "
+            f"{sealed}/coverage.err. Next: `docker run --rm {image_tag} "
+            f"true`, then re-run the pair.\n"
             f"stderr tail:\n{result.stderr[-1500:]}"
         )
 
@@ -2133,18 +2162,16 @@ def observe_advtests(
     spec: TaskSpec, image_tag: str, repo_dir: Path, pair: ObservationPair, artifacts: Path,
     candidates: tuple[AdvCandidate, ...], model: str, regression_probes: bool = False,
 ) -> AdversarialReport:
-    """Run the acceptance ladder's four container rungs, then the trusted
-    survivors against the candidate, and assemble the report.
+    """Run isolated ladder rungs, then trusted survivors on the candidate.
 
     Every candidate the ladder still considers (provisionally trusted after
     generation and the import screen, or rescued by `_rescreen_import_
     rejections`) runs against the reference, seeded, and every clean-variant
-    tree in one batch script per tree, regardless of whether it will turn out
-    to fail an earlier rung: the host budget for each of those batches is
-    fixed at `len(candidates) * 60 + 120` seconds precisely because nothing
-    shrinks the set between them. Only the final run, against
-    `pair.candidate.tree`, is scoped down to the candidates that cleared
-    every rung, since that is the run whose result the report actually keeps.
+    tree regardless of whether it failed an earlier rung. Each candidate/tree
+    pair receives a fresh disposable workspace snapshot, read-only generated
+    inputs, and container-private output that is admitted before the next pair
+    starts. Only the final run against `pair.candidate.tree` is scoped down to
+    candidates that cleared every rung.
 
     A candidate's `rejected_at` is the first rung, in ladder order, whose
     detail is non-`None`: rungs are read for every candidate regardless of an
@@ -2176,11 +2203,22 @@ def observe_advtests(
     ids = [c.candidate_id for c in provisional]
     source_by_id = {c.candidate_id: c.source for c in provisional}
 
-    cand_root = artifacts / _ADV_CANDIDATES
+    input_root = work / f".{artifacts.name}-advtest-inputs"
+    if input_root.exists():
+        shutil.rmtree(input_root)
+    input_root.mkdir(mode=0o700)
     for cid in ids:
-        d = cand_root / cid
-        d.mkdir(parents=True, exist_ok=True)
-        (d / f"test_{cid}.py").write_text(source_by_id[cid])
+        candidate_inputs = input_root / cid
+        candidate_inputs.mkdir()
+        (candidate_inputs / f"test_{cid}.py").write_text(source_by_id[cid])
+        (candidate_inputs / _RC).write_text(
+            render_coverage_rc(
+                spec, f"{_PRIVATE_ARTIFACTS}/{_COVERAGE_DATA}"))
+
+    report_tree = work / "advtests-reference-report"
+    if report_tree.exists():
+        shutil.rmtree(report_tree)
+    snapshot(reference_tree, report_tree)
 
     seeded_tree = work / "advtests-seeded"
     if seeded_tree.exists():
@@ -2203,19 +2241,21 @@ def observe_advtests(
           + tuple(spec.environment.config_files)
           + tuple(spec.environment.golden_dirs))
 
-    # Rungs 1 and 2: one coverage-wrapped run per candidate on the reference
-    # tree, host-prepped with one coveragerc per candidate so N candidates
-    # sharing this container never share one data file.
+    # Rungs 1 and 2: one candidate-executing measurement per reference
+    # candidate, followed by a trusted report over admitted coverage data.
     reference_dir = artifacts / _ADV_REFERENCE
+    reference_deadline = HostDeadline.after(_advtest_host_budget(len(ids)))
     for cid in ids:
-        cdir_host = reference_dir / cid
-        cdir_host.mkdir(parents=True, exist_ok=True)
-        cdir_container = f"{ARTIFACTS}/{_ADV_REFERENCE}/{cid}"
-        (cdir_host / _RC).write_text(
-            render_coverage_rc(spec, f"{cdir_container}/{_COVERAGE_DATA}"))
-    _run_advtest_tree(
-        image_tag, reference_tree, artifacts, ro, "raise",
-        _advtest_reference_script(spec, ids, changed_py), len(ids), _ADV_REFERENCE)
+        cdir = reference_dir / cid
+        candidate_inputs = input_root / cid
+        _run_advtest_candidate(
+            image_tag, reference_tree, candidate_inputs, cdir, ro, "raise",
+            _advtest_reference_script(spec, cid), cid, _ADV_REFERENCE,
+            deadline=reference_deadline)
+        if changed_py:
+            _run_advtest_reference_report(
+                image_tag, report_tree, candidate_inputs, cdir, changed_py, cid,
+                deadline=reference_deadline)
 
     rung1: dict[str, str | None] = {}
     rung2: dict[str, str | None] = {}
@@ -2234,17 +2274,26 @@ def observe_advtests(
             rung2[cid] = ("the patch changed no measurable file, so no candidate test "
                           "can prove it executed the target code")
             continue
+        coverage_exit = validate_artifact_path(
+            cdir, "coverage.exit", CONTROL_MAX, required=False)
+        if coverage_exit is None:
+            rung2[cid] = "the coverage report recorded no data for the changed files"
+            continue
         cov_exit = _read_ladder_exit(
-            cdir / "coverage.exit", who=f"candidate {cid}'s reference coverage report")
+            coverage_exit, who=f"candidate {cid}'s reference coverage report")
         if cov_exit != 0:
             rung2[cid] = _coverage_report_step_detail(cov_exit)
             continue
         rung2[cid] = _target_coverage_rung_detail(read_coverage(cdir, changed_py))
 
     # Rung 3: the seeded tree, one run per candidate, exit 1 required.
-    _run_advtest_tree(
-        image_tag, seeded_tree, artifacts, ro, "raise",
-        _advtest_script(spec, _ADV_SEEDED, ids), len(ids), _ADV_SEEDED)
+    seeded_deadline = HostDeadline.after(_advtest_host_budget(len(ids)))
+    for cid in ids:
+        _run_advtest_candidate(
+            image_tag, seeded_tree, input_root / cid,
+            artifacts / _ADV_SEEDED / cid, ro, "raise",
+            _advtest_script(spec, cid), cid, _ADV_SEEDED,
+            deadline=seeded_deadline)
     rung3: dict[str, str | None] = {}
     for cid in ids:
         code = _read_ladder_exit(
@@ -2254,9 +2303,13 @@ def observe_advtests(
     # Rung 4: every clean-variant tree, exit 0 required on each.
     rung4: dict[str, str | None] = dict.fromkeys(ids)
     for v in clean_variants:
-        _run_advtest_tree(
-            image_tag, variant_trees[v.id], artifacts, ro, "raise",
-            _advtest_script(spec, v.id, ids), len(ids), v.id)
+        variant_deadline = HostDeadline.after(_advtest_host_budget(len(ids)))
+        for cid in ids:
+            _run_advtest_candidate(
+                image_tag, variant_trees[v.id], input_root / cid,
+                artifacts / v.id / cid, ro, "raise",
+                _advtest_script(spec, cid), cid, v.id,
+                deadline=variant_deadline)
         for cid in ids:
             if rung4[cid] is not None:
                 continue
@@ -2282,10 +2335,14 @@ def observe_advtests(
 
     # The trusted run: only the candidates that cleared every rung, against
     # the real candidate tree.
-    _run_advtest_tree(
-        image_tag, pair.candidate.tree, artifacts, ro, "drop",
-        _advtest_script(spec, _ADV_CANDIDATE_TREE, ladder_survivors),
-        len(ladder_survivors), _ADV_CANDIDATE_TREE)
+    candidate_deadline = HostDeadline.after(
+        _advtest_host_budget(len(ladder_survivors)))
+    for cid in ladder_survivors:
+        _run_advtest_candidate(
+            image_tag, pair.candidate.tree, input_root / cid,
+            artifacts / _ADV_CANDIDATE_TREE / cid, ro, "drop",
+            _advtest_script(spec, cid), cid, _ADV_CANDIDATE_TREE,
+            deadline=candidate_deadline)
 
     trusted_ids: list[str] = []
     divergences: list[AdvDivergence] = []
@@ -2312,6 +2369,8 @@ def observe_advtests(
             divergences.append(AdvDivergence(candidate_id=cid, nodeids=tuple(sorted(red))))
 
     final_candidates = tuple(finalized[c.candidate_id] for c in candidates)
+    shutil.rmtree(input_root)
+    shutil.rmtree(report_tree)
     return AdversarialReport(
         model=model, n_candidates=spec.verification.adversarial_tests.n_candidates,
         candidates=final_candidates, trusted=tuple(trusted_ids), divergences=tuple(divergences))

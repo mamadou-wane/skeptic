@@ -644,16 +644,16 @@ def test_docker_run_args_place_env_before_the_image(tmp_path):
     assert pair < args.index("img")
 
 
-def test_docker_run_args_accept_extra_mounts(tmp_path, monkeypatch):
+def test_run_container_accepts_only_read_only_extra_mounts(tmp_path, monkeypatch):
     rc = tmp_path / "rc"
     rc.write_text("[run]\n")
     out = tmp_path / "out"
     out.mkdir()
-    mounts = ((rc, "/opt/skeptic/rc", "ro"), (out, "/out", "rw"))
+    mounts = ((rc, "/opt/skeptic/rc", "ro"), (out, "/out", "ro"))
     args = docker_run_args("img", tmp_path, extra_mounts=mounts)
     joined = " ".join(args)
     assert f"-v {rc}:/opt/skeptic/rc:ro" in joined
-    assert f"-v {out}:/out:rw" in joined
+    assert f"-v {out}:/out:ro" in joined
     assert joined.index(f"-v {tmp_path}:/workspace ") < joined.index("/opt/skeptic/rc")
 
     # RunContainer.run passes ro_subpaths, extra_mounts, and env positionally,
@@ -666,9 +666,15 @@ def test_docker_run_args_accept_extra_mounts(tmp_path, monkeypatch):
     threaded = " ".join(calls[0])
     assert f"-v {tmp_path}/tests:/workspace/tests:ro" in threaded
     assert f"-v {rc}:/opt/skeptic/rc:ro" in threaded
-    assert f"-v {out}:/out:rw" in threaded
+    assert f"-v {out}:/out:ro" in threaded
     assert "-e COVERAGE_RCFILE=/opt/skeptic/rc" in threaded
     assert calls[0][-4] == "img"
+
+    with pytest.raises(SkepticInfraError, match="only read-only"):
+        RunContainer(
+            "img", tmp_path,
+            extra_mounts=((out, "/out", "rw"),),
+        )
 
 
 def test_docker_run_args_reject_extra_mount_inside_the_workspace(tmp_path):

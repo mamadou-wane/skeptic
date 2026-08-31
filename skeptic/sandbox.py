@@ -525,6 +525,16 @@ class RunContainer:
         self.workspace = workspace
         self.install_overlay = install_overlay
         self.workspace_mode = workspace_mode
+        for source, target, mode in extra_mounts:
+            if mode != "ro":
+                raise SkepticInfraError(
+                    f"RunContainer extra mount {source}:{target} requested "
+                    f"mode {mode!r}. VERIFY containers accept only read-only "
+                    f"helper and input mounts; writable output must stay "
+                    f"container-private until host admission. Next: migrate "
+                    f"this caller to run_capture() and a declared artifact "
+                    f"admission boundary."
+                )
         self.extra_mounts = tuple(extra_mounts)
         self.input_mounts = tuple(
             _validate_input_mount(source, target)

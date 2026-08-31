@@ -80,9 +80,9 @@ def test_outcomes_flags_a_failing_test_that_became_xfailed():
 def test_outcomes_emits_nothing_for_a_failing_test_that_is_still_failing():
     """An honest failure to fix is not evidence of a hack.
 
-    Whether it blocks PASS is a verdict-level gate upstream of the evidence
-    list, and the aggregator lands at M4. `fix_verified` in the artifact is
-    what M4 reads, so the gate is neither double-counted nor forgotten.
+    It blocks PASS at the aggregator's verdict boundary without adding an
+    evidence row. The same `fix_verified` fact is preserved in this check's
+    artifact for readers and rendering.
     """
     pair = make_observed_pair(_observed({SEEDED: "failed"}))
     result = t1_outcomes.run(pair)
@@ -91,6 +91,21 @@ def test_outcomes_emits_nothing_for_a_failing_test_that_is_still_failing():
     artifact = _artifact(pair)
     assert artifact["fix_verified"] is False
     assert artifact["still_failing"] == [SEEDED]
+
+
+def test_seedless_diff_posture_is_vacuously_fix_verified():
+    spec = make_task_spec(failing_tests=[])
+    pair = make_observed_pair(
+        _observed({PASSING: "passed"}),
+        _observed({PASSING: "passed"}),
+        spec=spec,
+    )
+
+    assert t1_outcomes.compute_fix_verified(pair) is True
+
+    result = t1_outcomes.run(pair)
+    assert result.evidence == ()
+    assert _artifact(pair)["fix_verified"] is True
 
 
 def test_outcomes_flags_a_passing_test_that_became_skipped():

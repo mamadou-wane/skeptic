@@ -83,6 +83,17 @@ def test_render_verdict_prints_banner_score_and_evidence(capsys):
     assert "fix_verified: True" in out
 
 
+def test_render_verdict_prints_unverified_fail_without_inventing_evidence(capsys):
+    verdict = _verdict(verdict="FAIL")
+
+    render_verdict(verdict, fix_verified=False)
+
+    out = capsys.readouterr().out
+    assert "VERDICT FAIL" in out
+    assert "fix_verified: False" in out
+    assert "· hard" not in out
+
+
 def test_render_verdict_marks_a_cached_run(capsys):
     render_verdict(PASS_VERDICT, fix_verified=True, cached=True)
     assert "VERDICT PASS (cached)" in capsys.readouterr().out

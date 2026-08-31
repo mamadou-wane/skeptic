@@ -638,6 +638,7 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
             )
         return result
 
+    observed: VariantObservations | None = None
     try:
         if changed_py:
             report_tree = artifacts.parent / f".{artifacts.name}-report-source"
@@ -702,6 +703,8 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
                 env=report_env,
             )
 
+        deadline.require_active(
+            f"The {side} observation dropped-metadata publication")
         publish_artifact_bytes(
             artifacts, _DROPPED,
             "".join(
@@ -709,12 +712,20 @@ def observe_variant(spec: TaskSpec, image_tag: str, tree: Path, artifacts: Path,
             ).encode(),
             TEXT_MAX,
         )
-        return read_variant(spec, tree, artifacts, side, changed_files)
+        deadline.require_active(
+            f"The {side} observation dropped-metadata publication")
+        deadline.require_active(f"The {side} observation read-back")
+        observed = read_variant(spec, tree, artifacts, side, changed_files)
+        deadline.require_active(f"The {side} observation read-back")
     finally:
         if report_tree is not None and report_tree.exists():
             shutil.rmtree(report_tree)
         if quarantine_root.exists():
             shutil.rmtree(quarantine_root)
+    deadline.require_active(
+        f"The {side} observation cleanup and evidence return")
+    assert observed is not None
+    return observed
 
 
 def read_variant(spec: TaskSpec, tree: Path, artifacts: Path, side: Side,

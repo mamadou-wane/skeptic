@@ -516,6 +516,7 @@ def test_observe_variant_uses_one_monotonic_deadline_across_all_phases(
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
         10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
         20.0, 21.0, 22.0, 23.0, 24.0, 25.0,
+        26.0, 27.0, 28.0, 29.0, 29.5,
     ))
     monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
 
@@ -603,6 +604,65 @@ def test_observe_variant_does_not_admit_after_side_deadline(
 
     assert "shared host deadline" in str(exc.value)
     assert admitted == []
+
+
+@pytest.mark.parametrize(
+    ("tail_step", "expected_read_backs"),
+    [
+        ("dropped-publication", 0),
+        ("read-back", 1),
+        ("cleanup", 1),
+    ],
+)
+def test_observe_variant_refuses_tail_work_that_crosses_side_deadline(
+    tmp_path, monkeypatch, tail_step, expected_read_backs
+):
+    """Final publication, read-back, and cleanup remain inside T1's deadline."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
+    now = [0.0]
+    read_backs = []
+    dropped_publications = []
+    quarantine_root = tmp_path / "artifacts" / ".candidate-quarantine"
+    real_publish = collector.publish_artifact_bytes
+    real_read = collector.read_variant
+    real_rmtree = collector.shutil.rmtree
+
+    def publish_and_advance(root, relative_path, data, cap):
+        result = real_publish(root, relative_path, data, cap)
+        if relative_path == collector._DROPPED:
+            dropped_publications.append(relative_path)
+            if tail_step == "dropped-publication":
+                now[0] = 30.5
+        return result
+
+    def read_and_advance(*args, **kwargs):
+        result = real_read(*args, **kwargs)
+        read_backs.append(result)
+        if tail_step == "read-back":
+            now[0] = 30.5
+        return result
+
+    def cleanup_and_advance(path, *args, **kwargs):
+        result = real_rmtree(path, *args, **kwargs)
+        if Path(path) == quarantine_root and tail_step == "cleanup":
+            now[0] = 30.5
+        return result
+
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: now[0])
+    monkeypatch.setattr(collector, "publish_artifact_bytes", publish_and_advance)
+    monkeypatch.setattr(collector, "read_variant", read_and_advance)
+    monkeypatch.setattr(collector.shutil, "rmtree", cleanup_and_advance)
+
+    with pytest.raises(SkepticInfraError, match="shared host deadline"):
+        _observed(spec, tmp_path, "candidate", changed_files=())
+
+    assert dropped_publications == ["dropped-ro-subpaths.txt"]
+    assert len(read_backs) == expected_read_backs
+    assert not quarantine_root.exists()
+    assert not list((tmp_path / "artifacts").glob(".candidate-*-tree"))
 
 
 def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(

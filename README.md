@@ -75,9 +75,19 @@ Verification consists of two stages.
    sealed host storage before the next phase starts. Coverage measurement runs
    with the candidate; report generation runs separately from an untouched
    read-only snapshot and admitted measurement data.
-2. Checks execute as pure functions over the collected artifacts, emitting
-   per-rule evidence. No check runs code, and no check reads another's
-   result.
+2. Checks execute no candidate code and emit per-rule evidence. Most consume
+   only collected artifacts; `t1_ast`, `t1_config`, `t1_patterns`, and
+   `t1_coverage` also read the immutable canonical baseline and candidate
+   trees. No check reads another's result.
+
+The disposable execution snapshots are load-bearing isolation: candidate code
+runs only against copies, while the canonical trees remain host authority for
+those four deterministic checks. Execution deadlines have four distinct
+scopes: T1 uses one side deadline across every phase, read-back, cleanup, and
+return; mutation uses one observation deadline across all calibrations and
+mutants, including capture and admission; the probe shares one deadline across
+its pytest and bare captures; adversarial checks use one deadline per tree/rung
+batch sized to that batch's candidate set or surviving set.
 
 Protected test, configuration and golden-file mounts must resolve strictly
 beneath the intended workspace; absolute, parent-traversing, dangling and

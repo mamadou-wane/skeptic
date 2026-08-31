@@ -7,7 +7,8 @@ measurements behind every figure cited here are in
 VERIFY splits in two, which is the design decision everything else rests on. A
 collector materializes canonical seeded and candidate trees, runs isolated
 candidate-executing phases over disposable snapshots, and admits their declared
-outputs into host-owned sealed storage. The checks then execute nothing.
+outputs into host-owned sealed storage. Checks execute no candidate code; four
+deterministic checks also read the immutable canonical trees.
 
 ```mermaid
 flowchart LR
@@ -21,6 +22,8 @@ flowchart LR
   report --> radmit["host admission"]
   radmit --> rart["sealed coverage report"]
   art --> t1["8 deterministic checks<br/>collect · outcomes · config · scope<br/>goldens · coverage · patterns · ast"]
+  seed -->|immutable read by 4 checks| t1
+  cand -->|immutable read by 4 checks| t1
   rart --> t1
   art --> t2["4 heavy checks<br/>mutation · probe<br/>advtests · judge (paid)"]
   t1 --> agg["aggregate.py<br/>hard or unverified fix, then soft weights"]
@@ -58,15 +61,20 @@ starts. Reporting uses a source snapshot taken before candidate execution,
 mounts it read-only, mounts admitted measurement data read-only, skips editable
 installation, and runs Python safe-path/no-user-site mode. The report therefore
 does not execute candidate code, although the admitted `.coverage` input still
-came from the candidate-executing suite. `COLLECTOR_VERSION` is `"3"`; interim
-version 2 observations are invalid because that rejected implementation let
-the report execute candidate-controlled code.
+came from the candidate-executing suite. Final `COLLECTOR_VERSION` is `"4"`;
+unreleased interim versions 2 and 3 are unsafe and must never be reused because
+each predates part of the consolidated canonical-tree, copy, install, or
+deadline boundary now enforced.
 
-Each multi-phase side or check owns one monotonic `HostDeadline`, shared by
-container execution, timeout stop, copy, admission, publication, read-back,
-cleanup, and evidence return. Editable-install failure is derived from the
-host-observed reserved exit 125 instead of a candidate-writable marker. A phase
-that itself returns 125 after a successful install is conservatively INFRA.
+Deadline scope follows the observation authority. T1 has one side deadline
+across all phases, read-back, cleanup, and return. Mutation has one
+mutation-observation deadline across all calibrations and mutants, including
+capture and admission. The probe has one deadline shared across its pytest and
+bare captures. Adversarial checks have one deadline per tree/rung batch, sized
+to that batch's candidate set or survivors. Editable-install failure is
+derived from the host-observed reserved exit 125 instead of a candidate-writable
+marker. A phase that itself returns 125 after a successful install is
+conservatively INFRA.
 
 Protected `test_dirs`, `config_files`, and `golden_dirs` are checked when the
 spec loads and again at mount construction. Empty/root, POSIX or Windows
@@ -74,10 +82,12 @@ absolute and UNC, literal `..`, dangling, and workspace-escaping paths are
 refused. Internal symlinks are accepted only when strict resolution remains
 beneath the intended workspace.
 
-Neither container is reachable from the checks, and neither canonical tree is
-read by them: a check is a pure function from one admitted observation pair to
-one result, which is what lets a detector change re-verdict cached pairs
-without re-collecting them.
+No check can reach a candidate container or execute candidate code. Most checks
+read admitted observations only; `t1_ast`, `t1_config`, `t1_patterns`, and
+`t1_coverage` also read the immutable canonical baseline and candidate trees.
+Disposable execution snapshots are therefore load-bearing: candidate writes
+die with a snapshot while the canonical trees remain host authority. Detector
+changes can still re-verdict cached pairs without re-collecting them.
 
 Twelve checks exist. Ten run in the default profile and two only under the paid
 one. Eight read the deterministic observations (`t1_collect`, `t1_outcomes`,

@@ -1614,7 +1614,9 @@ def observe_probe(
     that second container cannot address the sealed directory. Both sides keep
     the same `missing_ro="drop"` policy `observe_mutation` uses, since the
     baseline never runs the probe at all (the comparison is pytest-env versus
-    bare on one tree, distinct from baseline versus candidate).
+    bare on one tree, distinct from baseline versus candidate). Temporary host
+    inputs and quarantines are removed on every exit; already-sealed artifacts
+    remain authoritative when a later side fails.
     """
     entrypoints = spec.verification.consumer_probe.entrypoints
     if not entrypoints:
@@ -1628,43 +1630,48 @@ def observe_probe(
         if private_root.exists():
             shutil.rmtree(private_root)
         private_root.mkdir(mode=0o700)
-    _write_probe_inputs(input_root, entrypoints)
-    ro = (tuple(spec.environment.test_dirs)
-          + tuple(spec.environment.config_files)
-          + tuple(spec.environment.golden_dirs))
-    deadline = HostDeadline.after(spec.environment.timeout_s)
-    input_mounts = ((input_root, _OBSERVATION_INPUTS),)
-    private_env = {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
+    try:
+        _write_probe_inputs(input_root, entrypoints)
+        ro = (tuple(spec.environment.test_dirs)
+              + tuple(spec.environment.config_files)
+              + tuple(spec.environment.golden_dirs))
+        deadline = HostDeadline.after(spec.environment.timeout_s)
+        input_mounts = ((input_root, _OBSERVATION_INPUTS),)
+        private_env = {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
 
-    for step, script in (
-        (_PROBE_PYTEST, _probe_pytest_script()),
-        (_PROBE_BARE, _probe_bare_script()),
-    ):
-        result = _run_private_phase(
-            container=RunContainer(
-                image_tag, tree, ro_subpaths=ro, input_mounts=input_mounts,
-                missing_ro="drop"),
-            script=script,
-            quarantine=quarantine_root / step,
-            sealed=artifacts,
-            output_specs=(
-                ArtifactSpec(f"{step}.json", STRUCTURED_MAX, required=False),),
-            timeout_s=spec.environment.timeout_s,
-            output_prefix=f"{step}.",
-            env=private_env,
-            deadline=deadline,
-        )
-        if result.exit_code == -1:
-            raise SkepticInfraError(
-                f"The consumer-probe {step} side timed out under the shared "
-                f"{spec.environment.timeout_s}s host deadline. Its private "
-                f"output was sealed at {artifacts}; a partial probe is never "
-                f"evidence. Next: `docker ps -a`, then re-run the pair."
+        for step, script in (
+            (_PROBE_PYTEST, _probe_pytest_script()),
+            (_PROBE_BARE, _probe_bare_script()),
+        ):
+            result = _run_private_phase(
+                container=RunContainer(
+                    image_tag, tree, ro_subpaths=ro, input_mounts=input_mounts,
+                    missing_ro="drop"),
+                script=script,
+                quarantine=quarantine_root / step,
+                sealed=artifacts,
+                output_specs=(
+                    ArtifactSpec(f"{step}.json", STRUCTURED_MAX, required=False),),
+                timeout_s=spec.environment.timeout_s,
+                output_prefix=f"{step}.",
+                env=private_env,
+                deadline=deadline,
             )
+            if result.exit_code == -1:
+                raise SkepticInfraError(
+                    f"The consumer-probe {step} side timed out under the shared "
+                    f"{spec.environment.timeout_s}s host deadline. Its private "
+                    f"output was sealed at {artifacts}; a partial probe is never "
+                    f"evidence. Next: `docker ps -a`, then re-run the pair."
+                )
 
-    shutil.rmtree(input_root)
-    quarantine_root.rmdir()
-    return _read_probe(artifacts, entrypoints)
+        return _read_probe(artifacts, entrypoints)
+    finally:
+        # These roots are transport scratch only. `artifacts` is deliberately
+        # outside this cleanup authority so a bare-side failure cannot unseal
+        # the already-admitted pytest observation.
+        shutil.rmtree(input_root)
+        shutil.rmtree(quarantine_root)
 
 
 # The adversarial-test acceptance ladder (Task 6, H6's primary detector).

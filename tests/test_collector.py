@@ -43,7 +43,7 @@ from skeptic.collector import (
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ImageRef
 from skeptic.sandbox import ExecResult
-from skeptic.spec import TaskSpec
+from skeptic.spec import ConsumerProbeSpec, ProbeEntrypoint, TaskSpec
 from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
 from tests.helpers import (
     BUGGY,
@@ -555,8 +555,6 @@ def test_probe_admits_each_private_side_before_starting_the_next(
     tmp_path, monkeypatch
 ):
     """Two fresh captures share inputs, never outputs or writable mounts."""
-    from skeptic.spec import ConsumerProbeSpec, ProbeEntrypoint
-
     spec = make_task_spec()
     spec = spec.model_copy(update={
         "verification": spec.verification.model_copy(update={
@@ -575,6 +573,7 @@ def test_probe_admits_each_private_side_before_starting_the_next(
     def fake_capture(self, script, timeout_s, quarantine, env=None, *, deadline=None):
         calls.append({
             "script": script,
+            "timeout_s": timeout_s,
             "quarantine": quarantine,
             "input_mounts": self.input_mounts,
             "input_names": tuple(
@@ -588,8 +587,16 @@ def test_probe_admits_each_private_side_before_starting_the_next(
         if len(calls) == 1:
             name, outcome = "probe-pytest.json", "value:(1, 5)"
         else:
-            assert json.loads((artifacts / "probe-pytest.json").read_text()) == [{
-                "call": "minirepo.parse_range", "outcome": "value:(1, 5)"}]
+            assert {
+                path.name: path.read_text() for path in artifacts.iterdir()
+            } == {
+                "probe-pytest.json": json.dumps([{
+                    "call": "minirepo.parse_range", "outcome": "value:(1, 5)"}]),
+                "probe-pytest.install.ok": "ok\n",
+                "probe-pytest.out": "probe-pytest.json out",
+                "probe-pytest.err": "probe-pytest.json err",
+                "probe-pytest.exit": "0\n",
+            }
             name, outcome = "probe-bare.json", "value:(1, 4)"
         (quarantine / name).write_text(json.dumps([{
             "call": "minirepo.parse_range", "outcome": outcome}]))
@@ -601,6 +608,16 @@ def test_probe_admits_each_private_side_before_starting_the_next(
     report = collector.observe_probe(spec, "img", tree, artifacts)
 
     assert len(calls) == 2
+    assert calls[0]["script"] == (
+        "python -m pytest -q /opt/skeptic-observation-inputs/probe_test.py")
+    assert calls[1]["script"] == (
+        "unset PYTEST_CURRENT_TEST CI\n"
+        "for v in $(env | grep '^PYTEST_' | cut -d= -f1); do unset \"$v\"; done\n"
+        "python /opt/skeptic-observation-inputs/probe_driver.py "
+        "/tmp/skeptic-artifacts/probe-bare.json"
+    )
+    assert [call["timeout_s"] for call in calls] == [
+        spec.environment.timeout_s, spec.environment.timeout_s]
     assert len({call["quarantine"] for call in calls}) == 2
     assert all(call["extra_mounts"] == () for call in calls)
     assert all(call["env"] == {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
@@ -616,6 +633,85 @@ def test_probe_admits_each_private_side_before_starting_the_next(
     assert not input_root.exists()
     assert report.calls[0].in_pytest == "value:(1, 5)"
     assert report.calls[0].bare == "value:(1, 4)"
+
+
+def test_probe_removes_temporary_roots_after_first_side_failure(
+    tmp_path, monkeypatch
+):
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.parse_range", args=["1-5"])
+            ])
+        })
+    })
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = tmp_path / "artifacts"
+    input_root = tmp_path / ".artifacts-probe-inputs"
+    quarantine_root = tmp_path / ".artifacts-probe-quarantine"
+
+    def fail_first(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        quarantine.mkdir(mode=0o700)
+        (quarantine / "partial").write_text("first-side partial output")
+        raise RuntimeError("first-side capture failed")
+
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fail_first)
+
+    with pytest.raises(RuntimeError, match="first-side capture failed"):
+        collector.observe_probe(spec, "img", tree, artifacts)
+
+    assert not input_root.exists()
+    assert not quarantine_root.exists()
+    assert artifacts.is_dir()
+    assert list(artifacts.iterdir()) == []
+
+
+def test_probe_removes_temporary_roots_after_second_side_failure_without_unsealing_pytest(
+    tmp_path, monkeypatch
+):
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.parse_range", args=["1-5"])
+            ])
+        })
+    })
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = tmp_path / "artifacts"
+    input_root = tmp_path / ".artifacts-probe-inputs"
+    quarantine_root = tmp_path / ".artifacts-probe-quarantine"
+    calls = 0
+    pytest_json = json.dumps([{
+        "call": "minirepo.parse_range", "outcome": "value:(1, 5)"}])
+
+    def fail_second(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        nonlocal calls
+        calls += 1
+        quarantine.mkdir(mode=0o700)
+        if calls == 1:
+            (quarantine / "install.ok").write_text("ok\n")
+            (quarantine / "probe-pytest.json").write_text(pytest_json)
+            return ExecResult(0, "pytest stdout", "pytest stderr", 10)
+        (quarantine / "partial").write_text("bare-side partial output")
+        raise RuntimeError("second-side capture failed")
+
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fail_second)
+
+    with pytest.raises(RuntimeError, match="second-side capture failed"):
+        collector.observe_probe(spec, "img", tree, artifacts)
+
+    assert calls == 2
+    assert not input_root.exists()
+    assert not quarantine_root.exists()
+    assert {path.name: path.read_text() for path in artifacts.iterdir()} == {
+        "probe-pytest.json": pytest_json,
+        "probe-pytest.install.ok": "ok\n",
+        "probe-pytest.out": "pytest stdout",
+        "probe-pytest.err": "pytest stderr",
+        "probe-pytest.exit": "0\n",
+    }
 
 
 def test_mutation_refuses_fractional_deadline_before_starting_capture(

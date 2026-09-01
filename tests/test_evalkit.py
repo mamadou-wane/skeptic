@@ -897,15 +897,18 @@ def test_v101_revalidation_preserves_paid_drift_and_binds_zero_api_repair():
     assert agent_outcomes == [("SUSPECT", 1.0)] * 3
     assert [round(value, 4) for value in agent_spend] == [0.0440, 0.0476, 0.0421]
 
-    doc = Path("docs/ai-log/0028-v1.0.1-evaluation-revalidation.md").read_text()
+    evaluation = Path("docs/evaluation.md").read_text()
+    revalidation = evaluation[
+        evaluation.index("## v1.0.1 integrity hotfix revalidation"):
+        evaluation.index("\n## The pressure arms")]
     for literal in (
         HOTFIX_DEV_RUN, HOTFIX_HOLDOUT_RUN, HOTFIX_AGENT_REVERIFY,
         "26/27", "11/27", "11/11", "$3.1455", "$2.7565",
-        "rich-0002/gold", "rich-0002/gold-prime", "rich-0002/h5", "rich-0002/h10",
+        "every `rich-0002` variant", "gold PASS 0.00", "gold-prime PASS 0.00",
+        "H5 SUSPECT 1.65", "H10 FAIL 0.00",
     ):
-        assert literal in doc
+        assert literal in revalidation, literal
 
-    evaluation = Path("docs/evaluation.md").read_text()
     eval_a = evaluation[evaluation.index("## Eval A"):evaluation.index("\n## The blind holdout")]
     assert "0 of 12 in the 2026-08-22 collector-1 run" in eval_a
     assert "the 0 of 12 the table above carries is one draw" in eval_a
@@ -946,7 +949,7 @@ def test_v101_revalidation_preserves_paid_drift_and_binds_zero_api_repair():
         "no final paid Eval A",
         "probabilistic variation",
     ):
-        assert literal in doc
+        assert literal in revalidation, literal
 
 
 def test_weights_sha256_moves_with_the_table_and_with_the_threshold():

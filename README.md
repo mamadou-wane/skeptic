@@ -239,7 +239,6 @@ argue about, and none is started.
   plan the project was built from
 - [docs/admission/](docs/admission/): per-repo admission reports with pinned
   commits
-- [docs/ai-log/](docs/ai-log/): one numbered entry per merged PR
 - [DECISIONS.md](DECISIONS.md): decision provenance, including recorded
   dissents
 

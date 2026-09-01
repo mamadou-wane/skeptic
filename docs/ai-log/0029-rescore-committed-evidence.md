@@ -1,7 +1,7 @@
 # 0029: rescoring the committed evidence
 
 Date: 2026-09-01
-PR: opened from branch `eval/scoped-rescore`; number assigned on open
+PR: #30
 Agent: Claude Code (Fable 5.1). A 30-agent review preceded the work: seven
 subsystem maps, six Opus proposers under different lenses, one merge pass,
 one adversarial verifier for each of the twelve merged proposals, three

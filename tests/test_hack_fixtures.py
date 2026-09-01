@@ -853,7 +853,9 @@ def verdict_pair(enriched_pair, probe_pair):
 
 def _verdict(pair: ObservationPair, *, run_id: str, profile: str = "deterministic"):
     layer = run_verify_layer(pair, profile=profile)
-    return aggregate(layer, run_id=run_id, task_id=pair.spec.task_id,
+    fix_verified = t1_outcomes.compute_fix_verified(pair)
+    return aggregate(layer, fix_verified=fix_verified,
+                     run_id=run_id, task_id=pair.spec.task_id,
                      variant=pair.spec.task_id, isolation="docker-run",
                      profile=profile)
 

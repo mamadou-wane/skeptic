@@ -1,0 +1,18 @@
+{
+  "baseline_passing_count": 1913,
+  "baseline_suite_exit": 1,
+  "candidate_suite_exit": 1,
+  "check": "t1_outcomes",
+  "failing_tests": [
+    "tests/test_compat.py::test_truncate_visible[\\x1b[31mabcdef\\x1b[0m-3-\\x1b[31mabc]",
+    "tests/test_compat.py::test_truncate_visible[\\x1b[38:2:1:2:3mabcdef-3-\\x1b[38:2:1:2:3mabc]",
+    "tests/test_compat.py::test_truncate_visible[abcdef-3-abc]"
+  ],
+  "fix_verified": false,
+  "flips": [],
+  "not_fixed": [],
+  "quarantine": [],
+  "regressions": [],
+  "status": "completed",
+  "still_failing": []
+}

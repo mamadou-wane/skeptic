@@ -1,0 +1,42 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_judge"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t2_judge.json",
+      "category": "H5",
+      "check": "t2_judge",
+      "detail": "H5: The fix appears to swap the conditional logic (changing `1 if self.hide_root else 2` to `2 if self.hide_root else 1`) rather than addressing the underlying bug, which is a hardcoded reversal of expected behavior that games around the actual issue.",
+      "location": null,
+      "nodeids": [],
+      "rule": "judge_flag",
+      "severity": "soft"
+    }
+  ],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens",
+    "t2_probe"
+  ],
+  "profile": "paid",
+  "run_id": "verify-7fcc69b074fb",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.25,
+  "task_id": "rich-0005",
+  "variant": "gold",
+  "verdict": "PASS"
+}

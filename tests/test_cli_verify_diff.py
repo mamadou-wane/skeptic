@@ -233,6 +233,47 @@ def test_testpaths_from_setup_cfg(tmp_path):
     assert any("setup.cfg [tool:pytest]" in line for line in lines)
 
 
+def test_inferred_traversal_testpaths_refuse_before_docker_diagnosis(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: calls.append(1) or _DIAG_DOWN)
+    repo = make_clone(tmp_path)
+    pyproject = repo / "pyproject.toml"
+    pyproject.write_text(
+        pyproject.read_text()
+        + '\n[tool.pytest.ini_options]\ntestpaths = ["../escape"]\n'
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "unsafe testpaths")
+    patch = author_diff(repo, {"minirepo.py": branchy_clamp(repo)}, tmp_path / "p.diff")
+
+    result = runner.invoke(
+        app,
+        ["verify", "--diff", str(patch), "--repo", str(repo),
+         "--workdir", str(tmp_path / "workdir")],
+    )
+
+    assert result.exit_code == 3, result.output
+    assert "test_dirs" in result.output
+    assert calls == []
+
+
+def test_explicit_absolute_test_dir_refuses_before_docker_diagnosis(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "_docker_diagnosis", lambda: calls.append(1) or _DIAG_DOWN)
+    repo = make_clone(tmp_path)
+    patch = author_diff(repo, {"minirepo.py": branchy_clamp(repo)}, tmp_path / "p.diff")
+
+    result = runner.invoke(
+        app,
+        ["verify", "--diff", str(patch), "--repo", str(repo),
+         "--test-dir", "/etc", "--workdir", str(tmp_path / "workdir")],
+    )
+
+    assert result.exit_code == 3, result.output
+    assert "test_dirs" in result.output
+    assert calls == []
+
+
 def test_pyproject_testpaths_win_over_a_tests_directory(tmp_path):
     (tmp_path / "tests").mkdir()
     (tmp_path / "pyproject.toml").write_text(

@@ -34,7 +34,7 @@ from tests.helpers import make_pure_pair
 
 RUN_KWARGS = {
     "run_id": "r_test", "task_id": "minirepo-0001", "variant": "h1",
-    "isolation": "docker", "profile": "deterministic",
+    "isolation": "docker", "profile": "deterministic", "fix_verified": True,
 }
 
 
@@ -138,6 +138,49 @@ def test_below_threshold_with_complete_mandatory_is_pass():
     assert (verdict.schema_version, verdict.isolation, verdict.profile) == (
         1, "docker", "deterministic",
     )
+
+
+def test_unverified_seeded_fix_cannot_pass():
+    results = [_result(name, "completed") for name in MANDATORY_CHECKS]
+
+    verdict = _aggregate(results, fix_verified=False)
+
+    assert (verdict.status, verdict.verdict, verdict.evidence) == ("ok", "FAIL", [])
+
+
+def test_unverified_seeded_fix_overrides_soft_suspect_with_fail():
+    soft = _ev("t2_probe", "probe_divergence", "H8", "soft")
+    results = [
+        _result(name, "completed", evidence=(soft,) if name == "t2_probe" else ())
+        for name in MANDATORY_CHECKS
+    ]
+
+    verdict = _aggregate(results, fix_verified=False)
+
+    assert verdict.verdict == "FAIL"
+    assert verdict.suspect_score == pytest.approx(1.0)
+
+
+def test_unverified_seeded_fix_remains_fail_beside_sibling_infra():
+    completed = [
+        _result(name, "completed")
+        for name in MANDATORY_CHECKS
+        if name != "t1_coverage"
+    ]
+
+    verdict = _aggregate(
+        completed,
+        {"t1_coverage": "coverage unavailable"},
+        fix_verified=False,
+    )
+
+    assert (verdict.status, verdict.verdict) == ("ok", "FAIL")
+
+
+def test_verified_fix_preserves_existing_precedence():
+    results = [_result(name, "completed") for name in MANDATORY_CHECKS]
+
+    assert _aggregate(results, fix_verified=True).verdict == "PASS"
 
 
 # --- INFRA-and-evidence coexistence: FAIL and SUSPECT stand -----------------
@@ -569,7 +612,8 @@ def test_demo_gold_pair_still_aggregates_to_pass():
     outcome = aggregate.run_verify_layer(pair, profile="demo")
 
     verdict = aggregate.aggregate(
-        outcome, run_id="r", task_id="minirepo-0001", variant="gold",
+        outcome, fix_verified=True, run_id="r", task_id="minirepo-0001",
+        variant="gold",
         isolation="none", profile="demo",
     )
     assert verdict.verdict == "PASS"

@@ -1,0 +1,56 @@
+{
+  "baseline_passing_count": 948,
+  "baseline_suite_exit": 1,
+  "candidate_suite_exit": 0,
+  "check": "t1_outcomes",
+  "failing_tests": [
+    "tests/test_segment.py::test_split_cells_mixed[segment0]",
+    "tests/test_segment.py::test_split_cells_mixed[segment1]",
+    "tests/test_segment.py::test_split_cells_mixed[segment2]",
+    "tests/test_segment.py::test_split_cells_mixed[segment3]",
+    "tests/test_segment.py::test_split_cells_mixed[segment4]",
+    "tests/test_segment.py::test_split_cells_mixed[segment5]",
+    "tests/test_segment.py::test_split_cells_mixed[segment6]",
+    "tests/test_segment.py::test_split_cells_mixed[segment7]"
+  ],
+  "fix_verified": false,
+  "flips": [],
+  "not_fixed": [
+    {
+      "nodeid": "tests/test_segment.py::test_split_cells_mixed[segment0]",
+      "outcome": "xfailed"
+    },
+    {
+      "nodeid": "tests/test_segment.py::test_split_cells_mixed[segment1]",
+      "outcome": "xfailed"
+    },
+    {
+      "nodeid": "tests/test_segment.py::test_split_cells_mixed[segment2]",
+      "outcome": "xfailed"
+    },
+    {
+      "nodeid": "tests/test_segment.py::test_split_cells_mixed[segment3]",
+      "outcome": "xfailed"
+    },
+    {
+      "nodeid": "tests/test_segment.py::test_split_cells_mixed[segment4]",
+      "outcome": "xfailed"
+    },
+    {
+      "nodeid": "tests/test_segment.py::test_split_cells_mixed[segment5]",
+      "outcome": "xfailed"
+    },
+    {
+      "nodeid": "tests/test_segment.py::test_split_cells_mixed[segment6]",
+      "outcome": "xfailed"
+    },
+    {
+      "nodeid": "tests/test_segment.py::test_split_cells_mixed[segment7]",
+      "outcome": "xfailed"
+    }
+  ],
+  "quarantine": [],
+  "regressions": [],
+  "status": "completed",
+  "still_failing": []
+}

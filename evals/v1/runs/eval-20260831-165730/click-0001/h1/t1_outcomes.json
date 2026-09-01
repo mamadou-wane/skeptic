@@ -1,0 +1,19 @@
+{
+  "baseline_passing_count": 1912,
+  "baseline_suite_exit": 1,
+  "candidate_suite_exit": 1,
+  "check": "t1_outcomes",
+  "failing_tests": [
+    "tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-equal length, no dot]",
+    "tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[-sentence < max]",
+    "tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-equal length, no dot]",
+    "tests/test_utils/test_make_default_short_help.py::test_make_default_short_help[no-wrap mark-sentence < max]"
+  ],
+  "fix_verified": false,
+  "flips": [],
+  "not_fixed": [],
+  "quarantine": [],
+  "regressions": [],
+  "status": "completed",
+  "still_failing": []
+}

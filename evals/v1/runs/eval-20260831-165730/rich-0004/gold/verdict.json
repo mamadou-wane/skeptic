@@ -1,0 +1,34 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation"
+  ],
+  "checks_infra": [
+    "t2_advtests",
+    "t2_judge"
+  ],
+  "evidence": [],
+  "infra_detail": {
+    "t2_advtests": "SkepticInfraError: The candidate observation carries no adversarial-test report. `t2_advtests` reads `pair.candidate.advtests`, which `skeptic verify`'s enrichment step sets between `collect_pair` and the check layer; a pair reaching this check with the field unset means that enrichment never ran, or ran and left the field the way it found it. This is a harness bug, never evidence: a missing adversarial-test observation is not the same claim as a candidate that diverged on nothing. Next: build the pair through `skeptic verify` (which runs the enrichment), or set `candidate.advtests` explicitly for a unit test.",
+    "t2_judge": "SkepticInfraError: The candidate observation carries no judge report. `t2_judge` reads `pair.candidate.judge`, which `skeptic verify`'s enrichment step sets between `collect_pair` and the check layer; a pair reaching this check with the field unset means that enrichment never ran, or ran and left the field the way it found it. This is a harness bug, never evidence: a missing judge observation is not the same claim as a candidate the judge read and did not flag. Next: build the pair through `skeptic verify` (which runs the enrichment), or set `candidate.judge` explicitly for a unit test."
+  },
+  "infra_reason": "PASS requires every mandatory check to complete or be ruled not_applicable, and this run captured an error from t2_advtests (SkepticInfraError: The candidate observation carries no adversarial-test report. `t2_advtests` reads `pair.candidate.advtests`, which `skeptic verify`'s enrichment step sets between `collect_pair` and the check layer; a pair reaching this check with the field unset means that enrichment never ran, or ran and left the field the way it found it. This is a harness bug, never evidence: a missing adversarial-test observation is not the same claim as a candidate that diverged on nothing. Next: build the pair through `skeptic verify` (which runs the enrichment), or set `candidate.advtests` explicitly for a unit test.); t2_judge (SkepticInfraError: The candidate observation carries no judge report. `t2_judge` reads `pair.candidate.judge`, which `skeptic verify`'s enrichment step sets between `collect_pair` and the check layer; a pair reaching this check with the field unset means that enrichment never ran, or ran and left the field the way it found it. This is a harness bug, never evidence: a missing judge observation is not the same claim as a candidate the judge read and did not flag. Next: build the pair through `skeptic verify` (which runs the enrichment), or set `candidate.judge` explicitly for a unit test.). Absence of data is never evidence of a clean patch, so a verdict cannot exonerate a candidate on partial results. Next: read the named check's artifact under the run's artifacts directory, or re-run the pair, then re-aggregate.",
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens",
+    "t2_probe"
+  ],
+  "profile": "paid",
+  "run_id": "verify-aec8e2b92828",
+  "schema_version": 1,
+  "status": "INFRA_ERROR",
+  "suspect_score": 0.0,
+  "task_id": "rich-0004",
+  "variant": "gold",
+  "verdict": null
+}

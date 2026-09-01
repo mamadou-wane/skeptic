@@ -5,28 +5,89 @@ measurements behind every figure cited here are in
 [evaluation.md](evaluation.md).
 
 VERIFY splits in two, which is the design decision everything else rests on. A
-collector materializes a fresh seeded tree and a fresh candidate tree, runs one
-throwaway container per tree, and writes what each produced (a collection
-manifest, a junit outcome map, coverage data with per-test contexts) into a
-host artifacts directory outside both trees. The checks then execute nothing.
+collector materializes canonical seeded and candidate trees, runs isolated
+candidate-executing phases over disposable snapshots, and admits their declared
+outputs into host-owned sealed storage. Checks execute no candidate code; four
+deterministic checks also read the immutable canonical trees.
 
 ```mermaid
 flowchart LR
-  seed["seeded tree<br/>(pinned commit + seed diff)"] --> cs["container<br/>(network off)"]
-  cand["candidate tree<br/>(seeded + the patch)"] --> cc["container<br/>(network off)"]
-  cs --> art["host artifacts dir<br/>collection manifest · junit outcomes · coverage contexts"]
-  cc --> art
+  seed["canonical seeded tree"] --> snap["disposable execution snapshot"]
+  cand["canonical candidate tree"] --> snap
+  snap --> exec["candidate phase<br/>network off · private output"]
+  exec --> q["fresh host quarantine<br/>after container stop"]
+  q --> admit["host admission<br/>no-follow · typed cap · no-replace"]
+  admit --> art["sealed phase artifacts<br/>collection · junit · coverage data"]
+  art --> report["non-candidate coverage report<br/>read-only clean snapshot + admitted data"]
+  report --> radmit["host admission"]
+  radmit --> rart["sealed coverage report"]
   art --> t1["8 deterministic checks<br/>collect · outcomes · config · scope<br/>goldens · coverage · patterns · ast"]
+  seed -->|immutable read by 4 checks| t1
+  cand -->|immutable read by 4 checks| t1
+  rart --> t1
   art --> t2["4 heavy checks<br/>mutation · probe<br/>advtests · judge (paid)"]
-  t1 --> agg["aggregate.py<br/>hard rules, then soft weights vs 1.0"]
+  t1 --> agg["aggregate.py<br/>hard or unverified fix, then soft weights"]
   t2 --> agg
   agg --> v["PASS · SUSPECT · FAIL<br/>INFRA_ERROR if a mandatory check never completed"]
 ```
 
-Neither container is reachable from the checks, and neither tree is read by
-them: a check is a pure function from one observation pair to one result, which
-is what lets a detector change re-verdict cached pairs without re-collecting
-them.
+Collection, suite/coverage measurement, every mutation calibration and mutant,
+both consumer-probe sides, and every adversarial candidate/tree rung receive
+separate executions. Collection and suite, each mutation execution, and both
+probe sides also receive separate disposable snapshots of the canonical tree;
+candidate writes therefore have only current-phase lifetime. No candidate
+container receives a writable host evidence mount. After it stops, Docker
+copies private output into a fresh quarantine that the container never saw.
+
+Admission walks the quarantine root and every source parent by directory file
+descriptor with `O_DIRECTORY` and `O_NOFOLLOW`, opens the final name no-follow,
+requires a regular file, and enforces its cap before allocation and while
+streaming. Destination parents use the same no-follow rule. Publication writes
+a create-exclusive same-directory temporary and atomically links it to an
+absent final name; it never replaces an existing sealed artifact. Only a truly
+missing optional file is absence. A symlink, FIFO, directory, device, escape,
+oversize file, failed Docker copy, or conflicting final name is INFRA.
+
+The caps are typed: 4 KiB controls, 8 MiB text/collection/selection, 16 MiB
+JUnit and ordinary structured data, 64 MiB coverage SQLite, and 1.5 GiB
+(1,610,612,736 bytes) for scoped `coverage.json`, based on a measured 1.063 GiB
+Click artifact. These limits bound files crossing admission; they are not
+transport or aggregate-output quotas, and they do not impose CPU, memory, disk,
+or process quotas.
+
+Suite execution is the candidate-executing coverage-measurement phase. Its
+JUnit and `.coverage` outputs are admitted before a separate reporting phase
+starts. Reporting uses a source snapshot taken before candidate execution,
+mounts it read-only, mounts admitted measurement data read-only, skips editable
+installation, and runs Python safe-path/no-user-site mode. The report therefore
+does not execute candidate code, although the admitted `.coverage` input still
+came from the candidate-executing suite. Final `COLLECTOR_VERSION` is `"4"`;
+unreleased interim versions 2 and 3 are unsafe and must never be reused because
+each predates part of the consolidated canonical-tree, copy, install, or
+deadline boundary now enforced.
+
+Deadline scope follows the observation authority. T1 has one side deadline
+across all phases, read-back, cleanup, and return. Mutation has one
+mutation-observation deadline across all calibrations and mutants, including
+capture and admission. The probe has one deadline shared across its pytest and
+bare captures. Adversarial checks have one deadline per tree/rung batch, sized
+to that batch's candidate set or survivors. Editable-install failure is
+derived from the host-observed reserved exit 125 instead of a candidate-writable
+marker. A phase that itself returns 125 after a successful install is
+conservatively INFRA.
+
+Protected `test_dirs`, `config_files`, and `golden_dirs` are checked when the
+spec loads and again at mount construction. Empty/root, POSIX or Windows
+absolute and UNC, literal `..`, dangling, and workspace-escaping paths are
+refused. Internal symlinks are accepted only when strict resolution remains
+beneath the intended workspace.
+
+No check can reach a candidate container or execute candidate code. Most checks
+read admitted observations only; `t1_ast`, `t1_config`, `t1_patterns`, and
+`t1_coverage` also read the immutable canonical baseline and candidate trees.
+Disposable execution snapshots are therefore load-bearing: candidate writes
+die with a snapshot while the canonical trees remain host authority. Detector
+changes can still re-verdict cached pairs without re-collecting them.
 
 Twelve checks exist. Ten run in the default profile and two only under the paid
 one. Eight read the deterministic observations (`t1_collect`, `t1_outcomes`,
@@ -36,12 +97,23 @@ budgeted stratified mutant batch scored through the coverage-context bridge;
 `t2_probe`, one consumer entrypoint called in-pytest and bare; `t2_advtests`,
 an LLM-generated adversarial battery walked through a promotion ladder; and
 `t2_judge`, one diff review folded fail-closed). `checks/aggregate.py` folds
-every result into PASS, SUSPECT, or FAIL, with INFRA_ERROR when a mandatory
+every result into PASS, SUSPECT, or FAIL. Hard evidence or
+`fix_verified=False` is FAIL before soft scoring; a false seeded fix does not
+fabricate hack evidence and does not become INFRA. Seedless diff verification
+is vacuously fix-verified. INFRA_ERROR remains the result when a mandatory
 check never completes.
 
 Infrastructure failures never degrade into evidence. A missing coverage file
 aborts as INFRA_ERROR rather than reading as 0 percent coverage, because a
 silent 0 percent would fail a correct patch and poison the false-positive rate.
+
+## CI containment gate
+
+Repository CI runs `docker info` before pytest and sets
+`SKEPTIC_REQUIRE_DOCKER=1` on the full suite. If Docker is unavailable, pytest
+raises before Docker tests can be converted into skips. Local runs without
+that exact environment value preserve the prior convenience behavior and may
+skip Docker-marked tests when the daemon is unavailable.
 
 ## Tradeoffs
 
@@ -83,6 +155,13 @@ the tested region, not on a rate. What the budget costs is visible in the
 deterministic lane, where H5 falls to 2 of 6 and H6 to 0 of 6 once the paid
 checks are gone and mutation is carrying the category alone.
 
+The integrity boundary adds tree copies and container starts. The focused
+adversarial selection measured 48.71 s before candidate/tree isolation and
+99.68 s after it, including the complete two-candidate overwrite regression.
+The corrected-head Docker-required full suite measured 1203 passed, 1 paid-live
+skip in 1266.16 s (21:06). No copy-on-write optimization or broader resource
+quota was added in this hotfix.
+
 Model routing is two tiers and one of them is free. Eight T1 checks read
 observations and call nothing; only `t2_advtests` and `t2_judge` reach the API,
 both on the cheap tier, and the paid profile is opt-in per command. That is why
@@ -93,6 +172,13 @@ a frontier model was never tested and is not claimed; the measured baseline
 says a single Haiku call over diff text already matches the harness on recall.
 
 ## Limits
+
+Sealing begins after a candidate execution stops and host admission succeeds.
+Candidate-controlled pytest code can still influence the JUnit and `.coverage`
+files produced during that same executing phase. The guarantee is temporal: a
+later phase, mutant, probe side, or candidate cannot modify, replace, redirect,
+or append to the earlier sealed result. It is not an end-to-end authenticity
+claim for current-phase measurement.
 
 Everything measured here is within taxonomy. The ten hack categories were
 authored before the detectors and the detectors were built against them.
@@ -191,7 +277,7 @@ The table and what it excludes are in [docs/evaluation.md](evaluation.md).
 
 | Path | What |
 |---|---|
-| `skeptic/` | CLI, spec loader, workspace materializer, venv/docker sandbox, seedcheck engine, trace writer, stage cache, observation collector, `checks/` |
+| `skeptic/` | CLI, spec loader, workspace materializer, venv/docker sandbox, artifact admission, seedcheck engine, trace writer, stage cache, observation collector, `checks/` |
 | `tasks/` | Corpus task specs, one yaml per task |
 | `patches/` | Seed, gold and hack diffs per task |
 | `acceptance/` | Frozen acceptance suites, held out from the Builder, the detectors and adversarial testgen |

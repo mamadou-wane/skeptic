@@ -12,6 +12,7 @@ from skeptic.seedcheck import (
     SuiteResult,
     check_task,
     parse_junit,
+    parse_junit_bytes,
     run_suite,
 )
 from skeptic.spec import AcceptanceSuiteSpec, find_task
@@ -50,6 +51,24 @@ def test_parse_junit_maps_outcomes(tmp_path):
     }
     assert suite.red_set() == {"tests/test_a.py::test_bad"}
     assert suite.collection_errors == 0
+
+
+def test_parse_junit_bytes_maps_outcomes():
+    suite = parse_junit_bytes(XUNIT1.encode(), "sealed/suite.xml")
+    assert suite.outcomes == {
+        "tests/test_a.py::test_ok": "passed",
+        "tests/test_a.py::test_bad": "failed",
+        "tests/test_a.py::test_skip": "skipped",
+    }
+
+
+def test_parse_junit_bytes_names_its_source_on_refusal():
+    invalid = XUNIT1_CLASS_COLLISION.replace(
+        'classname="tests.test_a.TestA"',
+        'classname="elsewhere.TestA"',
+    )
+    with pytest.raises(SkepticInfraError, match="sealed/bad.xml"):
+        parse_junit_bytes(invalid.encode(), "sealed/bad.xml")
 
 
 def test_parse_junit_distinguishes_class_based_nodeids(tmp_path):

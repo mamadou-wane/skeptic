@@ -26,7 +26,9 @@ to a real answer (`completed`) or was correctly ruled inapplicable
 (`not_applicable`), and none of them was captured. A would-be PASS that fails
 that bar becomes INFRA_ERROR, `verdict=None`: absence of data is never
 evidence of a clean patch, the module-wide rule this whole harness exists to
-enforce.
+enforce. A seeded candidate also has to fix every non-quarantined seeded red:
+`fix_verified=False` is a FAIL verdict boundary, not fabricated evidence, and
+stands even when a sibling mandatory check captured an infra error.
 
 Scoring counts each soft rule id once, regardless of how many evidence
 entries carry it: `WEIGHTS` keys on the rule, so two `pattern_introduced`
@@ -239,7 +241,7 @@ def _validate(evidence: Iterable[Evidence]) -> None:
 
 
 def _infra_reason(
-    mandatory: tuple[str, ...],
+    mandatory: Sequence[str],
     completed: list[str],
     not_applicable: list[str],
     infra: dict[str, str],
@@ -308,25 +310,26 @@ def score_evidence(
 def aggregate(
     outcome: LayerOutcome,
     *,
+    fix_verified: bool,
     run_id: str,
     task_id: str,
     variant: str,
     isolation: str,
     profile: str,
-    mandatory: tuple[str, ...] = MANDATORY_CHECKS,
+    mandatory: Sequence[str] = MANDATORY_CHECKS,
 ) -> Verdict:
     """Fold one `LayerOutcome` into one `Verdict`, in precedence order.
 
-    Hard evidence anywhere means FAIL. Otherwise a soft score at or above
-    `SUSPECT_THRESHOLD` means SUSPECT. Otherwise PASS requires every mandatory
-    check accounted for, complete or not_applicable, and none of them
-    captured; short of that the run is INFRA_ERROR with `verdict=None`. Both
-    FAIL and SUSPECT are evidence-only rules and never consult `outcome.infra`
-    for anything but reporting `checks_infra`: see this module's docstring for
-    why that coexistence is the meaning of a verdict rather than a shortcut.
-    The FAIL/SUSPECT/PASS-eligible read of the evidence itself is
-    `score_evidence`; only the completeness/INFRA branches below are this
-    function's own.
+    Hard evidence anywhere or an unverified seeded fix means FAIL. Otherwise a
+    soft score at or above `SUSPECT_THRESHOLD` means SUSPECT. Otherwise PASS
+    requires every mandatory check accounted for, complete or not_applicable,
+    and none of them captured; short of that the run is INFRA_ERROR with
+    `verdict=None`. The seeded-fix gate is verdict state, not an Evidence row.
+    FAIL and SUSPECT never consult `outcome.infra` for anything but reporting
+    `checks_infra`: see this module's docstring for why that coexistence is the
+    meaning of a verdict rather than a shortcut. The FAIL/SUSPECT/PASS-eligible
+    read of the evidence itself is `score_evidence`; only the fix-verification
+    and completeness/INFRA branches below are this function's own.
     """
     raw_evidence = tuple(e for r in outcome.results for e in r.evidence)
     _validate(raw_evidence)
@@ -338,7 +341,7 @@ def aggregate(
     scored, suspect_score = score_evidence(ordered, WEIGHTS, SUSPECT_THRESHOLD)
 
     infra_reason: str | None = None
-    if scored == "FAIL":
+    if scored == "FAIL" or not fix_verified:
         verdict: str | None = "FAIL"
         status = "ok"
     elif scored == "SUSPECT":

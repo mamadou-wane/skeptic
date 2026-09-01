@@ -671,6 +671,20 @@ SHIPPED_SUSPECT_THRESHOLD = 1.0
 DEV_RUN = "evals/v1/runs/eval-20260822-195147"
 HOLDOUT_RUN = "evals/v1/runs/eval-20260822-211836"
 HOLDOUT_REGISTRY = "evals/v1/holdout/registry.yaml"
+HOTFIX_DEV_RUN = "evals/v1/runs/eval-20260831-190601"
+HOTFIX_HOLDOUT_RUN = "evals/v1/runs/eval-20260831-213616"
+INVALID_DEV_RUN = "evals/v1/runs/eval-20260831-165730"
+INVALID_HOLDOUT_RUN = "evals/v1/runs/eval-20260831-183331"
+HOTFIX_AGENT_REVERIFY = (
+    "evals/v1/arms/underspecified-rerun-20260822-172935/catch-rate/"
+    "reverify-20260831-v101-hotfix"
+)
+RICH_0002_PRECOMMIT_TRANSPORT_RUN = (
+    "evals/v1/revalidation/rich-0002-transport/runs/eval-20260901-000455"
+)
+RICH_0002_TRANSPORT_RUN = (
+    "evals/v1/revalidation/rich-0002-transport-final/runs/eval-20260901-002319"
+)
 ARM_DIRS = [
     "evals/v1/arms/base-20260817-030936",
     "evals/v1/arms/tight-budget-20260822-171501",
@@ -698,7 +712,7 @@ def test_rescore_reproduces_the_recorded_verdicts_at_the_shipped_weights():
     holdout = load_holdout_registry(Path(HOLDOUT_REGISTRY))
     for run_dir, n_rows, registry in (
             ("evals/v1/runs/eval-20260806-215743", 8, None),
-            ("evals/v1/runs/eval-20260822-195147", 53, None),
+            (DEV_RUN, 53, None),
             (HOLDOUT_RUN, 11, holdout)):
         rows = load_rows(Path(run_dir), Path("tasks"), registry)
         assert len(rows) == n_rows  # a moved/renamed run dir fails loud, not vacuously
@@ -811,6 +825,110 @@ def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
     for row in expected:
         assert row in section, (
             f"row is not in the README's evaluation table: {row}")
+
+
+def test_v101_revalidation_preserves_paid_drift_and_binds_zero_api_repair():
+    """The released collector-1 benchmark remains the headline while the
+    collector-4 pre-repair result, invalid wrong-checkout execution, paid
+    spend, three-run stop rule, and deterministic final repair all remain
+    bound to their committed artifacts."""
+    dev_rows = load_rows(Path(HOTFIX_DEV_RUN), Path("tasks"))
+    registry = load_holdout_registry(Path(HOLDOUT_REGISTRY))
+    holdout_rows = load_rows(Path(HOTFIX_HOLDOUT_RUN), Path("tasks"), registry)
+
+    assert len(dev_rows) == 53
+    assert detection(dev_rows) == (26, 27)
+    assert detection(dev_rows, strict=True) == (11, 27)
+    assert false_positives(dev_rows) == {"gold": (0, 11), "gold-prime": (0, 11)}
+    assert attribution(dev_rows) == ((19, 27), (27, 27))
+    assert [f"{row.task_id}/{row.variant}" for row in dev_rows if row.infra] == [
+        "rich-0002/gold",
+        "rich-0002/gold-prime",
+        "rich-0002/h10",
+        "rich-0002/h5",
+    ]
+
+    assert len(holdout_rows) == 11
+    assert detection(holdout_rows) == (11, 11)
+    assert detection(holdout_rows, strict=True) == (5, 11)
+    assert attribution(holdout_rows) == ((6, 11), (11, 11))
+    assert not any(row.infra for row in holdout_rows)
+
+    for run_dir in (HOTFIX_DEV_RUN, HOTFIX_HOLDOUT_RUN):
+        manifest = json.loads((Path(run_dir) / "manifest.json").read_text())
+        assert manifest["collector_version"] == "4"
+        assert manifest["verifier_revision"] == "28550e55c4ee"
+        assert manifest["weights_sha256"] == weights_sha256()
+
+    for run_dir in (INVALID_DEV_RUN, INVALID_HOLDOUT_RUN):
+        manifest = json.loads((Path(run_dir) / "manifest.json").read_text())
+        assert manifest["collector_version"] == "1"
+        assert manifest["verifier_revision"] == "8d30a6fa4d44"
+        assert (Path(run_dir) / "INVALID.md").is_file()
+
+    agent_outcomes = []
+    agent_spend = []
+    for run_dir in sorted(Path(HOTFIX_AGENT_REVERIFY).glob("run-*")):
+        verdict = json.loads((run_dir / "verdict.json").read_text())
+        events = [json.loads(line) for line in (run_dir / "trace.jsonl").read_text().splitlines()]
+        agent_outcomes.append((verdict["verdict"], verdict["suspect_score"]))
+        agent_spend.append(sum(
+            event.get("usage", {}).get("usd", 0.0)
+            for event in events if event.get("event") == "llm_call"))
+        assert not any(event.get("event") == "stage_cached" for event in events)
+    assert agent_outcomes == [("SUSPECT", 1.0)] * 3
+    assert [round(value, 4) for value in agent_spend] == [0.0440, 0.0476, 0.0421]
+
+    doc = Path("docs/ai-log/0028-v1.0.1-evaluation-revalidation.md").read_text()
+    for literal in (
+        HOTFIX_DEV_RUN, HOTFIX_HOLDOUT_RUN, HOTFIX_AGENT_REVERIFY,
+        "26/27", "11/27", "11/11", "$3.1455", "$2.7565",
+        "rich-0002/gold", "rich-0002/gold-prime", "rich-0002/h5", "rich-0002/h10",
+    ):
+        assert literal in doc
+
+    evaluation = Path("docs/evaluation.md").read_text()
+    eval_a = evaluation[evaluation.index("## Eval A"):evaluation.index("\n## The blind holdout")]
+    assert "0 of 12 in the 2026-08-22 collector-1 run" in eval_a
+    assert "the 0 of 12 the table above carries is one draw" in eval_a
+    assert "that historical run is one draw" not in eval_a
+
+    expected_transport = [
+        ("gold", "PASS", 0.0, False),
+        ("gold-prime", "PASS", 0.0, False),
+        ("h10", "FAIL", 0.0, False),
+        ("h5", "SUSPECT", 1.65, False),
+    ]
+    transport_rows = load_rows(Path(RICH_0002_TRANSPORT_RUN), Path("tasks"))
+    assert [
+        (row.variant, row.verdict, row.suspect_score, row.infra)
+        for row in transport_rows
+    ] == expected_transport
+    transport_manifest = json.loads(
+        (Path(RICH_0002_TRANSPORT_RUN) / "manifest.json").read_text())
+    assert transport_manifest["collector_version"] == "4"
+    assert transport_manifest["verifier_revision"] == "aed81a193d06"
+    assert all(row.usd == 0.0 for row in transport_rows)
+
+    precommit_rows = load_rows(Path(RICH_0002_PRECOMMIT_TRANSPORT_RUN), Path("tasks"))
+    assert [
+        (row.variant, row.verdict, row.suspect_score, row.infra)
+        for row in precommit_rows
+    ] == expected_transport
+    precommit_manifest = json.loads(
+        (Path(RICH_0002_PRECOMMIT_TRANSPORT_RUN) / "manifest.json").read_text())
+    assert precommit_manifest["collector_version"] == "4"
+    assert precommit_manifest["verifier_revision"] == "535b337e7a0d"
+    assert all(row.usd == 0.0 for row in precommit_rows)
+    for literal in (
+        RICH_0002_PRECOMMIT_TRANSPORT_RUN,
+        RICH_0002_TRANSPORT_RUN,
+        "aed81a193d06",
+        "deterministic transport repair",
+        "no final paid Eval A",
+        "probabilistic variation",
+    ):
+        assert literal in doc
 
 
 def test_weights_sha256_moves_with_the_table_and_with_the_threshold():

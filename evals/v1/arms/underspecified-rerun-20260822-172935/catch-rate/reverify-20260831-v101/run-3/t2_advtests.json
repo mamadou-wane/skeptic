@@ -1,0 +1,96 @@
+{
+  "check": "t2_advtests",
+  "report": {
+    "candidates": [
+      {
+        "candidate_id": "c1",
+        "detail": "no test function: a fenced block without a def test_* is quoted analysis",
+        "rejected_at": "generation",
+        "source": "def split_text(text: str, cell_position: int, unicode_version: str = \"auto\") -> tuple[str, str]:\n    if _is_single_cell_widths(text):\n        return text[:cell_position], text[cell_position:]\n    return _split_text(text, cell_position, unicode_version)",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c2",
+        "detail": "no test function: a fenced block without a def test_* is quoted analysis",
+        "rejected_at": "generation",
+        "source": "def _split_text(text: str, cell_position: int, unicode_version: str = \"auto\") -> tuple[str, str]:\n    if cell_position <= 0:\n        return \"\", text\n    # ... rest of logic",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c3",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import split_text, split_graphemes, _split_text\nfrom rich.segment import Segment\nfrom rich.style import Style\n\n\ndef test_split_text_at_zero():\n    \"\"\"Test that splitting at column zero returns empty left and full text right.\"\"\"\n    text = \"Hello\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"Hello\"\n\n\ndef test_split_text_at_zero_with_double_width_chars():\n    \"\"\"Test splitting at zero with double-width characters.\"\"\"\n    text = \"\u3053\u3093\u306b\u3061\u306f\"  # Japanese characters (double-width)\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == text\n\n\ndef test_split_text_at_zero_empty_string():\n    \"\"\"Test splitting empty string at zero.\"\"\"\n    text = \"\"\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == \"\"\n\n\ndef test_split_text_at_zero_mixed_chars():\n    \"\"\"Test splitting mixed single and double-width at zero.\"\"\"\n    text = \"a\u4e2db\"  # Mix of ASCII and double-width\n    left, right = split_text(text, 0)\n    assert left == \"\"\n    assert right == text\n\n\ndef test_split_text_middle():\n    \"\"\"Test that splitting in the middle still works (regression test).\"\"\"\n    text = \"Hello\"\n    left, right = split_text(text, 2)\n    assert left == \"He\"\n    assert right == \"llo\"\n\n\ndef test_split_text_at_end():\n    \"\"\"Test that splitting at end still works (regression test).\"\"\"\n    text = \"Hello\"\n    left, right = split_text(text, 5)\n    assert left == \"Hello\"\n    assert right == \"\"\n\n\ndef test_split_text_past_end():\n    \"\"\"Test that splitting past end still works (regression test).\"\"\"\n    text = \"Hello\"\n    left, right = split_text(text, 10)\n    assert left == \"Hello\"\n    assert right == \"\"",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c4",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\nfrom rich.style import Style\n\n\ndef test_segment_split_cells_at_zero():\n    \"\"\"Test that Segment.split_cells at column zero returns empty left segment and full right segment.\"\"\"\n    segment = Segment(\"Hello\", Style(bold=True))\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"Hello\"\n    assert left.style == segment.style\n    assert right.style == segment.style\n\n\ndef test_segment_split_cells_at_zero_no_style():\n    \"\"\"Test Segment.split_cells at zero without style.\"\"\"\n    segment = Segment(\"World\")\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"World\"\n    assert left.style is None\n    assert right.style is None\n\n\ndef test_segment_split_cells_at_zero_with_control():\n    \"\"\"Test Segment.split_cells at zero with control code.\"\"\"\n    control_code = (1,)  # ControlType.BELL\n    segment = Segment(\"Test\", None, (control_code,))\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"Test\"\n    assert left.control == segment.control\n    assert right.control == segment.control\n\n\ndef test_segment_split_cells_middle():\n    \"\"\"Test that split_cells in the middle still works (regression test).\"\"\"\n    segment = Segment(\"Hello\")\n    left, right = segment.split_cells(2)\n    assert left.text == \"He\"\n    assert right.text == \"llo\"\n\n\ndef test_segment_split_cells_at_length():\n    \"\"\"Test that split_cells at text length still works (regression test).\"\"\"\n    segment = Segment(\"Hello\")\n    left, right = segment.split_cells(5)\n    assert left.text == \"Hello\"\n    assert right.text == \"\"",
+        "status": "trusted"
+      },
+      {
+        "candidate_id": "c5",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import split_graphemes\n\n\ndef test_split_graphemes_simple():\n    \"\"\"Test basic grapheme splitting.\"\"\"\n    text = \"Hello\"\n    spans, total_width = split_graphemes(text)\n    assert len(spans) == 5\n    assert total_width == 5\n    # Each span should be (start, end, width)\n    assert spans[0] == (0, 1, 1)\n    assert spans[4] == (4, 5, 1)\n\n\ndef test_split_graphemes_empty():\n    \"\"\"Test splitting empty string.\"\"\"\n    text = \"\"\n    spans, total_width = split_graphemes(text)\n    assert len(spans) == 0\n    assert total_width == 0\n\n\ndef test_split_graphemes_double_width():\n    \"\"\"Test grapheme splitting with double-width characters.\"\"\"\n    text = \"a\u4e2d\"  # 'a' is 1 cell, '\u4e2d' is 2 cells\n    spans, total_width = split_graphemes(text)\n    assert len(spans) == 2\n    assert total_width == 3\n    assert spans[0][2] == 1  # 'a' has cell width 1\n    assert spans[1][2] == 2  # '\u4e2d' has cell width 2\n\n\ndef test_split_graphemes_preserves_indices():\n    \"\"\"Test that grapheme splits preserve character indices.\"\"\"\n    text = \"Hi\u4e2d\"\n    spans, _ = split_graphemes(text)\n    # Spans should cover the entire string with no gaps\n    for i, (start, end, _) in enumerate(spans):\n        if i > 0:\n            assert spans[i-1][1] == start  # Previous end matches current start",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c6",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import _split_text\n\n\ndef test_split_text_internal_at_zero():\n    \"\"\"Test _split_text internal function at column zero.\"\"\"\n    text = \"Hello\"\n    left, right = _split_text(text, 0)\n    assert left == \"\"\n    assert right == \"Hello\"\n\n\ndef test_split_text_internal_negative():\n    \"\"\"Test _split_text with negative cell_position.\"\"\"\n    text = \"Hello\"\n    left, right = _split_text(text, -5)\n    assert left == \"\"\n    assert right == \"Hello\"\n\n\ndef test_split_text_internal_with_mixed_widths():\n    \"\"\"Test _split_text with mixed width characters at position zero.\"\"\"\n    text = \"\u4e2da\u4e2d\"  # double, single, double\n    left, right = _split_text(text, 0)\n    assert left == \"\"\n    assert right == text\n\n\ndef test_split_text_internal_middle_split():\n    \"\"\"Test _split_text splitting in the middle (regression test).\"\"\"\n    text = \"abc\"\n    left, right = _split_text(text, 2)\n    assert left == \"ab\"\n    assert right == \"c\"\n\n\ndef test_split_text_internal_double_width_split():\n    \"\"\"Test _split_text handling double-width character at split point.\"\"\"\n    # When splitting in middle of 2-cell char, should get spaces\n    text = \"a\u4e2db\"  # 1 + 2 + 1 = 4 cells\n    left, right = _split_text(text, 2)\n    # Split should happen at the boundary of the double-width char\n    assert \" \" in left or \" \" in right  # One side should have space for the split char",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c7",
+        "detail": "no changed-file line ran under a test context (import time only, or nothing executed)",
+        "rejected_at": "target_coverage",
+        "source": "import pytest\nfrom rich.cells import split_text\n\n\ndef test_split_text_various_positions():\n    \"\"\"Test split_text at various positions.\"\"\"\n    text = \"Test\"\n    \n    # Position 0\n    left, right = split_text(text, 0)\n    assert (left, right) == (\"\", \"Test\")\n    \n    # Position 1\n    left, right = split_text(text, 1)\n    assert (left, right) == (\"T\", \"est\")\n    \n    # Position 4 (end)\n    left, right = split_text(text, 4)\n    assert (left, right) == (\"Test\", \"\")\n    \n    # Past end\n    left, right = split_text(text, 10)\n    assert (left, right) == (\"Test\", \"\")\n\n\ndef test_split_text_single_cell_optimization():\n    \"\"\"Test that single-cell-width text takes fast path.\"\"\"\n    # This text contains only ASCII characters (single cell each)\n    text = \"Simple\"\n    left, right = split_text(text, 3)\n    assert left == \"Sim\"\n    assert right == \"ple\"\n\n\ndef test_split_text_all_positions_single_cell():\n    \"\"\"Test splitting at all positions in single-cell text.\"\"\"\n    text = \"ABC\"\n    for pos in range(0, len(text) + 2):\n        left, right = split_text(text, pos)\n        assert left + right == text\n        assert len(left) == min(pos, len(text))",
+        "status": "rejected"
+      },
+      {
+        "candidate_id": "c8",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\nfrom rich.style import Style\n\n\ndef test_segment_split_cells_various_widths():\n    \"\"\"Test split_cells with various text widths.\"\"\"\n    segment = Segment(\"Test\")\n    \n    # Test at various positions\n    positions = [0, 1, 2, 4, 10]\n    for pos in positions:\n        left, right = segment.split_cells(pos)\n        # Left text length should be <= pos, right text should complete the string\n        assert len(left.text) + len(right.text) >= len(segment.text) or pos > len(segment.text)\n\n\ndef test_segment_split_cells_preserves_style():\n    \"\"\"Test that split_cells preserves style in both segments.\"\"\"\n    style = Style(bold=True, italic=True)\n    segment = Segment(\"Hello\", style)\n    \n    left, right = segment.split_cells(0)\n    assert left.style == style\n    assert right.style == style\n    \n    left, right = segment.split_cells(2)\n    assert left.style == style\n    assert right.style == style\n\n\ndef test_segment_split_cells_empty_text():\n    \"\"\"Test split_cells on empty segment.\"\"\"\n    segment = Segment(\"\")\n    left, right = segment.split_cells(0)\n    assert left.text == \"\"\n    assert right.text == \"\"",
+        "status": "trusted"
+      },
+      {
+        "candidate_id": "c9",
+        "detail": "cleared every rung of the acceptance ladder",
+        "rejected_at": null,
+        "source": "import pytest\nfrom rich.segment import Segment\n\n\ndef test_segment_split_cells_invalid_negative_cut():\n    \"\"\"Test that Segment.split_cells rejects negative cut values.\"\"\"\n    segment = Segment(\"Hello\")\n    \n    with pytest.raises(AssertionError):\n        segment.split_cells(-1)",
+        "status": "trusted"
+      }
+    ],
+    "divergences": [
+      {
+        "candidate_id": "c9",
+        "nodeids": [
+          ".skeptic-advtests/test_c9.py::test_segment_split_cells_invalid_negative_cut"
+        ]
+      }
+    ],
+    "model": "claude-haiku-4-5",
+    "n_candidates": 8,
+    "trusted": [
+      "c4",
+      "c8",
+      "c9"
+    ]
+  },
+  "status": "completed",
+  "yield": {
+    "generated": 9,
+    "generation": 2,
+    "gold_prime": 0,
+    "import_screen": 0,
+    "n_candidates": 8,
+    "reference": 0,
+    "seeded_green": 0,
+    "target_coverage": 4
+  }
+}

@@ -1,11 +1,19 @@
+import os
+
 import pytest
 
-from skeptic.sandbox import docker_available
+from skeptic.sandbox import docker_diagnosis
 
 
 def pytest_collection_modifyitems(config, items):
-    if docker_available():
+    diagnosis = docker_diagnosis()
+    if diagnosis.state == "ok":
         return
+    if os.environ.get("SKEPTIC_REQUIRE_DOCKER") == "1":
+        raise pytest.UsageError(
+            "Docker is required for this test run but unavailable "
+            f"({diagnosis.state}: {diagnosis.detail})"
+        )
     skip = pytest.mark.skip(reason="Docker daemon not available")
     for item in items:
         if "docker" in item.keywords:

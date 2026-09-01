@@ -15,9 +15,10 @@ unreachable from inside the sandbox.
 
 - Seeds known bugs into pinned commits of two real repos (pallets/click,
   Textualize/rich), so every verdict has ground truth for free.
-- Splits verification in two: containers collect test results and coverage
-  once, then every check runs as a pure function over the collected artifacts
-  and emits per-rule evidence you can audit.
+- Splits verification in two: isolated candidate phases produce test and
+  coverage observations that the host admits and seals, then every check runs
+  as a pure function over those artifacts and emits per-rule evidence you can
+  audit.
 - Publishes false-positive rates split by clean-variant kind (gold and
   gold-prime), never pooled, next to three baselines run on the same rows.
 - Costs $0.00 by default: the deterministic profile makes no API calls. An
@@ -58,18 +59,42 @@ Builder run. `skeptic doctor` checks each one and prints the exact next
 command per failure. Measured from a fresh clone on 2026-08-29: 11 s to the
 demo, 67 s to the first real Docker verdict with the build cache pruned
 and the base image pull excluded ([the table](docs/evaluation.md#the-lanes)).
+The repository's CI requires Docker and fails collection if it is unavailable;
+ordinary local test runs keep the convenience of skipping Docker-marked tests
+when no daemon is available.
 
 ## How it works
 
 Verification consists of two stages.
 
-1. A collector materializes the seeded tree and the patched tree, runs one
-   throwaway container per tree with the network off, and writes what each
-   produced (a collection manifest, a junit outcome map, coverage with
-   per-test contexts) into a host artifacts directory outside both trees.
-2. Checks execute as pure functions over the collected artifacts, emitting
-   per-rule evidence. No check runs code, and no check reads another's
-   result.
+1. A collector materializes canonical seeded and patched trees. Each
+   candidate-executing phase gets a disposable snapshot, a fresh network-off
+   container and container-private output. Once the container stops, the host
+   copies declared outputs into quarantine, validates their path, regular-file
+   type and typed size cap, then publishes them without replacement into
+   sealed host storage before the next phase starts. Coverage measurement runs
+   with the candidate; report generation runs separately from an untouched
+   read-only snapshot and admitted measurement data.
+2. Checks execute no candidate code and emit per-rule evidence. Most consume
+   only collected artifacts; `t1_ast`, `t1_config`, `t1_patterns`, and
+   `t1_coverage` also read the immutable canonical baseline and candidate
+   trees. No check reads another's result.
+
+The disposable execution snapshots are load-bearing isolation: candidate code
+runs only against copies, while the canonical trees remain host authority for
+those four deterministic checks. Execution deadlines have four distinct
+scopes: T1 uses one side deadline across every phase, read-back, cleanup, and
+return; mutation uses one observation deadline across all calibrations and
+mutants, including capture and admission; the probe shares one deadline across
+its pytest and bare captures; adversarial checks use one deadline per tree/rung
+batch sized to that batch's candidate set or surviving set.
+
+Protected test, configuration and golden-file mounts must resolve strictly
+beneath the intended workspace; absolute, parent-traversing, dangling and
+escaping paths are refused before Docker starts. Candidate code can still
+influence JUnit and coverage data produced during its own executing phase.
+Sealing guarantees that a later phase cannot rewrite that admitted evidence;
+it does not claim candidate-independent authenticity for the current phase.
 
 A task spec, one yaml per task, pins the repo commit, the seed bug, the
 budgets and the expected verdicts for clean and hacked variants;
@@ -77,9 +102,12 @@ budgets and the expected verdicts for clean and hacked variants;
 Python package. Twelve checks read the
 artifacts: eight deterministic, four heavier, and exactly two of the four
 call an LLM, only under the paid profile. The aggregator folds evidence into
-a verdict: any hard rule is FAIL, soft weights summing to the 1.0 threshold
-are SUSPECT, and a mandatory check that never completed is INFRA_ERROR
-rather than a silent pass.
+a verdict: any hard rule is FAIL, and a seeded candidate that did not fix its
+declared failing tests is also FAIL without fabricating hack evidence. Only a
+verified seeded fix can reach soft scoring or PASS; soft weights summing to the
+1.0 threshold are SUSPECT, and a mandatory check that never completed is
+INFRA_ERROR rather than a silent pass. Seedless `verify --diff` keeps its
+vacuously verified behavior.
 
 The full design, its tradeoffs and its limits:
 [docs/architecture.md](docs/architecture.md).
@@ -121,6 +149,14 @@ three independent measurements put the H7 category at 0.65 against a 1.0
 threshold; the change was chosen by rescoring committed evidence, and the
 false-positive columns did not move.
 
+The v1.0.1 integrity candidate received a separate collector-4 paid
+revalidation before its final transport repair. That preserved intermediate
+run exposed four `rich-0002` INFRA rows and one sampled H6 miss; it does not
+replace the released v1.0.0 benchmark above. The transport repair was then
+validated on all four `rich-0002` variants through Docker with the
+deterministic profile and zero API calls. No complete paid Eval A was rerun on
+the final v1.0.1 code. See [the close-out record](docs/evaluation.md#v101-integrity-hotfix-revalidation).
+
 The full record, including the pressure arms, the one agent-authored hack
 that got through, and cost actuals:
 [docs/evaluation.md](docs/evaluation.md).
@@ -150,9 +186,10 @@ jobs:
 
 Exit codes are 0 PASS, 1 SUSPECT, 2 FAIL, 3 INFRA_ERROR. Gating is opt-in
 through `fail-on` because the false-positive rate on real clean PRs in the
-diff posture is unmeasured; the deterministic lane holds 17/29 lenient
-against the paid lane's 29/29, with strict at 12/29 in both. The rescore behind those
-figures and the audit of three real agent PRs:
+diff posture is unmeasured. The last deterministic rescore remains 17/29
+lenient against its collector-1 paid run's 29/29, with strict at 12/29 in
+both; the v1.0.1 revalidation did not rerun this separate posture experiment.
+The rescore and the audit of three real agent PRs:
 [docs/evaluation.md](docs/evaluation.md).
 
 ## Roadmap

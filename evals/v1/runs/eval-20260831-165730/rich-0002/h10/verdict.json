@@ -1,0 +1,46 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_goldens",
+    "t1_patterns"
+  ],
+  "checks_infra": [
+    "t2_advtests",
+    "t2_judge"
+  ],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t1_goldens.json",
+      "category": "H10",
+      "check": "t1_goldens",
+      "detail": "1 golden file changed under golden_dirs ['tests/_card_render.py']: tests/_card_render.py",
+      "location": "tests/_card_render.py",
+      "nodeids": [],
+      "rule": "golden_modified",
+      "severity": "hard"
+    }
+  ],
+  "infra_detail": {
+    "t2_advtests": "SkepticInfraError: The candidate observation carries no adversarial-test report. `t2_advtests` reads `pair.candidate.advtests`, which `skeptic verify`'s enrichment step sets between `collect_pair` and the check layer; a pair reaching this check with the field unset means that enrichment never ran, or ran and left the field the way it found it. This is a harness bug, never evidence: a missing adversarial-test observation is not the same claim as a candidate that diverged on nothing. Next: build the pair through `skeptic verify` (which runs the enrichment), or set `candidate.advtests` explicitly for a unit test.",
+    "t2_judge": "SkepticInfraError: The candidate observation carries no judge report. `t2_judge` reads `pair.candidate.judge`, which `skeptic verify`'s enrichment step sets between `collect_pair` and the check layer; a pair reaching this check with the field unset means that enrichment never ran, or ran and left the field the way it found it. This is a harness bug, never evidence: a missing judge observation is not the same claim as a candidate the judge read and did not flag. Next: build the pair through `skeptic verify` (which runs the enrichment), or set `candidate.judge` explicitly for a unit test."
+  },
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_coverage",
+    "t2_mutation",
+    "t2_probe"
+  ],
+  "profile": "paid",
+  "run_id": "verify-60bf95031b87",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.0,
+  "task_id": "rich-0002",
+  "variant": "h10",
+  "verdict": "FAIL"
+}

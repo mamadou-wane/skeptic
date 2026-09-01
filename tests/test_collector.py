@@ -1,10 +1,10 @@
-"""The collector, faked at the subprocess boundary.
+"""The collector, with T1 faked at the private-capture boundary.
 
-Every fast test replaces `sandbox._run` with a function that writes the
-artifact files the unit script would have written and hands back an
-`ExecResult`. The real `RunContainer` and the real `docker_run_args` still
-run, so mount policy, argv order, and the artifacts mount are exercised
-rather than stubbed; only the daemon is absent.
+Fast T1 tests replace `RunContainer.run_capture` with a phase-aware transport
+fake that writes the private files Docker would copy and hands back an
+`ExecResult`. `observe_variant` still constructs the real fresh containers,
+read-only input declarations, quarantine paths, and sealed artifacts. The
+real Docker regressions below exercise the complete transport and mount argv.
 """
 import json
 import re
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from skeptic import collector, mutation
 from skeptic.candidate import CandidateReport, extract_candidate, snapshot
 from skeptic.checks.observations import AdvCandidate, VariantObservations
 from skeptic.collector import (
@@ -36,12 +37,13 @@ from skeptic.collector import (
     observe_advtests,
     observe_variant,
     read_coverage,
+    read_variant,
     render_coverage_rc,
 )
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ImageRef
-from skeptic.sandbox import ExecResult
-from skeptic.spec import TaskSpec
+from skeptic.sandbox import INSTALL_FAILURE_EXIT, ExecResult, docker_run_args
+from skeptic.spec import ConsumerProbeSpec, ProbeEntrypoint, TaskSpec
 from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
 from tests.helpers import (
     BUGGY,
@@ -93,12 +95,6 @@ def _junit(outcomes: dict[str, str]) -> str:
     )
 
 
-def _artifacts_of(argv: list[str]) -> Path:
-    """The host side of the /artifacts mount, read back out of the docker argv."""
-    mount = next(a for a in argv if a.endswith(":/artifacts:rw"))
-    return Path(mount.split(":")[0])
-
-
 def _coverage_json(files: dict[str, dict]) -> str:
     """The shape `coverage json --show-contexts` writes, one entry per file."""
     return json.dumps({"meta": {"version": "7.15.2", "show_contexts": True},
@@ -128,39 +124,56 @@ def _write_coverage_data(path: Path, contexts: tuple[str, ...]) -> None:
 
 
 def fake_unit(monkeypatch, *, collected=(), collect_exit=0, suite_exit=0,
-              outcomes=None, install_ok=True, timed_out=False, covered=None):
-    """Answer one `docker run` by writing what the unit script writes."""
-    calls: list[list[str]] = []
+              outcomes=None, install_succeeds=True, timed_out=False, covered=None):
+    """Answer each private phase capture at the transport boundary."""
+    calls: list[dict[str, object]] = []
 
-    def fake_run(cmd, cwd, timeout_s, env):
-        calls.append(cmd)
+    def fake_capture(
+        self, script, timeout_s, quarantine, env=None, *, deadline=None
+    ):
+        for subpath in self.ro_subpaths:
+            source = self.workspace / subpath
+            if not source.exists():
+                raise SkepticInfraError(
+                    f"read-only mount source {source} does not exist")
+        calls.append({
+            "script": script,
+            "timeout_s": timeout_s,
+            "env": env,
+            "workspace": self.workspace,
+            "workspace_mode": getattr(self, "workspace_mode", "rw"),
+            "install_overlay": getattr(self, "install_overlay", True),
+            "extra_mounts": self.extra_mounts,
+            "input_mounts": self.input_mounts,
+            "ro_subpaths": self.ro_subpaths,
+            "deadline": deadline,
+        })
+        quarantine.mkdir(mode=0o700)
         if timed_out:
             return ExecResult(-1, "", f"command timed out after {timeout_s}s", 1000)
-        if not install_ok:
-            return ExecResult(1, "", "pip: could not install /workspace offline", 900)
-        art = _artifacts_of(cmd)
-        (art / "install.ok").write_text("ok\n")
-        manifest = "".join(f"{n}\n" for n in collected)
-        (art / "collect.out").write_text(f"{manifest}\n{len(collected)} tests collected\n")
-        (art / "collect.err").write_text("")
-        (art / "collect.exit").write_text(f"{collect_exit}\n")
-        (art / "suite.out").write_text("1 passed\n")
-        (art / "suite.err").write_text("")
-        (art / "suite.exit").write_text(f"{suite_exit}\n")
-        (art / "junit.xml").write_text(_junit(outcomes or {}))
-        _write_coverage_data(art / ".coverage", ("", "test_x.test_a"))
-        # The report step is in the script only when the patch carries a
-        # measurable file, so the fake writes its files only then, the way the
-        # unit does.
-        if "coverage json" in cmd[-1]:
-            (art / "coverage.json").write_text(
+        if not install_succeeds:
+            return ExecResult(
+                INSTALL_FAILURE_EXIT, "",
+                "pip: could not install /workspace offline", 900)
+        if "--collect-only" in script:
+            manifest = "".join(f"{nodeid}\n" for nodeid in collected)
+            stdout = f"{manifest}\n{len(collected)} tests collected\n"
+            return ExecResult(collect_exit, stdout, "", 400)
+        if "coverage run" in script:
+            (quarantine / "junit.xml").write_text(_junit(outcomes or {}))
+            _write_coverage_data(
+                quarantine / ".coverage", ("", "test_x.test_a"))
+            return ExecResult(suite_exit, "1 passed\n", "", 600)
+        if "coverage json" in script:
+            (quarantine / "coverage.json").write_text(
                 _coverage_json(COVERED if covered is None else covered))
-            (art / "coverage.out").write_text("Wrote JSON report to /artifacts/coverage.json\n")
-            (art / "coverage.err").write_text("")
-            (art / "coverage.exit").write_text("0\n")
-        return ExecResult(0, "", "", 1200)
+            return ExecResult(
+                0, "Wrote JSON report to /tmp/skeptic-artifacts/coverage.json\n",
+                "", 200,
+            )
+        raise AssertionError(f"unexpected observation phase: {script}")
 
-    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
     return calls
 
 
@@ -183,7 +196,6 @@ def _stale_artifacts(root: Path, side: str) -> Path:
     """A complete, self-consistent artifact set from an earlier run."""
     stale = root / "artifacts" / side
     stale.mkdir(parents=True)
-    (stale / "install.ok").write_text("ok\n")
     (stale / "collect.out").write_text(f"{NODE_A}\n\n1 test collected\n")
     (stale / "collect.exit").write_text("0\n")
     (stale / "suite.out").write_text("1 passed\n")
@@ -191,6 +203,19 @@ def _stale_artifacts(root: Path, side: str) -> Path:
     (stale / "junit.xml").write_text(_junit({NODE_A: "passed"}))
     (stale / "ran-before.txt").write_text("run 1\n")
     return stale
+
+
+def _complete_observation_artifacts(root: Path) -> Path:
+    """One valid flat T1 artifact set for safe-reader boundary tests."""
+    artifacts = root / "artifacts"
+    artifacts.mkdir(parents=True)
+    (artifacts / "collect.out").write_text(f"{NODE_A}\n\n1 test collected\n")
+    (artifacts / "collect.exit").write_text("0\n")
+    (artifacts / "suite.exit").write_text("0\n")
+    (artifacts / "junit.xml").write_text(_junit({NODE_A: "passed"}))
+    (artifacts / "coverage.json").write_text(_coverage_json(COVERED))
+    _write_coverage_data(artifacts / ".coverage", ("", "test_x.test_a"))
+    return artifacts
 
 
 def _fake_observe(spec, image_tag, tree, artifacts, side, changed_files):
@@ -293,13 +318,42 @@ def test_observe_variant_writes_artifacts_outside_the_tree(tmp_path, monkeypatch
     assert (obs.artifacts / "junit.xml").is_file()
     assert (obs.artifacts / "collect.out").is_file()
     assert obs.tree.resolve() not in obs.artifacts.resolve().parents
-    # Every path the unit script writes to is under the mount, never the tree.
-    script = calls[0][-1]
-    targets = re.findall(r"[12]?>\s*(\S+)", script) + re.findall(r"--junitxml=(\S+)", script)
-    assert len(targets) >= 5
-    assert all(t.startswith("/artifacts/") for t in targets)
+    # Three fresh captures, with no writable host output mount. The only
+    # container-authored file named by argv is suite-local JUnit.
+    assert len(calls) == 3
+    assert all(call["extra_mounts"] == () for call in calls)
+    assert not list(obs.artifacts.glob("*.install.ok"))
+    suite_script = calls[1]["script"]
+    assert "--junitxml=/tmp/skeptic-artifacts/junit.xml" in suite_script
+    assert all("/artifacts" not in str(call["script"]) for call in calls)
+    assert all("dropped-ro-subpaths.txt" not in str(call) for call in calls)
     assert not list(obs.tree.rglob("*junit*"))
     assert not list(obs.tree.rglob(".coverage*"))
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    ["collect.out", "junit.xml", "coverage.json", ".coverage"],
+    ids=["collect", "junit", "coverage-json", "coverage-data"],
+)
+def test_symlinked_observation_artifact_is_refused(tmp_path, relative_path):
+    """Every T1 parse crosses the same no-follow admitted-reader boundary.
+
+    The outside file retains the original, valid bytes. Replacing a direct
+    path read with a symlink would therefore be invisible to every parser and
+    is refused specifically because the artifact is no longer a sealed
+    regular file beneath the declared root.
+    """
+    spec = make_task_spec()
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = _complete_observation_artifacts(tmp_path)
+    artifact = artifacts / relative_path
+    outside = tmp_path / f"outside-{relative_path.removeprefix('.')}"
+    artifact.rename(outside)
+    artifact.symlink_to(outside)
+
+    with pytest.raises(SkepticInfraError, match="symbolic link"):
+        read_variant(spec, tree, artifacts, "candidate", CHANGED)
 
 
 def test_observe_variant_maps_exit_5_to_an_empty_observation_on_the_candidate_side(
@@ -352,12 +406,14 @@ def test_observe_variant_passes_continue_on_collection_errors_to_both_invocation
     calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
     _observed(spec, tmp_path, "candidate")
 
-    script = calls[0][-1]
-    assert script.count("--continue-on-collection-errors") == 2
-    collect_line = next(ln for ln in script.splitlines() if "--collect-only" in ln)
+    collect_script = calls[0]["script"]
+    suite_script = calls[1]["script"]
+    assert collect_script.count("--continue-on-collection-errors") == 1
+    assert suite_script.count("--continue-on-collection-errors") == 1
     # One quiet flag exactly. `python -m pytest -q --collect-only -q` is
     # verbosity -2, which prints `path: count` lines instead of nodeids.
-    assert [t for t in shlex.split(collect_line.split(">")[0]) if t in ("-q", "--quiet")] == ["-q"]
+    assert [token for token in shlex.split(collect_script)
+            if token in ("-q", "--quiet")] == ["-q"]
     # `--verbosity=N` sets the same counter and escapes a token-equality
     # strip; its separated form would leave the value behind as a path.
     tail = ["--collect-only", "-q", "--continue-on-collection-errors"]
@@ -383,7 +439,7 @@ def test_observe_variant_records_a_dropped_candidate_ro_subpath_on_the_observati
 
     assert obs.dropped_ro_subpaths == ("tests",)
     assert (obs.artifacts / "dropped-ro-subpaths.txt").read_text().split() == ["tests"]
-    assert "/workspace/tests:ro" not in " ".join(calls[0])
+    assert "tests" not in calls[0]["ro_subpaths"]
 
 
 def test_observe_variant_distinguishes_a_failed_install_from_a_failed_step(
@@ -391,13 +447,13 @@ def test_observe_variant_distinguishes_a_failed_install_from_a_failed_step(
 ):
     """The separability invariant at the point it is hardest to hold.
 
-    A failed overlay install leaves no `install.ok` and no step files at all,
-    so the message has to name the install and neither pytest step. Past the
+    A failed overlay install returns the reserved host exit before pytest, so
+    the message has to name the install and neither pytest step. Past the
     brief's 12 names: the install, timeout, and unreadable-exit branches were
     the ones the named tests left uncovered.
     """
     spec = make_task_spec()
-    fake_unit(monkeypatch, install_ok=False)
+    fake_unit(monkeypatch, install_succeeds=False)
     # An earlier run's artifacts are on disk and every one of them is
     # consistent. Reading them back would report run 1 as run 2's observation.
     _stale_artifacts(tmp_path / "install", "candidate")
@@ -410,8 +466,8 @@ def test_observe_variant_distinguishes_a_failed_install_from_a_failed_step(
     with pytest.raises(SkepticInfraError, match="timed out") as exc:
         _observed(spec, tmp_path / "timeout", "candidate")
     assert "environment.timeout_s" in str(exc.value)
-    # Which step ate the budget, rather than the harness quoting itself back.
-    assert "No step recorded an exit code" in str(exc.value)
+    assert "collect observation phase" in str(exc.value)
+    assert "collect.out" in str(exc.value) and "collect.err" in str(exc.value)
     assert "stderr tail" not in str(exc.value)
 
     # A partial exit file is the same family: the container stopped while
@@ -419,6 +475,475 @@ def test_observe_variant_distinguishes_a_failed_install_from_a_failed_step(
     fake_unit(monkeypatch, collect_exit="")
     with pytest.raises(SkepticInfraError, match="where an exit code belongs"):
         _observed(spec, tmp_path / "truncated", "candidate")
+
+
+def test_spoofed_install_marker_cannot_authorize_a_failed_install(
+    tmp_path, monkeypatch
+):
+    spec = make_task_spec()
+    calls = []
+
+    def spoofed_failure(
+        self, script, timeout_s, quarantine, env=None, *, deadline=None
+    ):
+        calls.append(script)
+        quarantine.mkdir(mode=0o700)
+        (quarantine / "install.ok").write_text("candidate-spoofed\n")
+        return ExecResult(
+            125, "build hook stdout", "forced editable-install failure", 10)
+
+    monkeypatch.setattr(
+        "skeptic.sandbox.RunContainer.run_capture", spoofed_failure)
+
+    with pytest.raises(SkepticInfraError, match="overlay install failed"):
+        _observed(spec, tmp_path, "candidate")
+
+    artifacts = tmp_path / "artifacts" / "candidate"
+    assert calls == [shlex.join(_collect_argv(spec.environment.test_cmd))]
+    assert not list(artifacts.glob("*.install.ok"))
+
+
+def test_observe_variant_uses_one_monotonic_deadline_across_all_phases(
+    tmp_path, monkeypatch
+):
+    """Each fresh container receives only the budget earlier phases left."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
+    readings = iter((
+        0.0,
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+        10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+        20.0, 21.0, 22.0, 23.0, 24.0, 25.0,
+        26.0, 27.0, 28.0, 29.0, 29.5,
+    ))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+
+    _observed(spec, tmp_path, "candidate")
+
+    assert [call["timeout_s"] for call in calls] == [29, 20, 10]
+    assert calls[0]["deadline"] is not None
+    assert all(call["deadline"] is calls[0]["deadline"] for call in calls)
+
+
+def test_observe_variant_refuses_fractional_remainder_before_capture(
+    tmp_path, monkeypatch
+):
+    """A positive sub-second remainder is not a new one-second T1 phase."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    calls = []
+
+    def capture_started(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        calls.append((script, timeout_s, deadline))
+        raise SkepticInfraError("capture started with a fractional remainder")
+
+    readings = iter((0.0, 29.5))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr(
+        "skeptic.sandbox.RunContainer.run_capture", capture_started)
+
+    with pytest.raises(SkepticInfraError) as exc:
+        _observed(spec, tmp_path, "candidate")
+
+    assert "whole second" in str(exc.value)
+    assert calls == []
+
+
+def test_observe_variant_does_not_start_copy_after_side_deadline(
+    tmp_path, monkeypatch
+):
+    """T1 passes its side deadline into capture before Docker copy."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append(cmd[:2])
+        if cmd[:2] == ["docker", "cp"]:
+            raise SkepticInfraError("copy started after the T1 deadline")
+        return ExecResult(0, f"{NODE_A}\n\n1 test collected\n", "", 1)
+
+    readings = iter((0.0, 1.0, 2.0, 30.5))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError) as exc:
+        _observed(spec, tmp_path, "candidate")
+
+    assert "shared host deadline" in str(exc.value)
+    assert ["docker", "cp"] not in calls
+
+
+def test_observe_variant_does_not_admit_after_side_deadline(
+    tmp_path, monkeypatch
+):
+    """A copy completed before expiry is still not authority after cleanup."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    admitted = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        return ExecResult(0, f"{NODE_A}\n\n1 test collected\n", "", 1)
+
+    def admission_started(*args, **kwargs):
+        admitted.append((args, kwargs))
+        raise SkepticInfraError("admission started after the T1 deadline")
+
+    readings = iter((0.0, 1.0, 2.0, 3.0, 30.5))
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    monkeypatch.setattr("skeptic.collector.admit_artifacts", admission_started)
+
+    with pytest.raises(SkepticInfraError) as exc:
+        _observed(spec, tmp_path, "candidate")
+
+    assert "shared host deadline" in str(exc.value)
+    assert admitted == []
+
+
+@pytest.mark.parametrize(
+    ("tail_step", "expected_read_backs"),
+    [
+        ("dropped-publication", 0),
+        ("read-back", 1),
+        ("cleanup", 1),
+    ],
+)
+def test_observe_variant_refuses_tail_work_that_crosses_side_deadline(
+    tmp_path, monkeypatch, tail_step, expected_read_backs
+):
+    """Final publication, read-back, and cleanup remain inside T1's deadline."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "environment": spec.environment.model_copy(update={"timeout_s": 30})})
+    fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
+    now = [0.0]
+    read_backs = []
+    dropped_publications = []
+    quarantine_root = tmp_path / "artifacts" / ".candidate-quarantine"
+    real_publish = collector.publish_artifact_bytes
+    real_read = collector.read_variant
+    real_rmtree = collector.shutil.rmtree
+
+    def publish_and_advance(root, relative_path, data, cap):
+        result = real_publish(root, relative_path, data, cap)
+        if relative_path == collector._DROPPED:
+            dropped_publications.append(relative_path)
+            if tail_step == "dropped-publication":
+                now[0] = 30.5
+        return result
+
+    def read_and_advance(*args, **kwargs):
+        result = real_read(*args, **kwargs)
+        read_backs.append(result)
+        if tail_step == "read-back":
+            now[0] = 30.5
+        return result
+
+    def cleanup_and_advance(path, *args, **kwargs):
+        result = real_rmtree(path, *args, **kwargs)
+        if Path(path) == quarantine_root and tail_step == "cleanup":
+            now[0] = 30.5
+        return result
+
+    monkeypatch.setattr("skeptic.sandbox.time.monotonic", lambda: now[0])
+    monkeypatch.setattr(collector, "publish_artifact_bytes", publish_and_advance)
+    monkeypatch.setattr(collector, "read_variant", read_and_advance)
+    monkeypatch.setattr(collector.shutil, "rmtree", cleanup_and_advance)
+
+    with pytest.raises(SkepticInfraError, match="shared host deadline"):
+        _observed(spec, tmp_path, "candidate", changed_files=())
+
+    assert dropped_publications == ["dropped-ro-subpaths.txt"]
+    assert len(read_backs) == expected_read_backs
+    assert not quarantine_root.exists()
+    assert not list((tmp_path / "artifacts").glob(".candidate-*-tree"))
+
+
+def test_mutation_uses_one_deadline_and_one_private_capture_per_execution(
+    tmp_path, monkeypatch
+):
+    """One calibration and each mutant consume the same total host budget."""
+    tree = _tree(tmp_path, with_tests=True)
+    (tree / "src").mkdir()
+    (tree / "src" / "a.py").write_text("x = 1\n")
+    mutants = [
+        mutation.Mutant(
+            mutant_id="111111111111", path="src/a.py", line=1,
+            operator="off_by_one", function="", population="changed",
+            mutated_source="x = 2\n", valid=True),
+        mutation.Mutant(
+            mutant_id="222222222222", path="src/a.py", line=1,
+            operator="off_by_one", function="", population="changed",
+            mutated_source="x = 3\n", valid=True),
+    ]
+    selection = (NODE_A,)
+    calls = []
+
+    def fake_capture(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        calls.append({
+            "timeout_s": timeout_s,
+            "deadline": deadline,
+            "quarantine": quarantine,
+            "input_mounts": self.input_mounts,
+            "workspace_overlays": self.workspace_overlays,
+            "extra_mounts": self.extra_mounts,
+            "env": env,
+        })
+        quarantine.mkdir(mode=0o700)
+        if self.workspace_overlays:
+            (quarantine / "dur_ms").write_text("42\n")
+            mutant_id = self.workspace_overlays[0][0].parent.name
+            code = 1 if mutant_id == "111111111111" else 0
+        else:
+            (quarantine / "calibration_ms").write_text("1000\n")
+            code = 0
+        return ExecResult(code, "phase out", "phase err", 10)
+
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
+    report = collector.observe_mutation(
+        make_task_spec(), "img", tree, tmp_path / "artifacts", mutants,
+        {mutant.mutant_id: selection for mutant in mutants},
+    )
+
+    budget = collector._mutation_host_budget(2, 1)
+    assert [call["timeout_s"] for call in calls] == [budget, budget, budget]
+    assert calls[0]["deadline"] is not None
+    assert all(call["deadline"] is calls[0]["deadline"] for call in calls)
+    assert len({call["quarantine"] for call in calls}) == 3
+    assert calls[0]["workspace_overlays"] == ()
+    assert all(len(call["workspace_overlays"]) == 1 for call in calls[1:])
+    assert all(call["extra_mounts"] == () for call in calls)
+    assert all(call["env"] == {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
+               for call in calls)
+    assert [record.status for record in report.records] == ["killed", "survived"]
+
+
+def test_probe_admits_each_private_side_before_starting_the_next(
+    tmp_path, monkeypatch
+):
+    """Two fresh captures share inputs, never outputs or writable mounts."""
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.parse_range", args=["1-5"])
+            ])
+        })
+    })
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = tmp_path / "artifacts"
+    calls = []
+
+    def reject_shared_run(self, script, timeout_s, env=None):
+        raise AssertionError("consumer probe used one shared writable run")
+
+    def fake_capture(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        calls.append({
+            "script": script,
+            "timeout_s": timeout_s,
+            "quarantine": quarantine,
+            "input_mounts": self.input_mounts,
+            "input_names": tuple(
+                path.name for path in self.input_mounts[0][0].iterdir()),
+            "extra_mounts": self.extra_mounts,
+            "env": env,
+            "deadline": deadline,
+        })
+        quarantine.mkdir(mode=0o700)
+        if len(calls) == 1:
+            name, outcome = "probe-pytest.json", "value:(1, 5)"
+        else:
+            assert {
+                path.name: path.read_text() for path in artifacts.iterdir()
+            } == {
+                "probe-pytest.json": json.dumps([{
+                    "call": "minirepo.parse_range", "outcome": "value:(1, 5)"}]),
+                "probe-pytest.out": "probe-pytest.json out",
+                "probe-pytest.err": "probe-pytest.json err",
+                "probe-pytest.exit": "0\n",
+            }
+            name, outcome = "probe-bare.json", "value:(1, 4)"
+        (quarantine / name).write_text(json.dumps([{
+            "call": "minirepo.parse_range", "outcome": outcome}]))
+        return ExecResult(0, f"{name} out", f"{name} err", 10)
+
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run", reject_shared_run)
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
+
+    report = collector.observe_probe(spec, "img", tree, artifacts)
+
+    assert len(calls) == 2
+    assert calls[0]["script"] == (
+        "python -m pytest -q /opt/skeptic-observation-inputs/probe_test.py")
+    assert calls[1]["script"] == (
+        "unset PYTEST_CURRENT_TEST CI\n"
+        "for v in $(env | grep '^PYTEST_' | cut -d= -f1); do unset \"$v\"; done\n"
+        "python /opt/skeptic-observation-inputs/probe_driver.py "
+        "/tmp/skeptic-artifacts/probe-bare.json"
+    )
+    assert [call["timeout_s"] for call in calls] == [
+        spec.environment.timeout_s, spec.environment.timeout_s]
+    assert len({call["quarantine"] for call in calls}) == 2
+    assert all(call["extra_mounts"] == () for call in calls)
+    assert all(call["env"] == {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"}
+               for call in calls)
+    assert calls[0]["deadline"] is not None
+    assert calls[1]["deadline"] is calls[0]["deadline"]
+    assert calls[0]["input_mounts"] == calls[1]["input_mounts"]
+    assert len(calls[0]["input_mounts"]) == 1
+    input_root, target = calls[0]["input_mounts"][0]
+    assert target == collector._OBSERVATION_INPUTS
+    assert set(calls[0]["input_names"]) == {
+        "probe_driver.py", "probe_test.py", "probe_entrypoints.json"}
+    assert not input_root.exists()
+    assert report.calls[0].in_pytest == "value:(1, 5)"
+    assert report.calls[0].bare == "value:(1, 4)"
+
+
+def test_probe_removes_temporary_roots_after_first_side_failure(
+    tmp_path, monkeypatch
+):
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.parse_range", args=["1-5"])
+            ])
+        })
+    })
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = tmp_path / "artifacts"
+    input_root = tmp_path / ".artifacts-probe-inputs"
+    quarantine_root = tmp_path / ".artifacts-probe-quarantine"
+
+    def fail_first(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        quarantine.mkdir(mode=0o700)
+        (quarantine / "partial").write_text("first-side partial output")
+        raise RuntimeError("first-side capture failed")
+
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fail_first)
+
+    with pytest.raises(RuntimeError, match="first-side capture failed"):
+        collector.observe_probe(spec, "img", tree, artifacts)
+
+    assert not input_root.exists()
+    assert not quarantine_root.exists()
+    assert artifacts.is_dir()
+    assert list(artifacts.iterdir()) == []
+
+
+def test_probe_cleans_first_temporary_root_when_second_root_creation_fails(
+    tmp_path, monkeypatch
+):
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.parse_range", args=["1-5"])
+            ])
+        })
+    })
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = tmp_path / "artifacts"
+    input_root = tmp_path / ".artifacts-probe-inputs"
+    quarantine_root = tmp_path / ".artifacts-probe-quarantine"
+    real_mkdir = Path.mkdir
+
+    def fail_second_root(path, *args, **kwargs):
+        if path == quarantine_root:
+            raise OSError("second scratch root failed")
+        return real_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_second_root)
+
+    with pytest.raises(OSError, match="second scratch root failed"):
+        collector.observe_probe(spec, "img", tree, artifacts)
+
+    assert not input_root.exists()
+    assert not quarantine_root.exists()
+
+
+def test_probe_removes_temporary_roots_after_second_side_failure_without_unsealing_pytest(
+    tmp_path, monkeypatch
+):
+    spec = make_task_spec()
+    spec = spec.model_copy(update={
+        "verification": spec.verification.model_copy(update={
+            "consumer_probe": ConsumerProbeSpec(entrypoints=[
+                ProbeEntrypoint(call="minirepo.parse_range", args=["1-5"])
+            ])
+        })
+    })
+    tree = _tree(tmp_path, with_tests=True)
+    artifacts = tmp_path / "artifacts"
+    input_root = tmp_path / ".artifacts-probe-inputs"
+    quarantine_root = tmp_path / ".artifacts-probe-quarantine"
+    calls = 0
+    pytest_json = json.dumps([{
+        "call": "minirepo.parse_range", "outcome": "value:(1, 5)"}])
+
+    def fail_second(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        nonlocal calls
+        calls += 1
+        quarantine.mkdir(mode=0o700)
+        if calls == 1:
+            (quarantine / "probe-pytest.json").write_text(pytest_json)
+            return ExecResult(0, "pytest stdout", "pytest stderr", 10)
+        (quarantine / "partial").write_text("bare-side partial output")
+        raise RuntimeError("second-side capture failed")
+
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fail_second)
+
+    with pytest.raises(RuntimeError, match="second-side capture failed"):
+        collector.observe_probe(spec, "img", tree, artifacts)
+
+    assert calls == 2
+    assert not input_root.exists()
+    assert not quarantine_root.exists()
+    assert {path.name: path.read_text() for path in artifacts.iterdir()} == {
+        "probe-pytest.json": pytest_json,
+        "probe-pytest.out": "pytest stdout",
+        "probe-pytest.err": "pytest stderr",
+        "probe-pytest.exit": "0\n",
+    }
+
+
+def test_mutation_refuses_fractional_deadline_before_starting_capture(
+    tmp_path, monkeypatch
+):
+    """A positive fractional remainder is not a new one-second phase budget."""
+    tree = _tree(tmp_path, with_tests=True)
+    (tree / "src").mkdir()
+    (tree / "src" / "a.py").write_text("x = 1\n")
+    mutant = mutation.Mutant(
+        mutant_id="111111111111", path="src/a.py", line=1,
+        operator="off_by_one", function="", population="changed",
+        mutated_source="x = 2\n", valid=True)
+    budget = collector._mutation_host_budget(1, 1)
+    readings = iter((0.0, budget - 0.5, budget + 0.5))
+    calls = []
+
+    def fake_run(cmd, cwd, timeout_s, env):
+        calls.append((cmd, timeout_s))
+        return ExecResult(0, "", "", 1)
+
+    monkeypatch.setattr(
+        "skeptic.sandbox.time.monotonic", lambda: next(readings))
+    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+
+    with pytest.raises(SkepticInfraError, match="whole second"):
+        collector.observe_mutation(
+            make_task_spec(), "img", tree, tmp_path / "artifacts", [mutant],
+            {mutant.mutant_id: (NODE_A,)},
+        )
+
+    assert calls == []
 
 
 def test_coverage_test_cmd_refuses_a_non_pytest_test_cmd():
@@ -458,7 +983,7 @@ def test_render_coverage_rc_sets_dynamic_context_and_source_from_src_dirs():
 
 
 def test_render_coverage_rc_puts_the_data_file_under_artifacts(tmp_path, monkeypatch):
-    """The rc the collector actually writes, read back off the artifacts mount.
+    """The rc the collector seals and mounts read-only for measurement.
 
     `render_coverage_rc` takes the data file as an argument, so the claim in
     this test's name belongs to the caller: `observe_variant` writes the rc
@@ -470,13 +995,22 @@ def test_render_coverage_rc_puts_the_data_file_under_artifacts(tmp_path, monkeyp
     obs = _observed(spec, tmp_path, "candidate")
 
     rc = (obs.artifacts / "coveragerc").read_text()
-    assert "data_file = /artifacts/.coverage" in rc
+    assert "data_file = /tmp/skeptic-artifacts/.coverage" in rc
     assert not list(obs.tree.rglob("coveragerc"))
-    argv = calls[0]
-    assert "COVERAGE_RCFILE=/artifacts/coveragerc" in argv
+    assert calls[0]["env"] is None
+    assert calls[1]["env"] == {
+        "COVERAGE_RCFILE": "/opt/skeptic-observation-inputs/coveragerc"}
+    assert calls[1]["input_mounts"] == ((
+        obs.artifacts / "coveragerc",
+        "/opt/skeptic-observation-inputs/coveragerc",
+    ),)
+    assert calls[2]["env"] == {
+        "COVERAGE_RCFILE": "/opt/skeptic-observation-inputs/coveragerc",
+        "COVERAGE_FILE": "/opt/skeptic-observation-inputs/.coverage",
+    }
     # One mechanism: no --rcfile anywhere, so the pin governs the report as
     # well as the run.
-    assert "--rcfile" not in " ".join(argv)
+    assert all("--rcfile" not in str(call["script"]) for call in calls)
 
 
 def test_read_coverage_scopes_to_changed_files(tmp_path):
@@ -536,7 +1070,7 @@ def test_read_coverage_preserves_per_line_contexts(tmp_path):
 def test_observe_variant_instruments_the_suite_and_reports_on_the_changed_files(
     tmp_path, monkeypatch
 ):
-    """The wiring, past the brief's six names: one run, three steps, one report.
+    """The wiring: separate collect, suite measurement, and report captures.
 
     The named fast tests cover the three functions and the docker tests cover
     the container. This is the seam between them, and it is where a rewrite
@@ -548,17 +1082,17 @@ def test_observe_variant_instruments_the_suite_and_reports_on_the_changed_files(
                     changed_files=("src/click/mod.py", "src/click/notes.md",
                                    "tests/test_mod.py"))
 
-    script = calls[0][-1]
-    suite = next(ln for ln in script.splitlines() if "--junitxml" in ln)
+    assert len(calls) == 3
+    suite = calls[1]["script"]
     assert suite.startswith("python -m coverage run -m pytest ")
     # One suite run: the junit and the coverage data come from the same
     # command, so a candidate cannot be observed twice and differenced.
-    assert script.count("--junitxml") == 1
-    assert script.count("coverage run") == 1
+    assert suite.count("--junitxml") == 1
+    assert suite.count("coverage run") == 1
     # The report asks about the measurable files and no others: a golden or a
     # config file is not Python, and a test file is outside this spec's
     # src_dirs, so the rc would never have measured it.
-    report = next(ln for ln in script.splitlines() if "coverage json" in ln)
+    report = calls[2]["script"]
     assert "--include=src/click/mod.py " in report
     assert "notes.md" not in report and "tests/test_mod.py" not in report
     assert "--show-contexts" in report
@@ -567,6 +1101,22 @@ def test_observe_variant_instruments_the_suite_and_reports_on_the_changed_files(
     assert obs.coverage.statements["src/click/mod.py"] == (1, 4, 5)
     assert obs.coverage.executed["src/click/mod.py"] == (1, 4)
     assert obs.coverage.run_contexts == ("", "test_x.test_a")
+
+
+def test_observe_variant_reports_from_a_no_install_read_only_source_snapshot(
+    tmp_path, monkeypatch
+):
+    """Report execution cannot reuse the suite's writable candidate state."""
+    spec = make_task_spec()
+    calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
+
+    obs = _observed(spec, tmp_path, "candidate")
+
+    report = calls[2]
+    assert report["workspace"] != obs.tree
+    assert report["workspace_mode"] == "ro"
+    assert report["install_overlay"] is False
+    assert str(report["script"]).startswith("python -P -s -m coverage json ")
 
 
 def test_observe_variant_leaves_coverage_unobserved_when_no_report_lands(
@@ -591,7 +1141,8 @@ def test_observe_variant_leaves_coverage_unobserved_when_no_report_lands(
         calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
         obs = _observed(spec, tmp_path / f"case{case}", "candidate", changed_files=changed)
 
-        assert "coverage json" not in calls[0][-1]
+        assert len(calls) == 2
+        assert all("coverage json" not in str(call["script"]) for call in calls)
         assert obs.coverage is None
 
 
@@ -650,11 +1201,11 @@ def test_collect_pair_reuses_a_keyed_baseline(tmp_path, monkeypatch):
 
     first = collect_pair(spec, repo, candidate, tmp_path / "work1",
                          baseline_cache=baseline_cache)
-    assert len(calls) == 2          # one baseline container, one candidate container
+    assert len(calls) == 6          # three phases on each observed side
 
     second = collect_pair(spec, repo, candidate, tmp_path / "work2",
                           baseline_cache=baseline_cache)
-    assert len(calls) == 3          # only the candidate ran; the baseline was reused
+    assert len(calls) == 9          # only the candidate's three phases ran
     assert second.baseline.outcomes == first.baseline.outcomes
     assert second.baseline.tree == first.baseline.tree
 
@@ -666,61 +1217,72 @@ def test_baseline_key_includes_changed_files(tmp_path, monkeypatch):
     baseline_cache = tmp_path / "baseline-cache"
 
     collect_pair(spec, repo, candidate, tmp_path / "work1", baseline_cache=baseline_cache)
-    assert len(calls) == 2
+    assert len(calls) == 6
 
     different = CandidateReport(diff_path=candidate.diff_path, changed_files=["other.py"],
                                 out_of_scope=[], is_empty=False)
     collect_pair(spec, repo, different, tmp_path / "work2", baseline_cache=baseline_cache)
-    assert len(calls) == 4          # a different changed-files scope misses the baseline cache
+    assert len(calls) == 12         # a different scope observes both sides again
+
+
+def test_baseline_key_retires_release_and_unsafe_interim_collector_versions(
+        tmp_path, monkeypatch):
+    """Final observations cannot reuse release or unreleased interim caches."""
+    spec, _, _ = _minirepo(tmp_path)
+    changed_files = ["minirepo.py"]
+
+    final_version = collector.COLLECTOR_VERSION
+    final_key = collector._baseline_key(spec, changed_files)
+    prior_keys = set()
+    for prior_version in ("1", "2", "3"):
+        monkeypatch.setattr(collector, "COLLECTOR_VERSION", prior_version)
+        prior_keys.add(collector._baseline_key(spec, changed_files))
+
+    assert final_key not in prior_keys
+    assert final_version == "4"
 
 
 # The adversarial-test acceptance ladder (Task 6).
 
 
 def test_advtest_script_copies_candidates_in_and_removes_scratch_last():
-    script = _advtest_script(make_task_spec(), "seeded", ["c1", "c2"])
+    script = _advtest_script(make_task_spec(), "c1")
     lines = script.splitlines()
 
-    # The shared scratch dir is set up once, before either candidate's own
-    # guarded copy.
-    assert lines[2] == "mkdir -p .skeptic-advtests"
-    for cid in ("c1", "c2"):
-        copy_i = next(i for i, ln in enumerate(lines)
-                      if ln.strip().startswith("if cp") and f"test_{cid}.py" in ln)
-        run_i = next(i for i, ln in enumerate(lines)
-                    if ln.strip().startswith("timeout") and f"test_{cid}.py" in ln)
-        assert copy_i < run_i
-    # The scratch dir comes off last, after every candidate has run.
+    assert lines[0] == "mkdir -p .skeptic-advtests"
+    copy_i = next(i for i, ln in enumerate(lines) if ln.strip().startswith("if cp"))
+    run_i = next(i for i, ln in enumerate(lines) if ln.strip().startswith("timeout"))
+    assert "/opt/skeptic-observation-inputs/test_c1.py" in lines[copy_i]
+    assert copy_i < run_i
     assert lines[-1] == "rm -rf .skeptic-advtests"
     assert lines.count("rm -rf .skeptic-advtests") == 1
 
 
 def test_advtest_script_never_touches_paths_outside_scratch():
-    script = _advtest_script(make_task_spec(), "gold", ["c1"])
+    script = _advtest_script(make_task_spec(), "c1")
 
     for raw in script.splitlines():
         line = raw.strip()
         if line.startswith("if cp "):
             tokens = line.split()
             src, dest = tokens[2], tokens[3].rstrip(";")
-            assert src.startswith("/artifacts/")
+            assert src == "/opt/skeptic-observation-inputs/test_c1.py"
             assert dest.startswith(".skeptic-advtests/")
         elif line in ("else", "fi"):
             continue
         elif ">" in line:
-            # Every redirect target (`> x`, `2> y`) sits under /artifacts,
-            # whether it is the timeout-wrapped run or the guard's own
-            # `echo cp-failed > .../exit` line.
+            # Candidate execution writes only container-private output.
             targets = re.findall(r"[12]?>\s*(\S+)", line)
             assert targets, line
-            assert all(t.startswith("/artifacts/") for t in targets)
+            assert all(t.startswith("/tmp/skeptic-artifacts/") for t in targets)
         elif line.startswith(("mkdir -p", "rm -rf")):
             target = line.split(None, 2)[-1]
-            assert target.startswith("/artifacts/") or target == ".skeptic-advtests"
+            assert target == ".skeptic-advtests"
+    assert "/artifacts" not in script
 
 
 def test_advtest_script_guards_the_copy_in_with_a_cp_failed_sentinel():
-    script = _advtest_script(make_task_spec(), "gold", ["c1"])
+    script = _advtest_script(make_task_spec(), "c1")
     lines = script.splitlines()
 
     guard_i = next(i for i, ln in enumerate(lines) if ln.strip().startswith("if cp "))
@@ -728,39 +1290,32 @@ def test_advtest_script_guards_the_copy_in_with_a_cp_failed_sentinel():
     assert lines[guard_i + 1].strip().startswith("timeout")
     else_i = next(i for i, ln in enumerate(lines) if ln.strip() == "else")
     assert else_i > guard_i
-    assert lines[else_i + 1].strip() == f"echo {_ADV_CP_FAILED} > /artifacts/gold/c1/exit"
+    assert lines[else_i + 1].strip() == (
+        f"echo {_ADV_CP_FAILED} > /tmp/skeptic-artifacts/exit")
     assert lines[else_i + 2].strip() == "fi"
 
 
 def test_advtest_reference_script_wraps_coverage_and_junit():
     spec = make_task_spec()
-    script = _advtest_reference_script(spec, ["c1"], ["src/click/mod.py"])
+    script = _advtest_reference_script(spec, "c1")
 
     assert "python -m coverage run" in script
-    assert "--junitxml=/artifacts/reference/c1/junit.xml" in script
-    assert "COVERAGE_RCFILE=/artifacts/reference/c1/coveragerc" in script
-    report_line = next(ln for ln in script.splitlines() if "coverage json" in ln)
-    assert "--show-contexts" in report_line
-    assert "--include=src/click/mod.py" in report_line
-    assert "-o /artifacts/reference/c1/coverage.json" in report_line
-    # The report step reads already-collected data rather than running
-    # candidate code, so only the suite step carries its own timeout: with
-    # both capped, the tree's own worst case would double what the shared
-    # `n * 60 + 120` host-budget formula accounts for.
-    assert "timeout" not in report_line
+    assert "--junitxml=/tmp/skeptic-artifacts/junit.xml" in script
+    assert "COVERAGE_RCFILE=/opt/skeptic-observation-inputs/coveragerc" in script
+    assert "coverage json" not in script
     suite_line = next(ln for ln in script.splitlines() if "--junitxml" in ln)
-    assert suite_line.strip().startswith("COVERAGE_RCFILE=/artifacts/reference/c1/coveragerc timeout")
+    assert suite_line.strip().startswith(
+        "COVERAGE_RCFILE=/opt/skeptic-observation-inputs/coveragerc timeout")
     assert script.splitlines()[-1] == "rm -rf .skeptic-advtests"
-    # Guarded the same way the plain script's copy-in is.
     assert any(ln.strip().startswith("if cp ") for ln in script.splitlines())
-    assert f"echo {_ADV_CP_FAILED} > /artifacts/reference/c1/exit" in script
+    assert f"echo {_ADV_CP_FAILED} > /tmp/skeptic-artifacts/exit" in script
 
 
-def test_advtest_reference_script_skips_the_report_step_with_no_measurable_file():
-    script = _advtest_reference_script(make_task_spec(), ["c1"], [])
+def test_advtest_reference_script_never_runs_the_trusted_report():
+    script = _advtest_reference_script(make_task_spec(), "c1")
 
     assert "coverage json" not in script
-    assert "python -m coverage run" in script  # rung 1 still runs coverage-wrapped
+    assert "python -m coverage run" in script
 
 
 def test_advtest_rung_reader_rejects_skipped_candidates():
@@ -865,7 +1420,7 @@ def test_advtest_cp_failed_sentinel_routes_to_whole_observation_infra(tmp_path):
     exit_path = tmp_path / "exit"
     exit_path.write_text(f"{_ADV_CP_FAILED}\n")
 
-    with pytest.raises(SkepticInfraError, match="copy from the shared mount"):
+    with pytest.raises(SkepticInfraError, match="copy from the read-only input mount"):
         _read_ladder_exit(exit_path, who="candidate c1 on the reference tree")
 
 
@@ -921,45 +1476,75 @@ def test_advtest_rescreen_recovers_a_basename_false_rejection():
 
 
 def _advtest_fake_runs(monkeypatch, plans: list[dict[str, dict]]):
-    """Answer each expected `container.run` call with the next plan entry, in
-    order: reference, seeded, each clean variant, then the candidate tree.
+    """Answer isolated captures from tree-ordered candidate plans.
 
-    Each plan entry maps candidate id to the files that candidate's run
-    should produce: `exit` always, `outcomes` for a junit report, and
-    `coverage_exit`/`covered` for the reference tree's report step.
+    Each plan maps candidate id to candidate-phase output, plus the trusted
+    reference report's `coverage_exit`/`covered`. The fake writes only the
+    current capture quarantine and records the actual Docker argv generated
+    from the collector-supplied RunContainer configuration.
     """
-    state = {"i": 0}
+    state: dict[str, object] = {"labels": {}, "calls": []}
 
-    def fake_run(cmd, cwd, timeout_s, env):
-        script = cmd[-1]
-        mount = next(a for a in cmd if a.endswith(":/artifacts:rw"))
-        host_root = Path(mount.split(":")[0])
-        install_line = next(
-            ln for ln in script.splitlines() if ln.startswith("echo ok > /artifacts/"))
-        tree_key = install_line.removeprefix("echo ok > /artifacts/").removesuffix("/install.ok")
-        plan = plans[state["i"]]
-        state["i"] += 1
-        tree_dir = host_root / tree_key
-        tree_dir.mkdir(parents=True, exist_ok=True)
-        (tree_dir / "install.ok").write_text("ok\n")
-        for cid, spec_ in plan.items():
-            cdir = tree_dir / cid
-            cdir.mkdir(parents=True, exist_ok=True)
-            (cdir / "out").write_text("")
-            (cdir / "err").write_text("")
-            (cdir / "exit").write_text(f"{spec_['exit']}\n")
-            if "outcomes" in spec_:
-                (cdir / "junit.xml").write_text(_junit(spec_["outcomes"]))
-            if "coverage_exit" in spec_:
-                (cdir / "coverage.exit").write_text(f"{spec_['coverage_exit']}\n")
-                (cdir / "coverage.out").write_text("")
-                (cdir / "coverage.err").write_text("")
-                if spec_["coverage_exit"] == 0:
-                    (cdir / "coverage.json").write_text(_coverage_json(spec_["covered"]))
-                    _write_coverage_data(cdir / ".coverage", spec_.get("contexts", ("",)))
+    def fake_capture(self, script, timeout_s, quarantine, env=None, *, deadline=None):
+        tree_key = quarantine.parent.name
+        labels = state["labels"]
+        assert isinstance(labels, dict)
+        if tree_key not in labels:
+            labels[tree_key] = len(labels)
+        plan = plans[labels[tree_key]]
+        candidate_id = quarantine.name.removeprefix(".").split("-", 1)[0]
+        spec_ = plan[candidate_id]
+        argv = docker_run_args(
+            self.image,
+            self.workspace,
+            self.ro_subpaths,
+            self.extra_mounts,
+            {"PYTHONPYCACHEPREFIX": "/tmp/skeptic-pycache"},
+            self.input_mounts,
+            self.workspace_overlays,
+            self.workspace_mode,
+        )
+        calls = state["calls"]
+        assert isinstance(calls, list)
+        calls.append({
+            "tree": tree_key,
+            "candidate": candidate_id,
+            "report": "coverage json" in script,
+            "script": script,
+            "timeout_s": timeout_s,
+            "env": env,
+            "argv": argv,
+            "extra_mounts": self.extra_mounts,
+            "input_mounts": self.input_mounts,
+            "input_names": tuple(
+                sorted(path.name for path in self.input_mounts[0][0].iterdir())
+            ) if self.install_overlay else (),
+            "install_overlay": self.install_overlay,
+            "workspace_mode": self.workspace_mode,
+            "workspace": self.workspace,
+            "deadline": deadline,
+        })
+
+        quarantine.mkdir(mode=0o700)
+        if "coverage json" in script:
+            code = spec_["coverage_exit"]
+            if code == 0:
+                (quarantine / "coverage.json").write_text(
+                    _coverage_json(spec_["covered"]))
+            return ExecResult(code, "", "", 100)
+
+        (quarantine / "out").write_text("")
+        (quarantine / "err").write_text("")
+        (quarantine / "exit").write_text(f"{spec_['exit']}\n")
+        if "outcomes" in spec_:
+            (quarantine / "junit.xml").write_text(_junit(spec_["outcomes"]))
+        if tree_key == "reference" and "coverage_exit" in spec_:
+            _write_coverage_data(
+                quarantine / ".coverage", spec_.get("contexts", ("",)))
         return ExecResult(0, "", "", 500)
 
-    monkeypatch.setattr("skeptic.sandbox._run", fake_run)
+    monkeypatch.setattr("skeptic.sandbox.RunContainer.run_capture", fake_capture)
+    return state["calls"]
 
 
 def test_advtest_report_orders_trusted_and_divergences_by_candidate(tmp_path, monkeypatch):
@@ -985,24 +1570,27 @@ def test_advtest_report_orders_trusted_and_divergences_by_candidate(tmp_path, mo
         "c3": {"exit": 0, "outcomes": {".skeptic-advtests/test_c3.py::test_c": "passed"},
               "coverage_exit": 0, "covered": covered},
     }
-    # Every tree run covers every still-provisional candidate, c1 included,
-    # even though it already failed `reference`: the ladder does not shrink
-    # the batch between rungs, only the final candidate-tree run does.
+    # Every control tree covers every still-provisional candidate, c1
+    # included, even though it already fails `reference`; only the final
+    # candidate-tree set shrinks to ladder survivors.
     seeded_plan = {"c1": {"exit": 0}, "c2": {"exit": 1}, "c3": {"exit": 1}}
     gold_plan = {"c1": {"exit": 0}, "c2": {"exit": 0}, "c3": {"exit": 0}}
     candidate_plan = {
         "c2": {"exit": 1, "outcomes": {".skeptic-advtests/test_c2.py::test_b": "failed"}},
         "c3": {"exit": 0},
     }
-    _advtest_fake_runs(monkeypatch, [reference_plan, seeded_plan, gold_plan, candidate_plan])
+    calls = _advtest_fake_runs(
+        monkeypatch, [reference_plan, seeded_plan, gold_plan, candidate_plan])
 
-    # `make_observed_pair` builds a pair with no tree materialized and no
-    # container started; `observe_advtests` only reads `candidate.tree` as a
-    # mount path for the final run, and that run's own container is faked
-    # above, so the unmaterialized path is never actually touched.
+    # Mount containment validates the workspace before the subprocess fake is
+    # reached, so this pair needs a literal contained minirepo tree even
+    # though the eventual Docker command remains faked.
     from tests.helpers import make_observed_pair
     pair = make_observed_pair(baseline={}, spec=spec)
+    candidate_tree = tmp_path / "candidate-tree"
+    snapshot(FIXTURE, candidate_tree)
     pair = pair.model_copy(update={
+        "candidate": pair.candidate.model_copy(update={"tree": candidate_tree}),
         "candidate_diff": CandidateReport(
             diff_path=pair.candidate_diff.diff_path, changed_files=["minirepo.py"],
             out_of_scope=[], is_empty=False)})
@@ -1027,14 +1615,53 @@ def test_advtest_report_orders_trusted_and_divergences_by_candidate(tmp_path, mo
     assert report.trusted == tuple(
         c.candidate_id for c in report.candidates if c.status == "trusted")
 
+    candidate_calls = [call for call in calls if not call["report"]]
+    assert [(call["tree"], call["candidate"]) for call in candidate_calls] == [
+        ("reference", "c2"), ("reference", "c1"), ("reference", "c3"),
+        ("seeded", "c2"), ("seeded", "c1"), ("seeded", "c3"),
+        ("gold", "c2"), ("gold", "c1"), ("gold", "c3"),
+        ("candidate", "c2"), ("candidate", "c3"),
+    ]
+    assert all(call["input_names"] == (
+        "coveragerc", f"test_{call['candidate']}.py") for call in candidate_calls)
+    assert all(call["extra_mounts"] == () for call in calls)
+    for call in calls:
+        argv = call["argv"]
+        mounts = [argv[i + 1] for i, token in enumerate(argv[:-1]) if token == "-v"]
+        assert all(
+            mount.endswith(":ro")
+            for mount in mounts
+            if not mount.split(":", 1)[1].startswith("/workspace")
+        )
+    for tree_label in ("reference", "seeded", "gold", "candidate"):
+        deadlines = {id(call["deadline"]) for call in calls if call["tree"] == tree_label}
+        assert len(deadlines) == 1
+    report_calls = [call for call in calls if call["report"]]
+    assert [(call["tree"], call["candidate"]) for call in report_calls] == [
+        ("reference", "c2"), ("reference", "c3")]
+    assert all(call["install_overlay"] is False for call in report_calls)
+    assert all(call["workspace_mode"] == "ro" for call in report_calls)
+    assert all(call["timeout_s"] == 120 for call in report_calls)
+    assert all("python -P -s -m coverage json" in call["script"]
+               for call in report_calls)
+    assert all(
+        {path.name for path, _ in call["input_mounts"]}
+        == {"coveragerc", ".coverage"}
+        for call in report_calls
+    )
+    assert all(
+        set(call["env"]) == {"COVERAGE_RCFILE", "COVERAGE_FILE"}
+        for call in report_calls
+    )
 
-def test_advtest_gold_prime_rung_short_circuits_after_the_first_rejected_variant(
+
+def test_advtest_gold_prime_rung_keeps_the_first_rejected_variant_detail(
     tmp_path, monkeypatch
 ):
-    """Two clean variants (`gold`, `gold2`): `gold` rejects c1 and the loop
-    never reads a second exit file for it against `gold2`; c2 passes `gold`
-    but fails `gold2`, proving the loop keeps checking later variants for a
-    candidate that has not failed yet; c3 clears both.
+    """Every candidate executes on both variants, while detail stays first.
+
+    `gold` rejects c1 and `gold2` cannot replace that earlier detail; c2
+    passes `gold` but fails `gold2`; c3 clears both.
     """
     pristine_source = (FIXTURE / "minirepo.py").read_text()
     tasks_dir, task_id = make_minirepo_task(
@@ -1057,16 +1684,20 @@ def test_advtest_gold_prime_rung_short_circuits_after_the_first_rejected_variant
     }
     seeded_plan = {cid: {"exit": 1} for cid in ("c1", "c2", "c3")}
     gold_plan = {"c1": {"exit": 1}, "c2": {"exit": 0}, "c3": {"exit": 0}}
-    # c1 is deliberately absent from gold2's plan: the loop must reject c1 at
-    # "gold" and never attempt to read a second exit file for it.
-    gold2_plan = {"c2": {"exit": 1}, "c3": {"exit": 0}}
+    # c1 still executes on gold2 because every provisional candidate runs on
+    # every control tree. Its already-established gold rejection means the
+    # reader does not let this later result replace the first variant detail.
+    gold2_plan = {"c1": {"exit": 0}, "c2": {"exit": 1}, "c3": {"exit": 0}}
     candidate_plan = {"c3": {"exit": 0}}
     _advtest_fake_runs(
         monkeypatch, [reference_plan, seeded_plan, gold_plan, gold2_plan, candidate_plan])
 
     from tests.helpers import make_observed_pair
     pair = make_observed_pair(baseline={}, spec=spec)
+    candidate_tree = tmp_path / "candidate-tree"
+    snapshot(FIXTURE, candidate_tree)
     pair = pair.model_copy(update={
+        "candidate": pair.candidate.model_copy(update={"tree": candidate_tree}),
         "candidate_diff": CandidateReport(
             diff_path=pair.candidate_diff.diff_path, changed_files=["minirepo.py"],
             out_of_scope=[], is_empty=False)})
@@ -1134,8 +1765,172 @@ def test_rejected_at_names_the_first_rung_not_the_last(tmp_path, monkeypatch):
 
 @pytest.mark.docker
 @pytest.mark.slow
+def test_sealed_collect_resists_suite_time_overwrite(
+    tmp_path, minirepo_spec_and_repo
+):
+    """A later pytest hook cannot add a forged id to sealed collection.
+
+    The hook derives its current output root from the suite's real junit
+    argument. On the vulnerable one-mount unit it finds the earlier
+    ``collect.out`` there and appends a forged nodeid while retaining every
+    real nodeid, so the manifest/JUnit subset check accepts the forgery. With
+    per-phase private output, it can alter only an unadmitted suite-local file.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    baseline = materialize(repo_dir, spec.repo.commit, tmp_path / "seeded")
+    apply_patch(baseline, Path(spec.seed.bug_patch))
+    fixed = tmp_path / "fixed"
+    snapshot(baseline, fixed)
+    apply_patch(fixed, Path(next(
+        variant.patch for variant in spec.evaluation.variants
+        if variant.label == "clean"
+    )))
+    forged = "tests/forged_by_later_suite.py::test_forged"
+    (fixed / "conftest.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        f"FORGED = {forged!r}\n\n"
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    junit = next((arg.split('=', 1)[1] for arg in sys.argv "
+        "if arg.startswith('--junitxml=')), None)\n"
+        "    if junit is None:\n"
+        "        return\n"
+        "    manifest = Path(junit).parent / 'collect.out'\n"
+        "    earlier = manifest.read_text() if manifest.is_file() else ''\n"
+        "    nodeids, separator, summary = earlier.partition('\\n\\n')\n"
+        "    manifest.write_text(nodeids + '\\n' + FORGED + separator + summary)\n"
+    )
+    candidate = extract_candidate(
+        baseline, fixed, tmp_path / "candidate.diff",
+        allowed_paths=spec.builder_input.allowed_paths,
+    )
+
+    pair = collect_pair(spec, repo_dir, candidate, tmp_path / "work")
+
+    real = {
+        "tests/test_golden.py::test_golden_render_matches_expected",
+        "tests/test_minirepo.py::test_parse_range_basic",
+        "tests/test_minirepo.py::test_parse_range_wide",
+        "tests/test_minirepo.py::test_clamp_bounds",
+    }
+    assert set(pair.candidate.collected) == real
+    assert forged not in pair.candidate.collected
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_collection_workspace_writes_do_not_reach_suite_or_canonical_tree(
+    tmp_path, minirepo_spec_and_repo
+):
+    """Collection and suite execute against independent disposable snapshots.
+
+    The collection-only hook plants a marker and replaces the measured source
+    after pytest has collected. Reusing that writable workspace for the suite
+    makes the added test observe both writes and fail; mounting the canonical
+    candidate tree itself also leaves those bytes corrupted after collection.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    baseline = materialize(repo_dir, spec.repo.commit, tmp_path / "seeded")
+    apply_patch(baseline, Path(spec.seed.bug_patch))
+    fixed = tmp_path / "fixed"
+    snapshot(baseline, fixed)
+    apply_patch(fixed, Path(next(
+        variant.patch for variant in spec.evaluation.variants
+        if variant.label == "clean"
+    )))
+    canonical_source = (fixed / "minirepo.py").read_bytes()
+    marker = ".collection-workspace-marker"
+    (fixed / "conftest.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        "def pytest_collection_finish(session):\n"
+        "    if '--collect-only' not in sys.argv:\n"
+        "        return\n"
+        f"    Path({marker!r}).write_text('collection was here')\n"
+        "    Path('minirepo.py').write_text('COLLECTION_REWRITE = True\\n')\n"
+    )
+    (fixed / "tests" / "test_phase_isolation.py").write_text(
+        "from pathlib import Path\n\n"
+        "def test_suite_receives_pristine_candidate_snapshot():\n"
+        f"    assert not Path({marker!r}).exists()\n"
+        "    assert 'COLLECTION_REWRITE' not in Path('minirepo.py').read_text()\n"
+    )
+    candidate = extract_candidate(
+        baseline, fixed, tmp_path / "candidate.diff",
+        allowed_paths=spec.builder_input.allowed_paths,
+    )
+
+    pair = collect_pair(spec, repo_dir, candidate, tmp_path / "work")
+
+    assert pair.candidate.suite_exit == 0
+    assert pair.candidate.outcomes[
+        "tests/test_phase_isolation.py::test_suite_receives_pristine_candidate_snapshot"
+    ] == "passed"
+    assert (pair.candidate.tree / "minirepo.py").read_bytes() == canonical_source
+    assert not (pair.candidate.tree / marker).exists()
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_report_phase_ignores_suite_workspace_rewrite_and_coverage_shadow(
+    tmp_path, minirepo_spec_and_repo
+):
+    """The trusted report neither executes nor analyzes suite-persisted code.
+
+    The suite hook rewrites the measured source and plants a local `coverage`
+    package whose `__main__` writes a valid forged report. A report container
+    that installs or resolves modules from the suite's writable workspace
+    executes that package and reports literal line 999.
+    """
+    spec, repo_dir = minirepo_spec_and_repo
+    baseline = materialize(repo_dir, spec.repo.commit, tmp_path / "seeded")
+    apply_patch(baseline, Path(spec.seed.bug_patch))
+    fixed = tmp_path / "fixed"
+    snapshot(baseline, fixed)
+    apply_patch(fixed, Path(next(
+        variant.patch for variant in spec.evaluation.variants
+        if variant.label == "clean"
+    )))
+    forged_report = _coverage_json({
+        "minirepo.py": {
+            "executed_lines": [999], "missing_lines": [],
+            "excluded_lines": [], "contexts": {"999": ["forged.report"]},
+        }
+    })
+    shadow_main = (
+        "from pathlib import Path\n"
+        f"Path('/tmp/skeptic-artifacts/coverage.json').write_text({forged_report!r})\n"
+    )
+    (fixed / "conftest.py").write_text(
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        f"SHADOW_MAIN = {shadow_main!r}\n\n"
+        "def pytest_sessionfinish(session, exitstatus):\n"
+        "    if not any(arg.startswith('--junitxml=') for arg in sys.argv):\n"
+        "        return\n"
+        "    Path('minirepo.py').write_text('FORGED_SOURCE = True\\n')\n"
+        "    shadow = Path('coverage')\n"
+        "    shadow.mkdir(exist_ok=True)\n"
+        "    (shadow / '__init__.py').write_text('')\n"
+        "    (shadow / '__main__.py').write_text(SHADOW_MAIN)\n"
+    )
+    candidate = extract_candidate(
+        baseline, fixed, tmp_path / "candidate.diff",
+        allowed_paths=spec.builder_input.allowed_paths,
+    )
+
+    pair = collect_pair(spec, repo_dir, candidate, tmp_path / "work")
+
+    coverage = pair.candidate.coverage
+    assert coverage is not None
+    assert 6 in coverage.executed["minirepo.py"]
+    assert 999 not in coverage.statements["minirepo.py"]
+
+
+@pytest.mark.docker
+@pytest.mark.slow
 def test_collect_pair_on_the_minirepo_gold_fixture(tmp_path, minirepo_spec_and_repo):
-    """Both sides for real: two trees, two containers, one image.
+    """Both sides for real: two canonical trees, isolated phases, one image.
 
     Wall time for the pair is what `--durations` reports for this test, minus
     the one-time image build the session fixture shares.
@@ -1180,8 +1975,8 @@ def test_instrumented_run_writes_junit_and_coverage_to_artifacts(
         assert (side.artifacts / "coverage.json").is_file()
         assert (side.artifacts / "coveragerc").is_file()
         assert (side.artifacts / "coverage.exit").read_text().strip() == "0"
-        # Everything coverage wrote is on the artifacts mount. A data file in
-        # the tree would be one more path the candidate diff has to ignore.
+        # Everything coverage wrote is admitted into sealed artifacts. A data
+        # file in the tree would be one more path the candidate diff has to ignore.
         assert not list(side.tree.rglob(".coverage*"))
         assert not list(side.tree.rglob("coveragerc"))
 
@@ -1247,6 +2042,18 @@ _ADV_GOOD_SOURCE = (
     "def test_parse_range_upper_bound_is_inclusive():\n"
     '    assert minirepo.parse_range("2-8") == (2, 8)\n'
 )
+_ADV_LATER_OVERWRITER_SOURCE = (
+    "import sys\n"
+    "from pathlib import Path\n\n"
+    "import minirepo\n\n\n"
+    "def test_parse_range_upper_bound_is_inclusive():\n"
+    "    junit = next(Path(arg.split('=', 1)[1]) for arg in sys.argv "
+    "if arg.startswith('--junitxml='))\n"
+    "    earlier_seeded_exit = junit.parents[1] / 'c1' / 'exit'\n"
+    "    if junit.parents[1].name == 'seeded' and earlier_seeded_exit.exists():\n"
+    "        earlier_seeded_exit.write_text('0\\n')\n"
+    '    assert minirepo.parse_range("2-8") == (2, 8)\n'
+)
 _ADV_ASSERTION_FREE_SOURCE = (
     "import minirepo\n\n\n"
     "def test_parse_range_runs():\n"
@@ -1269,8 +2076,8 @@ def _hand_built(candidate_id: str, source: str) -> AdvCandidate:
 @pytest.mark.slow
 def test_advtests_ladder_end_to_end_on_the_minirepo(tmp_path, minirepo_spec_and_repo):
     """A good discriminating test ends trusted; an assertion-free test rejects
-    at `seeded_green`; a skipping test rejects at `reference`; all three run
-    against the real gold candidate tree.
+    at `seeded_green`; a skipping test rejects at `reference`. All three run
+    on every control tree; only the ladder survivor runs on the candidate.
     """
     from skeptic.image import repo_image_tag
 
@@ -1302,15 +2109,48 @@ def test_advtests_ladder_end_to_end_on_the_minirepo(tmp_path, minirepo_spec_and_
 
 @pytest.mark.docker
 @pytest.mark.slow
-def test_advtests_reference_tree_isolates_coverage_between_candidates_in_one_batch(
+def test_advtests_later_candidate_cannot_overwrite_an_earlier_seeded_result(
     tmp_path, minirepo_spec_and_repo
 ):
-    """Two candidates share the reference tree's one container: one that
-    executes `minirepo.parse_range` (rung `target_coverage` passes) and one
-    that asserts something trivial without touching `minirepo` at all (rung
-    `target_coverage` has to reject it). A shared, unscoped data file would
-    let either candidate's result leak into the other's; a fresh,
-    per-candidate `coveragerc`/data-file pair is what keeps them apart.
+    """c2 cannot demote c1 by rewriting c1's already-recorded seeded exit.
+
+    The attack derives the shared tree output root from c2's real junit
+    argument, then changes c1's seeded exit from the discriminating ``1`` to
+    the non-discriminating ``0``. A batch with one host-writable evidence
+    mount accepts that rewrite. Fresh candidate/tree captures seal c1 before
+    c2 starts and expose no earlier output for c2 to address.
+    """
+    from skeptic.image import repo_image_tag
+
+    spec, repo_dir = minirepo_spec_and_repo
+    pair = collect_pair(spec, repo_dir, _gold_candidate(spec), tmp_path / "work")
+
+    report = observe_advtests(
+        spec,
+        repo_image_tag(spec),
+        repo_dir,
+        pair,
+        tmp_path / "advtests-artifacts",
+        (
+            _hand_built("c1", _ADV_GOOD_SOURCE),
+            _hand_built("c2", _ADV_LATER_OVERWRITER_SOURCE),
+        ),
+        model="test-model",
+    )
+
+    assert report.trusted == ("c1", "c2")
+    assert all(candidate.status == "trusted" for candidate in report.candidates)
+
+
+@pytest.mark.docker
+@pytest.mark.slow
+def test_advtests_reference_tree_isolates_coverage_between_candidates(
+    tmp_path, minirepo_spec_and_repo
+):
+    """Each candidate's admitted measurement feeds only its trusted report.
+
+    One executes `minirepo.parse_range` and clears `target_coverage`; the
+    other asserts something trivial without touching `minirepo` and rejects.
     """
     from skeptic.image import repo_image_tag
 

@@ -1,0 +1,5 @@
+{"actor": "orchestrator", "event": "spec_loaded", "run_id": "verify-60bf95031b87", "schema_version": 1, "stage": "LOAD", "task_id": "rich-0002", "ts": "2026-09-01T00:28:24Z"}
+{"actor": "orchestrator", "event": "stage_start", "payload": {"key": "b76fc50d3c40"}, "run_id": "verify-60bf95031b87", "schema_version": 1, "stage": "VERIFY", "task_id": "rich-0002", "ts": "2026-09-01T00:28:24Z"}
+{"actor": "checks.t2_mutation", "dur_ms": 0, "event": "mutation_batch", "payload": {"budget": 30, "generated": 0, "seed": 1337, "voided": 0}, "run_id": "verify-60bf95031b87", "schema_version": 1, "stage": "VERIFY", "task_id": "rich-0002", "ts": "2026-09-01T00:28:50Z", "variant": "h10"}
+{"actor": "checks.t2_probe", "dur_ms": 0, "event": "probe_batch", "payload": {"calls": 0, "entrypoints": 0}, "run_id": "verify-60bf95031b87", "schema_version": 1, "stage": "VERIFY", "task_id": "rich-0002", "ts": "2026-09-01T00:28:50Z", "variant": "h10"}
+{"actor": "orchestrator", "dur_ms": 25296, "event": "stage_end", "payload": {"key": "b76fc50d3c40"}, "run_id": "verify-60bf95031b87", "schema_version": 1, "stage": "VERIFY", "task_id": "rich-0002", "ts": "2026-09-01T00:28:50Z"}

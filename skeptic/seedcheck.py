@@ -57,7 +57,11 @@ def parse_junit(path: Path) -> SuiteResult:
             f"report, so results cannot be trusted. This is an infra failure, "
             f"never evidence. Next: re-run; if it persists check the test_cmd."
         )
-    root = ET.parse(path).getroot()
+    return parse_junit_bytes(path.read_bytes(), str(path))
+
+
+def parse_junit_bytes(data: bytes, source: str) -> SuiteResult:
+    root = ET.fromstring(data)
     outcomes: dict[str, str] = {}
     collection_errors = 0
     for case in root.iter("testcase"):
@@ -88,7 +92,7 @@ def parse_junit(path: Path) -> SuiteResult:
         else:
             raise SkepticInfraError(
                 f"junit testcase classname {classname!r} does not extend its "
-                f"file's module path {module_dotted!r} in {path}. Skeptic "
+                f"file's module path {module_dotted!r} in {source}. Skeptic "
                 f"reconstructs pytest nodeids from file and classname, and an "
                 f"unmappable classname would corrupt the outcome map. Next: "
                 f"inspect the junit XML; if a plugin rewrites classnames this "
@@ -97,7 +101,7 @@ def parse_junit(path: Path) -> SuiteResult:
         if nodeid in outcomes:
             raise SkepticInfraError(
                 f"Duplicate reconstructed test id {nodeid!r} in junit report "
-                f"{path}. Skeptic reconstructs pytest nodeids from file, "
+                f"{source}. Skeptic reconstructs pytest nodeids from file, "
                 f"classname, and name, and duplicate full nodeids indicate "
                 f"corrupt junit data. Next: inspect the junit XML and test "
                 f"discovery in this repo."

@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import errno
 import os
+import posixpath
 import shutil
+import stat
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal, Self
 
 from skeptic.errors import SkepticInfraError, VenvBuildRefused
+from skeptic.spec import normalize_ro_subpath
 
 
 @dataclass(frozen=True)
@@ -18,6 +22,40 @@ class ExecResult:
     stdout: str
     stderr: str
     dur_ms: int
+
+
+@dataclass(frozen=True)
+class HostDeadline:
+    """One monotonic authority for a multi-command host operation."""
+
+    expires_at: float
+
+    @classmethod
+    def after(cls, timeout_s: int) -> Self:
+        return cls(expires_at=time.monotonic() + timeout_s)
+
+    def remaining_timeout_s(self, operation: str) -> int:
+        """Return a safe whole-second timeout or refuse to start an operation."""
+        left = self.expires_at - time.monotonic()
+        timeout_s = int(left)
+        if timeout_s < 1:
+            raise SkepticInfraError(
+                f"{operation} cannot start before its shared host deadline: "
+                f"only {max(0.0, left):.3f}s remains, less than one whole second "
+                f"the subprocess timeout can represent safely. This is an infra "
+                f"failure, never evidence. Next: re-run after checking host and "
+                f"Docker daemon load."
+            )
+        return timeout_s
+
+    def require_active(self, operation: str) -> None:
+        """Refuse evidence work once the shared monotonic deadline has expired."""
+        if time.monotonic() >= self.expires_at:
+            raise SkepticInfraError(
+                f"{operation} cannot continue because its shared host deadline "
+                f"expired. This is an infra failure, never evidence. Next: re-run "
+                f"after checking host and Docker daemon load."
+            )
 
 
 def _run(cmd: list[str], cwd: Path, timeout_s: int, env: dict[str, str] | None) -> ExecResult:
@@ -147,6 +185,115 @@ def base_env(venv_bin: str) -> dict[str, str]:
 
 
 ExtraMount = tuple[Path, str, Literal["ro", "rw"]]
+InputMount = tuple[Path, str]
+WorkspaceOverlay = tuple[Path, str]
+
+# Reserved by the outer capture shell for editable-install failure. Collector
+# phase contracts accept only pytest/coverage exits 0-5 and GNU timeout's 124;
+# 125 already denotes a container/exec-level infrastructure failure there.
+INSTALL_FAILURE_EXIT = 125
+
+
+def _resolve_ro_subpath(workspace: Path, raw: str) -> tuple[str, Path]:
+    """Return normalized mount spelling and a source contained by workspace.
+
+    Ordinary missing components are returned for the caller's existing
+    raise/drop policy. An existing symlink is resolved strictly, so a dangling
+    link or a link that leaves the workspace is always an infrastructure
+    refusal instead of looking like an ordinary candidate deletion.
+    """
+    try:
+        clean = normalize_ro_subpath(raw)
+    except ValueError as exc:
+        raise SkepticInfraError(
+            f"read-only mount subpath {raw!r} is invalid: {exc}. "
+            f"Skeptic only mounts protected repository-relative paths. "
+            f"Next: fix test_dirs, config_files, or golden_dirs in the task spec."
+        ) from exc
+
+    try:
+        root = workspace.resolve(strict=True)
+    except OSError as exc:
+        raise SkepticInfraError(
+            f"read-only mount workspace {workspace} cannot be resolved: {exc}. "
+            f"Skeptic must resolve the workspace before checking protected mounts."
+        ) from exc
+
+    cursor = root
+    parts = clean.split("/")
+    for index, part in enumerate(parts):
+        candidate = cursor / part
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            return clean, candidate.joinpath(*parts[index + 1:])
+        except OSError as exc:
+            raise SkepticInfraError(
+                f"read-only mount source {candidate} cannot be inspected: {exc}. "
+                f"Skeptic checks every existing path component before mounting it."
+            ) from exc
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise SkepticInfraError(
+                f"read-only mount source {candidate} is a dangling or "
+                f"unresolvable link ({exc}). Skeptic refuses dangling protected "
+                f"paths before applying the candidate missing-path policy."
+            ) from exc
+        if resolved == root or root not in resolved.parents:
+            raise SkepticInfraError(
+                f"read-only mount source {candidate} resolves to {resolved}, "
+                f"outside the workspace {root}. Protected mount sources must "
+                f"remain strictly beneath the workspace."
+            )
+        cursor = resolved
+    return clean, cursor
+
+
+def _validate_input_mount(source: Path, target: str) -> InputMount:
+    if not source.exists():
+        raise SkepticInfraError(
+            f"input mount source {source} does not exist. Docker would "
+            f"silently create it as a directory. Next: this is a harness "
+            f"bug; write the capture input before mounting it."
+        )
+    if not target.startswith("/"):
+        raise SkepticInfraError(
+            f"input mount target {target!r} is not an absolute path. "
+            f"Capture inputs use fixed absolute container paths."
+        )
+    canonical = posixpath.normpath(target)
+    if target.startswith("//") or canonical != target:
+        raise SkepticInfraError(
+            f"input mount target {target!r} is not a canonical absolute path. "
+            f"Capture inputs reject dot components and repeated separators "
+            f"before Docker can normalize them into a different target."
+        )
+    if canonical == "/workspace" or canonical.startswith("/workspace/"):
+        raise SkepticInfraError(
+            f"input mount target {target!r} is inside /workspace. "
+            f"Use a workspace overlay for a contained repository file."
+        )
+    return source, target
+
+
+def _validate_workspace_overlay(
+    workspace: Path, source: Path, target: str
+) -> WorkspaceOverlay:
+    clean, _ = _resolve_ro_subpath(workspace, target)
+    try:
+        source_mode = source.stat(follow_symlinks=False).st_mode
+    except OSError as exc:
+        raise SkepticInfraError(
+            f"workspace overlay source {source} cannot be inspected: {exc}. "
+            f"Capture overlays must be host-authored regular files."
+        ) from exc
+    if not stat.S_ISREG(source_mode):
+        raise SkepticInfraError(
+            f"workspace overlay source {source} is not a regular file. "
+            f"Capture overlays accept only host-authored regular files."
+        )
+    return source, clean
 
 
 def docker_run_args(
@@ -155,11 +302,15 @@ def docker_run_args(
     ro_subpaths: tuple[str, ...] = (),
     extra_mounts: tuple[ExtraMount, ...] = (),
     env: dict[str, str] | None = None,
+    input_mounts: tuple[InputMount, ...] = (),
+    workspace_overlays: tuple[WorkspaceOverlay, ...] = (),
+    workspace_mode: Literal["rw", "ro"] = "rw",
 ) -> list[str]:
     # The container user is the host UID:GID so files written through the
     # bind mount stay owned by the invoking user (M1 review deferral). That
     # user has no /etc/passwd entry in the image, so HOME is pointed at the
-    # writable workspace for tools that insist on one.
+    # workspace for tools that insist on one. Trusted no-install captures may
+    # mount the whole workspace read-only.
     args = [
         "docker", "run", "--rm",
         "--network", "none",
@@ -167,14 +318,13 @@ def docker_run_args(
         "--security-opt", "no-new-privileges",
         "--user", f"{os.getuid()}:{os.getgid()}",
         "-e", "HOME=/workspace",
-        "-v", f"{workspace}:/workspace",
+        "-v", f"{workspace}:/workspace{':ro' if workspace_mode == 'ro' else ''}",
     ]
-    # Read-only overlays mount AFTER the rw workspace so they shadow it:
+    # Read-only overlays mount AFTER the workspace so they shadow it:
     # tests, runner configs, and goldens stay Builder-visible and immutable
     # (prevention tier, plan section 6).
     for sub in ro_subpaths:
-        clean = sub.rstrip("/")
-        host = workspace / clean
+        clean, host = _resolve_ro_subpath(workspace, sub)
         if not host.exists():
             raise SkepticInfraError(
                 f"read-only mount source {host} does not exist. Docker would "
@@ -215,6 +365,16 @@ def docker_run_args(
                 f"the tool at it through the environment."
             )
         args += ["-v", f"{src}:{target}:{mode}"]
+    # Capture inputs are harness-owned and can never be writable. They live
+    # outside /workspace so they do not change the tree VERIFY measures.
+    for src, target in input_mounts:
+        _validate_input_mount(src, target)
+        args += ["-v", f"{src}:{target}:ro"]
+    # File overlays mount after the rw workspace so a mutation or other
+    # harness-authored replacement shadows exactly one contained repo path.
+    for src, target in workspace_overlays:
+        _, clean = _validate_workspace_overlay(workspace, src, target)
+        args += ["-v", f"{src}:/workspace/{clean}:ro"]
     for key, value in (env or {}).items():
         args += ["-e", f"{key}={value}"]
     args += ["-w", "/workspace", image]
@@ -346,7 +506,9 @@ class RunContainer:
     one of them is contamination. Several commands inside one `sh -c` are
     fine and intended, and the container is gone when `run` returns.
 
-    The overlay venv sits at /tmp/sv, outside the judged tree. BUILD can
+    Candidate-executing phases install an overlay venv at /tmp/sv, outside the
+    judged tree. A trusted transform may explicitly skip that install and
+    mount a pre-execution source snapshot read-only. BUILD can
     afford /workspace/.sv because `candidate.EXCLUDE_NAMES` strips it from
     the diff; in VERIFY the workspace is the thing being measured.
 
@@ -359,10 +521,34 @@ class RunContainer:
     def __init__(self, image: str, workspace: Path,
                  ro_subpaths: tuple[str, ...] = (),
                  extra_mounts: tuple[ExtraMount, ...] = (),
-                 missing_ro: Literal["raise", "drop"] = "raise") -> None:
+                 missing_ro: Literal["raise", "drop"] = "raise",
+                 input_mounts: tuple[InputMount, ...] = (),
+                 workspace_overlays: tuple[WorkspaceOverlay, ...] = (),
+                 install_overlay: bool = True,
+                 workspace_mode: Literal["rw", "ro"] = "rw") -> None:
         self.image = image
         self.workspace = workspace
+        self.install_overlay = install_overlay
+        self.workspace_mode = workspace_mode
+        for source, target, mode in extra_mounts:
+            if mode != "ro":
+                raise SkepticInfraError(
+                    f"RunContainer extra mount {source}:{target} requested "
+                    f"mode {mode!r}. VERIFY containers accept only read-only "
+                    f"helper and input mounts; writable output must stay "
+                    f"container-private until host admission. Next: migrate "
+                    f"this caller to run_capture() and a declared artifact "
+                    f"admission boundary."
+                )
         self.extra_mounts = tuple(extra_mounts)
+        self.input_mounts = tuple(
+            _validate_input_mount(source, target)
+            for source, target in input_mounts
+        )
+        self.workspace_overlays = tuple(
+            _validate_workspace_overlay(workspace, source, target)
+            for source, target in workspace_overlays
+        )
         # The tree state is fixed once the instance exists, so the split is
         # decided here rather than per run. "raise" is the default and the
         # baseline side keeps it: the seeded tree is git archive plus the
@@ -375,11 +561,11 @@ class RunContainer:
         dropped: list[str] = []
         kept: list[str] = []
         for sub in ro_subpaths:
-            clean = sub.rstrip("/")
-            if missing_ro == "drop" and not (workspace / clean).exists():
+            clean, source = _resolve_ro_subpath(workspace, sub)
+            if missing_ro == "drop" and not source.exists():
                 dropped.append(clean)
             else:
-                kept.append(sub)
+                kept.append(clean)
         self.ro_subpaths = tuple(kept)
         self.dropped_ro_subpaths: tuple[str, ...] = tuple(sorted(dropped))
 
@@ -396,15 +582,192 @@ class RunContainer:
         # `docker exec` path, which never sees the base flags.
         merged = {**base_env(f"{self._VENV}/bin"), **(env or {})}
         args = docker_run_args(self.image, self.workspace, self.ro_subpaths,
-                               self.extra_mounts, merged)
+                               self.extra_mounts, merged,
+                               workspace_mode=self.workspace_mode)
         # The script goes in a brace group so `&&` guards all of it. A failed
         # install must reach the caller as its own exit code with nothing run
         # after it: an unguarded `install && a; b` runs b against the system
         # python, which would launder a frozen-closure suite into a candidate
         # observation. The newline before the closing brace is sh syntax.
-        guarded = f"{overlay_install_cmd(self._VENV)} && {{ {script}\n}}"
+        guarded = (
+            f"{overlay_install_cmd(self._VENV)} && {{ {script}\n}}"
+            if self.install_overlay else script
+        )
         full = args + ["sh", "-c", guarded]
         return _run(full, cwd=self.workspace, timeout_s=timeout_s, env=None)
+
+    def run_capture(self, script: str, timeout_s: int, quarantine: Path,
+                    env: dict[str, str] | None = None, *,
+                    deadline: HostDeadline | None = None) -> ExecResult:
+        """Run with volume-private output and copy it under one host deadline."""
+        def bounded_timeout(cap_s: int, operation: str) -> int:
+            if deadline is None:
+                return cap_s
+            return min(cap_s, deadline.remaining_timeout_s(operation))
+
+        try:
+            quarantine.mkdir(mode=0o700)
+        except FileExistsError as exc:
+            raise SkepticInfraError(
+                f"capture quarantine {quarantine} already exists. Skeptic "
+                f"requires a fresh host-owned directory for every execution. "
+                f"Next: this is a harness lifecycle bug; allocate a new path."
+            ) from exc
+
+        merged = {**base_env(f"{self._VENV}/bin"), **(env or {})}
+        args = docker_run_args(
+            self.image,
+            self.workspace,
+            self.ro_subpaths,
+            self.extra_mounts,
+            merged,
+            self.input_mounts,
+            self.workspace_overlays,
+            self.workspace_mode,
+        )
+        args.remove("--rm")
+        user_index = args.index("--user")
+        del args[user_index:user_index + 2]
+        token = f"{os.getpid()}-{uuid.uuid4().hex}"
+        name = f"skeptic-{token}"
+        volume_name = f"skeptic-artifacts-{token}"
+        helper_name = f"skeptic-copy-{token}"
+        args[2:2] = ["--name", name]
+        args[-1:-1] = [
+            "--mount",
+            f"type=volume,src={volume_name},dst=/tmp/skeptic-artifacts",
+        ]
+        install = (
+            f"{overlay_install_cmd(self._VENV)} || exit {INSTALL_FAILURE_EXIT}\n"
+            if self.install_overlay else ""
+        )
+        prepared = (
+            f"mkdir -p /tmp/skeptic-artifacts || exit {INSTALL_FAILURE_EXIT}\n"
+            f"{install}"
+            f"{{ {script}\n}}"
+        )
+        initialize_volume = (
+            f"chown {os.getuid()}:{os.getgid()} /tmp/skeptic-artifacts "
+            f"|| exit {INSTALL_FAILURE_EXIT}\n"
+            f"command -v setpriv >/dev/null || exit {INSTALL_FAILURE_EXIT}\n"
+            f"exec setpriv --reuid {os.getuid()} --regid {os.getgid()} "
+            f"--clear-groups sh -c \"$1\""
+        )
+        full = args + ["sh", "-c", initialize_volume, "sh", prepared]
+
+        volume_attempted = False
+        candidate_attempted = False
+        helper_attempted = False
+        try:
+            volume_timeout_s = bounded_timeout(
+                30, "capture artifact-volume creation")
+            volume_attempted = True
+            volume_created = _run(
+                ["docker", "volume", "create", volume_name],
+                cwd=self.workspace, timeout_s=volume_timeout_s, env=None)
+            if volume_created.exit_code != 0:
+                raise SkepticInfraError(
+                    f"capture artifact volume {volume_name} could not be created "
+                    f"(exit {volume_created.exit_code}). Skeptic gives every "
+                    f"candidate execution a fresh engine-managed output volume; "
+                    f"without it there is no private output boundary. Next: "
+                    f"inspect Docker volume storage and re-run.\n"
+                    f"stderr tail:\n{volume_created.stderr[-800:]}"
+                )
+
+            primary_timeout_s = bounded_timeout(
+                timeout_s, "capture primary Docker run")
+            candidate_attempted = True
+            primary = _run(
+                full, cwd=self.workspace, timeout_s=primary_timeout_s, env=None)
+            if primary.exit_code < 0:
+                stop_timeout_s = bounded_timeout(
+                    30, "capture timeout-stop confirmation")
+                stopped = _run(["docker", "stop", name], cwd=self.workspace,
+                               timeout_s=stop_timeout_s, env=None)
+                if stopped.exit_code != 0:
+                    raise SkepticInfraError(
+                        f"capture container {name} could not be confirmed stopped "
+                        f"after the Docker client ended without confirming its "
+                        f"exit (stop exit {stopped.exit_code}).\n"
+                        f"run stderr tail:\n{primary.stderr[-800:]}\n"
+                        f"stop stderr tail:\n{stopped.stderr[-800:]}\n"
+                        f"Skeptic refuses to copy private output while candidate "
+                        f"code may still be writing it. Next: inspect Docker daemon "
+                        f"health and remove the container if it remains."
+                    )
+            helper_timeout_s = bounded_timeout(
+                30, "capture read-only copy-helper creation")
+            helper_attempted = True
+            helper_created = _run(
+                [
+                    "docker", "create", "--name", helper_name,
+                    "--mount",
+                    (f"type=volume,src={volume_name},"
+                     f"dst=/tmp/skeptic-artifacts,readonly"),
+                    self.image, "true",
+                ],
+                cwd=self.workspace,
+                timeout_s=helper_timeout_s,
+                env=None,
+            )
+            if helper_created.exit_code != 0:
+                raise SkepticInfraError(
+                    f"capture copy helper {helper_name} could not be created "
+                    f"from stopped candidate volume {volume_name} "
+                    f"(exit {helper_created.exit_code}). The helper is never "
+                    f"started and exposes only that volume read-only; without "
+                    f"it Skeptic refuses to copy through the candidate's "
+                    f"workspace mounts. Next: inspect Docker container and "
+                    f"volume storage and re-run.\n"
+                    f"stderr tail:\n{helper_created.stderr[-800:]}"
+                )
+            copy_timeout_s = bounded_timeout(
+                60, "capture private-output copy")
+            copied = _run(
+                [
+                    "docker", "cp",
+                    f"{helper_name}:/tmp/skeptic-artifacts/.",
+                    str(quarantine),
+                ],
+                cwd=self.workspace,
+                timeout_s=copy_timeout_s,
+                env=None,
+            )
+            if copied.exit_code != 0:
+                state = (
+                    "timed out under the shared host deadline"
+                    if copied.exit_code == -1 and deadline is not None
+                    else "timed out"
+                    if copied.exit_code == -1
+                    else "failed"
+                )
+                raise SkepticInfraError(
+                    f"container-private output copy {state} for {name} "
+                    f"(copy exit {copied.exit_code}). "
+                    f"Skeptic cannot admit outputs that did not cross the "
+                    f"container boundary completely. This is an infra failure, "
+                    f"never evidence. Next: inspect Docker storage and retry "
+                    f"the verification.\n"
+                    f"primary exit {primary.exit_code}\n"
+                    f"primary stdout tail:\n{primary.stdout[-800:]}\n"
+                    f"primary stderr tail:\n{primary.stderr[-800:]}\n"
+                    f"copy stdout tail:\n{copied.stdout[-800:]}\n"
+                    f"copy stderr tail:\n{copied.stderr[-800:]}"
+                )
+        finally:
+            if helper_attempted:
+                _run(["docker", "rm", "-f", helper_name], cwd=self.workspace,
+                     timeout_s=30, env=None)
+            if candidate_attempted:
+                _run(["docker", "rm", "-f", name], cwd=self.workspace,
+                     timeout_s=30, env=None)
+            if volume_attempted:
+                _run(["docker", "volume", "rm", "-f", volume_name],
+                     cwd=self.workspace, timeout_s=30, env=None)
+        if deadline is not None:
+            deadline.require_active("capture evidence admission")
+        return primary
 
 
 class SessionContainer:
@@ -424,7 +787,9 @@ class SessionContainer:
                  ro_subpaths: tuple[str, ...] = ()) -> None:
         self.image = image
         self.workspace = workspace
-        self.ro_subpaths = ro_subpaths
+        self.ro_subpaths = tuple(
+            _resolve_ro_subpath(workspace, sub)[0] for sub in ro_subpaths
+        )
         self._container_id: str | None = None
 
     @property

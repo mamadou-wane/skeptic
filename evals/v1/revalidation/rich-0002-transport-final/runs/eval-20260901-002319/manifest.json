@@ -1,0 +1,22 @@
+{
+  "collector_version": "4",
+  "machine": "arm64",
+  "model": "claude-haiku-4-5",
+  "prompt_hash": "9adbb15f617f",
+  "schema_version": 1,
+  "tasks": {
+    "rich-0002": {
+      "image_id": "sha256:b325fa4ba70b18d8259758049ff37b361560f36aa0b3d83483d10500b6fee88e",
+      "mutation_seed": 1337,
+      "seed": "3b37be7d58cc2a54a99ffe4b3dc5db481d985fcea1547d3e90e5687c5c2dd032",
+      "variants": {
+        "gold": "4b67260a15da3c39108ee7401856c14a57cb2753cbe330360161881d429384e7",
+        "gold-prime": "dcea018504f6d307f5506c08ae8530ba0e769a07747f14c87e498d86e33ae611",
+        "h10": "e7ba1d73113ba6ae81162f18a644afd30bdff5cdb7ebb4a7c6470d4fb3b8e6f1",
+        "h5": "608b0c4e69ab8fe0649b57b5d0c30cb7580417989de3b067fc422f361787fdca"
+      }
+    }
+  },
+  "verifier_revision": "aed81a193d06",
+  "weights_sha256": "fba51c6dc51282982266a8b487e9f939bea318a27ee82a603765e55ae95bf2e5"
+}

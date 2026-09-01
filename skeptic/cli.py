@@ -1757,13 +1757,15 @@ def verify(
                         payload={"error": f"{type(exc).__name__}: {exc}"})
 
             layer = run_verify_layer(pair, profile=profile)
+            fix_verified = compute_fix_verified(pair)
             verdict = aggregate(
-                layer, run_id=trace.run_id, task_id=spec.task_id,
+                layer, fix_verified=fix_verified,
+                run_id=trace.run_id, task_id=spec.task_id,
                 variant=identity, isolation="docker-run",
                 profile=profile)
             return {
                 **verdict.model_dump(),
-                "fix_verified": compute_fix_verified(pair),
+                "fix_verified": fix_verified,
                 "artifacts_dir": str(pair.artifacts_dir),
             }
 

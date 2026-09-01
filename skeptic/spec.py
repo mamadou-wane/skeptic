@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
 import yaml
@@ -35,6 +35,32 @@ class RepoSpec(_Model):
 _TEST_CMD_METACHARS = set(";&|<>$`(){}[]*?!~#\\\n\r\t")
 
 
+def normalize_ro_subpath(raw: str) -> str:
+    """Validate and normalize a protected workspace-relative mount path."""
+    posix = PurePosixPath(raw)
+    windows = PureWindowsPath(raw)
+    if (
+        not raw
+        or posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or bool(windows.root)
+        or ".." in posix.parts
+        or ".." in windows.parts
+    ):
+        raise ValueError(
+            f"protected read-only mount path {raw!r} must be a non-empty "
+            f"repository-relative path with no '..' component"
+        )
+    normalized = str(posix)
+    if normalized == ".":
+        raise ValueError(
+            f"protected read-only mount path {raw!r} names the workspace root; "
+            f"it must name a path strictly beneath the workspace"
+        )
+    return normalized
+
+
 class EnvironmentSpec(_Model):
     install: list[str]
     # A pip constraints file, relative to the checkout like `seed.bug_patch`:
@@ -50,6 +76,16 @@ class EnvironmentSpec(_Model):
     golden_dirs: list[str] = []
     timeout_s: int
     network_after_install: bool = False
+
+    @model_validator(mode="after")
+    def _protected_mount_subpaths_are_relative(self) -> EnvironmentSpec:
+        for field in ("test_dirs", "config_files", "golden_dirs"):
+            for raw in getattr(self, field):
+                try:
+                    normalize_ro_subpath(raw)
+                except ValueError as exc:
+                    raise ValueError(f"environment.{field} entry is invalid: {exc}") from exc
+        return self
 
     @property
     def constraints_file(self) -> Path | None:

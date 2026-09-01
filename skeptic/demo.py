@@ -329,14 +329,16 @@ def run_demo(workdir: Path) -> int:
             candidate=_observe(spec, tree, artifacts / "candidate", "candidate"),
             candidate_diff=report, artifacts_dir=artifacts,
         )
+        layer = run_verify_layer(pair, profile=PROFILE)
+        fix_verified = compute_fix_verified(pair)
         verdict = aggregate(
-            run_verify_layer(pair, profile=PROFILE),
+            layer, fix_verified=fix_verified,
             run_id=RUN_ID, task_id=TASK_ID, variant=variant,
             isolation="none", profile=PROFILE,
         )
         typer.echo("")
         typer.echo(f"{variant} · {blurb}")
-        render_verdict(verdict, fix_verified=compute_fix_verified(pair))
+        render_verdict(verdict, fix_verified=fix_verified)
         if verdict.verdict != expected:
             wrong.append(f"{variant} rendered {verdict.verdict or verdict.status}, "
                          f"expected {expected}")

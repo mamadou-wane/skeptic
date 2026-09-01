@@ -1,0 +1,21 @@
+{
+  "baseline_passing_count": 950,
+  "baseline_suite_exit": 1,
+  "candidate_suite_exit": 0,
+  "check": "t1_outcomes",
+  "failing_tests": [
+    "tests/test_bar.py::test_render",
+    "tests/test_progress.py::test_columns",
+    "tests/test_progress.py::test_expand_bar",
+    "tests/test_progress.py::test_progress_track",
+    "tests/test_progress.py::test_render",
+    "tests/test_progress.py::test_track"
+  ],
+  "fix_verified": true,
+  "flips": [],
+  "not_fixed": [],
+  "quarantine": [],
+  "regressions": [],
+  "status": "completed",
+  "still_failing": []
+}

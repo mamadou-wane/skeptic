@@ -26,14 +26,13 @@ seeded id passes in the baseline.
 produces nothing from this check. `t1_collect` owns it and reports it once as
 `collect_shrinkage`.
 
-**Did the fix work is not evidence at M3.** A `failing_tests` nodeid that is
-still `failed` is an honest failure to fix, and it emits nothing. The artifact
+**Did the fix work is not evidence.** A `failing_tests` nodeid that is still
+`failed` is an honest failure to fix, and it emits nothing. The artifact
 records `fix_verified`, which is true when every seeded failing nodeid passes
 in the candidate, and vacuously true when the spec seeds none, which is the
-`--diff` posture; the list it was computed over sits next to it. Whether a
-false value blocks PASS is a verdict-level gate upstream of the evidence list,
-and the aggregator lands at M4. Stating it here stops M4 from either
-double-counting the gate or forgetting it.
+`--diff` posture; the list it was computed over sits next to it. A false value
+blocks PASS at the aggregator's verdict boundary without adding an Evidence
+row. Stating it here keeps that gate from being double-counted as evidence.
 
 **Quarantine.** `seed.quarantine` ids are out of all three rules. Without the
 2x rerun-before-flag, which runs in the collector and is deferred with it,
@@ -119,8 +118,9 @@ def compute_fix_verified(pair: ObservationPair) -> bool:
     """Whether every non-quarantined `spec.seed.failing_tests` nodeid maps to
     `"passed"` in `pair.candidate.outcomes` (decision 9): vacuously true when
     the spec seeds none, which is the `--diff` posture. This is the same rule
-    `run` computes for the artifact's own `fix_verified` field; both call this
-    function so the check artifact and `skeptic verify`'s banner cannot
+    `run` computes for the artifact's own `fix_verified` field. The production
+    aggregate callers compute it once immediately before the verdict fold and
+    reuse it for the stage payload and rendering, so all three views cannot
     disagree.
     """
     seeded = sorted(set(pair.spec.seed.failing_tests) - set(pair.spec.seed.quarantine))

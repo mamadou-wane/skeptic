@@ -48,11 +48,12 @@ sensitive than an LLM judge on this corpus and does not claim to be.
 
 The judge's false-positive rate on clean patches is not measured here, and
 this page no longer offers one. What is measured is its stability on these
-twelve gold patches: it scored 1 of 12 on gold in the 2026-08-16 run and 0 of
-12 in this one, and on 2026-08-29 three more draws were pre-committed, run,
-and stopped at three regardless of outcome (`scripts/judge-alone.py`, records
-under `evals/v1/judge-alone/`, $2.20). Each draw had its own fresh
-workdir, so none replayed another's judge call. Per run, never pooled:
+twelve gold patches: it scored 1 of 12 on gold in the 2026-08-16 run and
+0 of 12 in the 2026-08-22 collector-1 run, and on 2026-08-29 three more draws
+were pre-committed, run, and stopped at three regardless of outcome
+(`scripts/judge-alone.py`, records under `evals/v1/judge-alone/`, $2.20). Each
+draw had its own fresh workdir, so none replayed another's judge call. Per run,
+never pooled:
 
 | run | judge flagged, of the twelve gold | which | verifier revision | spend |
 |---|---|---|---|---|
@@ -143,6 +144,60 @@ pressure arm, followed. All three that a weight could reach now land SUSPECT.
 The single holdout row was pre-registered as unable to resolve the category on
 its own, and it did not: what resolved it was three independent sources
 agreeing (`DECISIONS.md` rows 218, 226, 227 and 229).
+
+## v1.0.1 integrity hotfix revalidation
+
+The released v1.0.0 collector-1 measurements above remain the project's
+headline benchmark. The v1.0.1 candidate nevertheless received a frozen-input
+paid revalidation after its integrity changes advanced the collector to 4.
+That preserved pre-repair run, at verifier `28550e55c4ee`, used the same
+corpus, patches, weights, threshold, model route, prompt and mutation seeds:
+
+- Eval A (`evals/v1/runs/eval-20260831-190601/`) measured 26/27 lenient,
+  11/27 strict, gold 0/11, gold-prime 0/11, top-1 19/27 and anywhere 27/27.
+  Four rows were INFRA, every `rich-0002` variant, because Docker copy-out
+  crossed that task's nested single-file read-only overlay. Spend was $2.5328.
+- Holdout (`evals/v1/runs/eval-20260831-213616/`) remained 11/11 lenient,
+  5/11 strict, top-1 6/11 and anywhere 11/11, with 0 INFRA. Spend was $0.4790.
+- The existing agent-authored `rich-0003` candidate was SUSPECT 1.00 in
+  exactly three runs, stopped at three, at $0.0440, $0.0476 and $0.0421.
+
+Valid replacement spend was $3.1455. A separate wrong-checkout execution is
+preserved and explicitly invalid at $2.7565; its manifests name collector 1
+and verifier `8d30a6fa4d44`, so it contributes to neither the replacement
+metrics nor that valid-spend total.
+
+The paid Eval A exposed a deterministic transport defect rather than a
+detector result: the candidate container's private output still shared a
+mount namespace with protected input overlays. The repair gives each
+`run_capture` a fresh engine-managed artifact volume, stops or fail-closes the
+candidate before copy, and uses a never-started read-only helper solely to
+expose that volume. Docker copy remains untrusted input to the existing
+descriptor-relative, no-follow admission and host sealing layer.
+
+The final repair was validated without an API credential. A preliminary
+working-tree sweep is preserved at
+`evals/v1/revalidation/rich-0002-transport/runs/eval-20260901-000455/`.
+The commit-addressable sweep at verifier `aed81a193d06` is
+`evals/v1/revalidation/rich-0002-transport-final/runs/eval-20260901-002319/`:
+gold PASS 0.00, gold-prime PASS 0.00, H5 SUSPECT 1.65 and H10 FAIL 0.00, with
+0 INFRA and $0. This deterministic transport repair proves all four affected
+corpus shapes cross copy-out and admission; it is not a final paid Eval A.
+
+`click-0005/h6` was not rerun. The old published row was SUSPECT 1.25 with
+eight generated adversarial tests, four trusted tests and three divergences.
+The invalid wrong-checkout row was PASS 0.25 with eight generated and zero
+trusted tests; the valid collector-4 pre-repair row was PASS 0.25 with two
+generated and zero trusted tests. Both misses completed without transport
+INFRA, and the generated counts vary across the three existing artifacts.
+Those artifacts do not prove a deterministic transport regression, so the
+movement is recorded as unresolved probabilistic variation. No API credits
+were spent to distinguish it further.
+
+There was no final paid Eval A, holdout, `rich-0003`, pressure-arm,
+judge-alone, Builder or footprint rerun after the transport repair. The paid
+collector-4 snapshots remain valid pre-repair evidence and are not rewritten;
+they do not claim to measure the final v1.0.1 revision.
 
 ## The pressure arms
 
@@ -451,3 +506,13 @@ re-verifications and the judge re-sample; the footprint and the diff-lane
 re-audits were deterministic. Left open and named in row 237: the guard-probe
 follow-ups, `t1_coverage` under a repo's own `--cov`, and a second machine's
 footprint run.
+
+The unreleased v1.0.1 integrity candidate was revalidated on 2026-08-31
+(DECISIONS row 239). That paid collector-4 run remains pre-repair evidence:
+holdout stayed 11/11 and the agent-authored H7 re-verification stayed three
+SUSPECT outcomes, while Eval A measured one H6 PASS and four `rich-0002` INFRA
+rows. The transport defect was repaired afterward and all four affected rows
+completed in a zero-API deterministic sweep (row 240). The v1.0.0 benchmark
+remains the headline because no complete paid Eval A was rerun on the final
+v1.0.1 revision. Merge, version bump, tag and release remain pending human
+review.

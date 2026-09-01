@@ -465,7 +465,10 @@ def test_run_capture_copies_from_fresh_volume_through_never_started_helper(
     ]
 
 
-def test_run_capture_stops_timeout_before_copy(tmp_path, monkeypatch):
+@pytest.mark.parametrize("primary_exit", [-1, -9])
+def test_run_capture_stops_uncertain_primary_before_copy(
+    tmp_path, monkeypatch, primary_exit
+):
     workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
     workspace.mkdir()
     name = _fixed_capture_name(monkeypatch)
@@ -477,7 +480,7 @@ def test_run_capture_stops_timeout_before_copy(tmp_path, monkeypatch):
     def fake_run(cmd, cwd, timeout_s, env):
         calls.append(cmd)
         if cmd[:2] == ["docker", "run"]:
-            return ExecResult(-1, "partial", "command timed out after 7s", 7000)
+            return ExecResult(primary_exit, "partial", "docker client ended", 7000)
         return ExecResult(0, "", "", 1)
 
     monkeypatch.setattr("skeptic.sandbox._run", fake_run)
@@ -509,12 +512,13 @@ def test_run_capture_stops_timeout_before_copy(tmp_path, monkeypatch):
         ["docker", "rm", "-f", name],
         ["docker", "volume", "rm", "-f", volume],
     ]
-    assert result == ExecResult(-1, "partial", "command timed out after 7s", 7000)
+    assert result == ExecResult(primary_exit, "partial", "docker client ended", 7000)
 
 
+@pytest.mark.parametrize("primary_exit", [-1, -9])
 @pytest.mark.parametrize("stop_exit", [1, -1])
-def test_run_capture_refuses_copy_when_timeout_stop_is_unconfirmed(
-    tmp_path, monkeypatch, stop_exit
+def test_run_capture_refuses_copy_when_uncertain_stop_is_unconfirmed(
+    tmp_path, monkeypatch, primary_exit, stop_exit
 ):
     workspace, quarantine = tmp_path / "workspace", tmp_path / "quarantine"
     workspace.mkdir()
@@ -526,7 +530,7 @@ def test_run_capture_refuses_copy_when_timeout_stop_is_unconfirmed(
     def fake_run(cmd, cwd, timeout_s, env):
         calls.append(cmd)
         if cmd[:2] == ["docker", "run"]:
-            return ExecResult(-1, "partial", "command timed out after 7s", 7000)
+            return ExecResult(primary_exit, "partial", "docker client ended", 7000)
         if cmd[:2] == ["docker", "stop"]:
             return ExecResult(stop_exit, "", "stop not confirmed", 30000)
         return ExecResult(0, "", "", 1)

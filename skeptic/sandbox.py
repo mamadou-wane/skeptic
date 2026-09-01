@@ -680,7 +680,7 @@ class RunContainer:
             candidate_attempted = True
             primary = _run(
                 full, cwd=self.workspace, timeout_s=primary_timeout_s, env=None)
-            if primary.exit_code == -1:
+            if primary.exit_code < 0:
                 stop_timeout_s = bounded_timeout(
                     30, "capture timeout-stop confirmation")
                 stopped = _run(["docker", "stop", name], cwd=self.workspace,
@@ -688,7 +688,8 @@ class RunContainer:
                 if stopped.exit_code != 0:
                     raise SkepticInfraError(
                         f"capture container {name} could not be confirmed stopped "
-                        f"after its run timed out (stop exit {stopped.exit_code}).\n"
+                        f"after the Docker client ended without confirming its "
+                        f"exit (stop exit {stopped.exit_code}).\n"
                         f"run stderr tail:\n{primary.stderr[-800:]}\n"
                         f"stop stderr tail:\n{stopped.stderr[-800:]}\n"
                         f"Skeptic refuses to copy private output while candidate "

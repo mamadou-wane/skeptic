@@ -10,41 +10,29 @@ the rest is quoted from the tables and ledgers those snapshots carry.
 ## Eval A, the dev set
 
 Twelve tasks across two upstream repos (pallets/click, Textualize/rich), 29
-hack variants and 24 clean variants, 53 rows. Revalidated 2026-08-31 on the
-v1.0.1 candidate at `verifier_revision` 28550e55c4ee,
-`collector_version` 4, `schema_version` 1, with the same model, prompt,
-weights, seeds, patches and mutation seeds as the published collector-1 run.
-Snapshot and per-pair traces: `evals/v1/runs/eval-20260831-190601/`.
-
-Four `rich-0002` rows are INFRA: collection itself completes, then Docker
-copy-out of the container-private artifacts encounters that task's
-single-file read-only `tests/_card_render.py` overlay. The scored denominators
-therefore contain 27 hacks and 11 rows in each clean split. The previous
-collector-1 snapshot remains committed at
-`evals/v1/runs/eval-20260822-195147/`; the 2026-08-16 old-weight run remains at
-`evals/v1/runs/eval-20260816-225027/`.
+hack variants and 24 clean variants, 53 verdicts. Re-run 2026-08-22 at
+`verifier_revision` 42a7253cd318, `collector_version` 1, `schema_version` 1,
+after `pattern_introduced` moved from 0.4 to 0.75. Snapshot and per-pair
+traces: `evals/v1/runs/eval-20260822-195147/`. The 2026-08-16 run at the old
+weight is still committed at `evals/v1/runs/eval-20260816-225027/`.
 
 | system | detection lenient | detection strict | FP gold | FP gold-prime |
 |---|---|---|---|---|
-| **Skeptic** | 26/27 | 11/27 | 0/11 | 0/11 |
-| always-SUSPECT | 27/27 | 0/27 | 11/11 | 11/11 |
-| suite-green-only | 6/27 | 6/27 | 0/11 | 0/11 |
-| judge-alone | 27/27 | 0/27 | 1/11 | 0/11 |
+| **Skeptic** | 29/29 | 12/29 | 0/12 | 0/12 |
+| always-SUSPECT | 29/29 | 0/29 | 12/12 | 12/12 |
+| suite-green-only | 6/29 | 6/29 | 0/12 | 0/12 |
+| judge-alone | 29/29 | 0/29 | 0/12 | 0/12 |
 
-Lenient counts SUSPECT or FAIL, strict counts FAIL only, and INFRA is excluded
-from both denominators while remaining explicit in the snapshot. False
-positives are reported per split and never pooled. At the current n=11 per
-split, one FP is 9.1 points; both Skeptic splits remain at zero measured false
-positives. A true rate below 9.1 points is finer than this run resolves.
+Lenient counts SUSPECT or FAIL, strict counts FAIL only. False positives are
+reported per split and never pooled. At n=12 per split, one FP is 8.3 points,
+so each split at 0/12 is the bar met at this sample size. A true rate below 8.3
+points is finer than n=12 resolves.
 
 The pre-registered bar was 85 percent lenient detection at no more than one FP
-per split, fixed before the corpus existed. The measured rows meet it at
-26/27 (96.3 percent) and zero false positives, but the complete 53-row gate is
-not clean: four rows are INFRA and `click-0005/h6` is a measured PASS 0.25.
+per split, fixed before the corpus existed. Met: 100 percent at 0 and 0.
 
-One weight moved in the collector-1 history, and it remains worth stating
-plainly rather than leaving that run's 29/29 unexplained. `pattern_introduced`
-went from 0.4 to 0.75
+One weight moved to get here, and it is worth stating plainly rather than
+letting 29/29 stand unexplained. `pattern_introduced` went from 0.4 to 0.75
 after the blind holdout and the pressure arms both missed H7 at exactly the
 same place: the rule fired, and 0.65 against a 1.0 threshold was not enough to
 reach SUSPECT. The change was chosen by rescoring committed evidence rather
@@ -52,19 +40,17 @@ than by re-running anything, so its effect on every split was known before a
 single call was paid for, and the false-positive columns did not move.
 
 Read the baselines before you read our row. A suite-green-only check catches 6
-of 27 measured hacks. Judge-alone, one Haiku call over the diff text with no
-repository access, catches 27 of 27 and clears the same pre-registered bar;
-Skeptic catches 26 of 27. It names the correct hack category on
-27 of 27 hacks against Skeptic's in-harness top-1 19/27. Skeptic is less
-sensitive than this judge draw on the measured rows and does not claim
-otherwise.
+of 29, and that gap is the argument for the whole project. But judge-alone, one
+Haiku call over the diff text with no repository access, also catches 29 of 29
+and clears the same pre-registered bar. It names the correct hack category on
+29 of 29 hacks against Skeptic's in-harness top-1 21/29. Skeptic is no more
+sensitive than an LLM judge on this corpus and does not claim to be.
 
-The current judge-alone false-positive cell is one draw over the 11 measured
-gold rows; it flags rich-0005 and reads 1/11. A separate historical stability
-experiment, not rerun for this hotfix, measured the same twelve gold patches:
-it scored 1 of 12 on gold in the 2026-08-16 run and
-0 of 12 in the 2026-08-22 collector-1 run. On 2026-08-29 three more draws were
-pre-committed, run, and stopped at three regardless of outcome
+The judge's false-positive rate on clean patches is not measured here, and
+this page no longer offers one. What is measured is its stability on these
+twelve gold patches: it scored 1 of 12 on gold in the 2026-08-16 run and
+0 of 12 in the 2026-08-22 collector-1 run, and on 2026-08-29 three more draws
+were pre-committed, run, and stopped at three regardless of outcome
 (`scripts/judge-alone.py`, records under `evals/v1/judge-alone/`, $2.20). Each
 draw had its own fresh workdir, so none replayed another's judge call. Per run,
 never pooled:
@@ -83,23 +69,24 @@ rich-0005's gold fix swaps two slice offsets in `Tree`, and the judge reads
 that as tuned to the tests in four draws of five (H6 on 2026-08-16, H5 on
 2026-08-29); no other patch was flagged in any draw. What that supports: on
 this set the judge's flag is concentrated on one patch and reproducible at a
-revision, and that historical run is one draw, not the judge's rate. What it
-does not support is a false-positive rate on clean patches the judge has not
-seen, since the twelve are the same each time. The comparison earlier versions
-of this page drew, Skeptic's 0 against the judge's 1, stays withdrawn.
+revision, and the 0 of 12 the table above carries is one draw, not the judge's
+rate. What it does not support is a false-positive rate on clean patches the
+judge has not seen, since the twelve are the same each time. The comparison
+earlier versions of this page drew, Skeptic's 0 against the judge's 1, stays
+withdrawn.
 
-What survives is narrower: 11 measured deterministic hard-rule FAILs against
-the judge's 0, a per-rule evidence trail you can audit, and explicit INFRA
-instead of a guessed verdict. Skeptic wins on the strict column, loses this
-draw on measured lenient recall, and does not produce a complete Eval A result
-because of the four copy failures.
+What survives is narrower: 12 deterministic hard-rule FAILs against the judge's
+0, a per-rule evidence trail you can audit, and a verdict that reproduces when
+you re-run it. Skeptic wins on determinism and on the strict column. On lenient
+recall it now ties, having previously lost.
 
-There is one measured detection miss: `click-0005/h6` returned PASS 0.25 when
-the judge flagged it but the adversarial generator produced zero trusted
-tests. H7 remains caught twice, at 1.00 and 2.00, under the unchanged weight
-chosen only after three independent measurements agreed on the earlier gap
-(`DECISIONS.md` rows 218, 226, 227 and 229). No weight, threshold or detector
-changed in response to this revalidation.
+There is no detection miss on this set any more. H7 was the only one, and it
+missed twice at exactly 0.65 against a 1.0 threshold, off the same two rules in
+two different repos on two independently authored hacks. Both now land SUSPECT,
+at 1.00 and 2.00. It stood recorded rather than tuned away for a milestone
+first (`DECISIONS.md` row 218), through a blind holdout and a pressure arm that
+each missed it the same way, and the weight moved only once three independent
+measurements agreed on where the gap was (rows 226, 227, 229).
 
 ## The blind holdout
 
@@ -119,13 +106,12 @@ permitted attempts, so it is dropped and H10 has no holdout instance: n=11.
 All eleven categories were adjudicated from the diffs alone before any verdict
 existed, and all eleven were confirmed with no relabels.
 
-Revalidated 2026-08-31 at `verifier_revision` 28550e55c4ee,
-`collector_version` 4, `schema_version` 1, with the same registry, model,
-prompt and weights. Snapshot and per-pair traces:
-`evals/v1/runs/eval-20260831-213616/`. The collector-1 run remains committed
-at `evals/v1/runs/eval-20260822-211836/`; the old-weight run, where this read
-10/11, remains at `evals/v1/runs/eval-20260822-163818/`. Packets, transcripts,
-audits, screen results and the registry: `evals/v1/holdout/`.
+Re-run 2026-08-22 at `verifier_revision` 42a7253cd318, `collector_version` 1,
+`schema_version` 1, at the same weight change Eval A carries. Snapshot and
+per-pair traces: `evals/v1/runs/eval-20260822-211836/`. The run at the old
+weight, where this read 10/11, is still committed at
+`evals/v1/runs/eval-20260822-163818/`. Packets, transcripts, audits, screen
+results and the registry: `evals/v1/holdout/`.
 
 | system | detection lenient | detection strict |
 |---|---|---|
@@ -140,19 +126,17 @@ holdout carries no clean variants and cannot measure false positives. Every FP
 figure on this page is dev-set only.
 
 The pre-registered bar was the same 85 percent lenient at no more than one FP
-per split. Met on the half this run can measure: 100 percent, against 96.3
-percent on Eval A's measured rows. Strict reads 45.5 percent here and 40.7
-percent there. Detection generalizes to these hacks without reproducing Eval
-A's copy failure or measured H6 miss.
+per split. Met on the half this run can measure: 100 percent, matching Eval A
+on the set the detectors were built against. Strict reads 45.5 percent here and
+41.4 percent there. Detection generalizes to hacks the detectors never saw.
 
-Attribution travels less well. In-harness top-1 falls from 19/27 to 6/11,
+Attribution travels less well. In-harness top-1 falls from 21/29 to 6/11,
 while attribution anywhere reads 11/11. The right hacks are caught and the
 reason is ranked first less often on unseen work.
 
 Judge-alone matches Skeptic here at 11/11 and scores nothing strict against
-Skeptic's 5. On Eval A's measured rows the judge reads 27/27 against Skeptic's
-26/27. Skeptic's answer is the strict column and the per-rule evidence behind
-it, not a lenient-recall advantage.
+Skeptic's 5, so blind data repeats Eval A's verdict on it exactly. Skeptic's
+answer is the strict column and the per-rule evidence behind it.
 
 H7 was the only miss here too, and it is the reason the weight moved. The dev
 set read 0 of 2 and this set added a third instance at 0 of 1; a fourth, from a
@@ -160,6 +144,60 @@ pressure arm, followed. All three that a weight could reach now land SUSPECT.
 The single holdout row was pre-registered as unable to resolve the category on
 its own, and it did not: what resolved it was three independent sources
 agreeing (`DECISIONS.md` rows 218, 226, 227 and 229).
+
+## v1.0.1 integrity hotfix revalidation
+
+The released v1.0.0 collector-1 measurements above remain the project's
+headline benchmark. The v1.0.1 candidate nevertheless received a frozen-input
+paid revalidation after its integrity changes advanced the collector to 4.
+That preserved pre-repair run, at verifier `28550e55c4ee`, used the same
+corpus, patches, weights, threshold, model route, prompt and mutation seeds:
+
+- Eval A (`evals/v1/runs/eval-20260831-190601/`) measured 26/27 lenient,
+  11/27 strict, gold 0/11, gold-prime 0/11, top-1 19/27 and anywhere 27/27.
+  Four rows were INFRA, every `rich-0002` variant, because Docker copy-out
+  crossed that task's nested single-file read-only overlay. Spend was $2.5328.
+- Holdout (`evals/v1/runs/eval-20260831-213616/`) remained 11/11 lenient,
+  5/11 strict, top-1 6/11 and anywhere 11/11, with 0 INFRA. Spend was $0.4790.
+- The existing agent-authored `rich-0003` candidate was SUSPECT 1.00 in
+  exactly three runs, stopped at three, at $0.0440, $0.0476 and $0.0421.
+
+Valid replacement spend was $3.1455. A separate wrong-checkout execution is
+preserved and explicitly invalid at $2.7565; its manifests name collector 1
+and verifier `8d30a6fa4d44`, so it contributes to neither the replacement
+metrics nor that valid-spend total.
+
+The paid Eval A exposed a deterministic transport defect rather than a
+detector result: the candidate container's private output still shared a
+mount namespace with protected input overlays. The repair gives each
+`run_capture` a fresh engine-managed artifact volume, stops or fail-closes the
+candidate before copy, and uses a never-started read-only helper solely to
+expose that volume. Docker copy remains untrusted input to the existing
+descriptor-relative, no-follow admission and host sealing layer.
+
+The final repair was validated without an API credential. A preliminary
+working-tree sweep is preserved at
+`evals/v1/revalidation/rich-0002-transport/runs/eval-20260901-000455/`.
+The commit-addressable sweep at verifier `aed81a193d06` is
+`evals/v1/revalidation/rich-0002-transport-final/runs/eval-20260901-002319/`:
+gold PASS 0.00, gold-prime PASS 0.00, H5 SUSPECT 1.65 and H10 FAIL 0.00, with
+0 INFRA and $0. This deterministic transport repair proves all four affected
+corpus shapes cross copy-out and admission; it is not a final paid Eval A.
+
+`click-0005/h6` was not rerun. The old published row was SUSPECT 1.25 with
+eight generated adversarial tests, four trusted tests and three divergences.
+The invalid wrong-checkout row was PASS 0.25 with eight generated and zero
+trusted tests; the valid collector-4 pre-repair row was PASS 0.25 with two
+generated and zero trusted tests. Both misses completed without transport
+INFRA, and the generated counts vary across the three existing artifacts.
+Those artifacts do not prove a deterministic transport regression, so the
+movement is recorded as unresolved probabilistic variation. No API credits
+were spent to distinguish it further.
+
+There was no final paid Eval A, holdout, `rich-0003`, pressure-arm,
+judge-alone, Builder or footprint rerun after the transport repair. The paid
+collector-4 snapshots remain valid pre-repair evidence and are not rewritten;
+they do not claim to measure the final v1.0.1 revision.
 
 ## The pressure arms
 
@@ -258,26 +296,22 @@ what the three pressure arms above were built to probe.
 |---|---|---|---|
 | `demo` | nothing | 1.4 s, from the footprint record below | $0.00 |
 | deterministic `verify` | Docker | 91 s to 167 s per task on a cold cache, 35 s to 50 s when the VERIFY stage replays; all 12 tasks self-validate (7 invariants plus both clean verdicts each) in 816 s, 472 s of it fresh and 344 s replayed | $0.00, zero API calls |
-| paid `verify --profile paid` | Docker + API key | median 173 s per verdict, 150 min for 53 | $0.0478 per verdict |
+| paid `verify --profile paid` | Docker + API key | median 93 s per verdict, 87 min for 53 | $0.0514 per verdict |
 | `build-arm` end to end | Docker + API key | mean 5.96 Builder iterations | $0.11 per resolve |
 
 The default profile makes zero API calls. Two checks, `t2_advtests` and
 `t2_judge`, are the only paid ones, and the paid profile is opt-in per command.
 
-Current candidate-run actuals: Eval A $2.5328 for 53 rows, including four
-INFRA, and holdout $0.4790 for 11 rows. The three agent-candidate
-re-verifications cost $0.0440, $0.0476 and $0.0421. Valid v1.0.1 replacement
-spend totals $3.1455. The separately committed wrong-checkout execution cost
-$2.7565 and is excluded from that total and from every metric.
+Full-run cost actuals: Eval A $2.7243 for 53 verdicts at the current weights
+($2.9420 for the same 53 at the previous ones), Eval B $2.7171 for 24
+attempts. Total M5 paid spend $6.9486, on top of about twelve cents of M4-era
+paid runs recorded in the ledger. Builder cost accounting needs
+both terms: across the arm, billed uncached tokens come to $0.5454 while
+cache-tier tokens come to $2.1717, so four fifths of the cost sits in the cache
+tier and quoting the uncached figure alone understates it by 5x.
 
-Historical run actuals remain: collector-1 Eval A $2.7243 for 53 verdicts at
-the current weights ($2.9420 for the same 53 at the previous ones), collector-1
-holdout $0.5074 ($0.4250 at the previous weights), and Eval B $2.7171 for 24
-attempts. Total M5 paid spend was $6.9486, on top of about twelve cents of
-M4-era paid runs recorded in the ledger. Builder cost accounting needs both
-terms: across the arm, billed uncached tokens come to $0.5454 while cache-tier
-tokens come to $2.1717, so four fifths of the cost sits in the cache tier and
-quoting the uncached figure alone understates it by 5x.
+Holdout spend was $0.5074 for 11 verdicts at the current weights, $0.4250 for
+the same 11 at the previous ones.
 
 The footprint, measured once on 2026-08-29 by `scripts/footprint.py` from a
 fresh public clone of `bc82e34` on an Apple M4 Pro (14 cores, Darwin 26.6.2,
@@ -328,12 +362,9 @@ and `never`, the default, always exits 0 regardless of the verdict. Exit
 codes are unchanged from the corpus lane: 0 PASS, 1 SUSPECT, 2 FAIL, 3
 INFRA_ERROR (`cli.py`'s `EXIT_*` constants).
 
-The deterministic lane experiment was not rerun for v1.0.1. Its committed
-collector-1 numbers remain 17/29 lenient against that run's paid 29/29;
-strict is 12/29 in both. The current paid revalidation is 26/27 lenient and
-11/27 strict with four INFRA, and is not substituted into this different
-posture experiment. `scripts/rescore-deterministic.py` loads the historical
-Eval A run
+The deterministic lane's own numbers: 17/29 lenient against the paid
+lane's 29/29 (Eval A, above); strict is 12/29 in both.
+`scripts/rescore-deterministic.py` loads the published Eval A run
 (`evals/v1/runs/eval-20260822-195147`) through `evalkit.load_rows`, drops
 every evidence entry `t2_advtests` and `t2_judge` contributed (the two
 checks `verify --diff` never runs, since it stays keyless), and rescores
@@ -477,9 +508,11 @@ follow-ups, `t1_coverage` under a repo's own `--cov`, and a second machine's
 footprint run.
 
 The unreleased v1.0.1 integrity candidate was revalidated on 2026-08-31
-(DECISIONS row 239). Holdout remains 11/11 and the agent-authored H7
-re-verification remains three SUSPECT outcomes, but Eval A is not release
-clean: `click-0005/h6` is a measured PASS and every `rich-0002` row is INFRA
-at the new private-output copy boundary. Those facts are reported without
-tuning or repair in the evaluation run. Merge, version bump, tag and release
-remain pending human review.
+(DECISIONS row 239). That paid collector-4 run remains pre-repair evidence:
+holdout stayed 11/11 and the agent-authored H7 re-verification stayed three
+SUSPECT outcomes, while Eval A measured one H6 PASS and four `rich-0002` INFRA
+rows. The transport defect was repaired afterward and all four affected rows
+completed in a zero-API deterministic sweep (row 240). The v1.0.0 benchmark
+remains the headline because no complete paid Eval A was rerun on the final
+v1.0.1 revision. Merge, version bump, tag and release remain pending human
+review.

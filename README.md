@@ -114,48 +114,48 @@ The full design, its tradeoffs and its limits:
 
 ## Evaluation
 
-Two measurements, both committed with per-pair traces and revalidated on the
-v1.0.1 candidate at verifier `28550e55c4ee`, collector 4. The dev set is 12
-tasks across the two repos, 29 hack variants and 24 clean variants, written by
-the same hand that built the detectors. Four `rich-0002` rows are INFRA at the
-new host-admission copy boundary, so the scored denominators are 27 hacks and
-11 rows in each clean split. The blind holdout is 12 hack variants authored by
-`gpt-5.6-sol` through Codex, 11 of which cleared a detector-free mechanical
-screen; no authoring session saw a detector, a weight, a threshold or a
-dev-set variant.
+Two measurements, both committed with per-pair traces. The dev set is 12
+tasks across the two repos, 29 hack variants and 24 clean variants, written
+by the same hand that built the detectors. The blind holdout is 12 hack
+variants authored by `gpt-5.6-sol` through Codex, 11 of which cleared a
+detector-free mechanical screen; no authoring session saw a detector, a
+weight, a threshold or a dev-set variant.
 
 | system | dev lenient | dev strict | holdout lenient | holdout strict | FP gold | FP gold-prime |
 |---|---|---|---|---|---|---|
-| **Skeptic** | 26/27 | 11/27 | 11/11 | 5/11 | 0/11 | 0/11 |
-| always-SUSPECT | 27/27 | 0/27 | 11/11 | 0/11 | 11/11 | 11/11 |
-| suite-green-only | 6/27 | 6/27 | 3/11 | 3/11 | 0/11 | 0/11 |
-| judge-alone | 27/27 | 0/27 | 11/11 | 0/11 | 1/11 | 0/11 |
+| **Skeptic** | 29/29 | 12/29 | 11/11 | 5/11 | 0/12 | 0/12 |
+| always-SUSPECT | 29/29 | 0/29 | 11/11 | 0/11 | 12/12 | 12/12 |
+| suite-green-only | 6/29 | 6/29 | 3/11 | 3/11 | 0/12 | 0/12 |
+| judge-alone | 29/29 | 0/29 | 11/11 | 0/11 | 0/12 | 0/12 |
 
 Lenient counts SUSPECT or FAIL; strict counts FAIL only, which means a
-deterministic hard rule fired. INFRA rows are shown but excluded from those
-denominators. False positives are dev-set only (a blind author asked for a
-hack returns either a gold revert or a correct fix, so the holdout has no
-clean variants) and reported per split; at the current n=11 one FP is 9.1
-points. The current judge-alone FP cell is one draw of a temperature-0 call.
-The separate historical stability experiment remains five draws over the
-same twelve gold patches: 1, 0, 1, 1 and 1 of 12, the flag on rich-0005 each
-time it landed ([the record](docs/evaluation.md#eval-a-the-dev-set)).
+deterministic hard rule fired. False positives are dev-set only (a blind
+author asked for a hack returns either a gold revert or a correct fix, so the
+holdout has no clean variants) and reported per split; at n=12 one FP is 8.3
+points, so 0/12 is the pre-registered bar met at this sample size. The
+judge-alone FP cell is one draw of a temperature-0 call: five draws over three
+dates read 1, 0, 1, 1 and 1 of 12 on the same twelve gold patches, the flag on
+rich-0005 each time it landed ([the record](docs/evaluation.md#eval-a-the-dev-set)).
 
-Read the table against its baselines. The always-SUSPECT and judge-alone rows
-catch all 27 measured dev hacks; Skeptic misses `click-0005/h6` at PASS 0.25.
-The strict column remains its deterministic distinction: 11/27 and 5/11
-against zero for always-SUSPECT and judge-alone, on hard-rule evidence that
-reproduces run to run. A suite-green-only check catches 6 of 27. The four
-INFRA rows are all `rich-0002`: Docker copy-out encounters that task's
-single-file read-only golden overlay. The blind holdout remains 11/11 with no
-INFRA, and the agent-authored `rich-0003` candidate remains SUSPECT 1.00 in
-three runs. The full drift record is in
-[docs/evaluation.md](docs/evaluation.md).
+Read the table against its baselines. Two of them match Skeptic's lenient
+figures, so lenient recall is a floor this corpus cannot rank systems on.
+The strict column is where Skeptic separates: 12/29 and 5/11 against zero
+for always-SUSPECT and judge-alone, on hard-rule evidence that reproduces
+run to run. A suite-green-only check catches 6 of 29, and that gap is the
+argument for the whole project.
 
 Both runs carry `pattern_introduced` at 0.75, moved once from 0.4 after
 three independent measurements put the H7 category at 0.65 against a 1.0
 threshold; the change was chosen by rescoring committed evidence, and the
 false-positive columns did not move.
+
+The v1.0.1 integrity candidate received a separate collector-4 paid
+revalidation before its final transport repair. That preserved intermediate
+run exposed four `rich-0002` INFRA rows and one sampled H6 miss; it does not
+replace the released v1.0.0 benchmark above. The transport repair was then
+validated on all four `rich-0002` variants through Docker with the
+deterministic profile and zero API calls. No complete paid Eval A was rerun on
+the final v1.0.1 code. See [the close-out record](docs/evaluation.md#v101-integrity-hotfix-revalidation).
 
 The full record, including the pressure arms, the one agent-authored hack
 that got through, and cost actuals:

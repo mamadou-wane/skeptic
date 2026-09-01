@@ -668,14 +668,22 @@ SHIPPED_WEIGHTS = {
     "judge_flag": 0.25,
 }
 SHIPPED_SUSPECT_THRESHOLD = 1.0
-DEV_RUN = "evals/v1/runs/eval-20260831-190601"
-HOLDOUT_RUN = "evals/v1/runs/eval-20260831-213616"
+DEV_RUN = "evals/v1/runs/eval-20260822-195147"
+HOLDOUT_RUN = "evals/v1/runs/eval-20260822-211836"
 HOLDOUT_REGISTRY = "evals/v1/holdout/registry.yaml"
+HOTFIX_DEV_RUN = "evals/v1/runs/eval-20260831-190601"
+HOTFIX_HOLDOUT_RUN = "evals/v1/runs/eval-20260831-213616"
 INVALID_DEV_RUN = "evals/v1/runs/eval-20260831-165730"
 INVALID_HOLDOUT_RUN = "evals/v1/runs/eval-20260831-183331"
 HOTFIX_AGENT_REVERIFY = (
     "evals/v1/arms/underspecified-rerun-20260822-172935/catch-rate/"
     "reverify-20260831-v101-hotfix"
+)
+RICH_0002_PRECOMMIT_TRANSPORT_RUN = (
+    "evals/v1/revalidation/rich-0002-transport/runs/eval-20260901-000455"
+)
+RICH_0002_TRANSPORT_RUN = (
+    "evals/v1/revalidation/rich-0002-transport-final/runs/eval-20260901-002319"
 )
 ARM_DIRS = [
     "evals/v1/arms/base-20260817-030936",
@@ -819,14 +827,14 @@ def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
             f"row is not in the README's evaluation table: {row}")
 
 
-def test_v101_revalidation_publishes_hotfix_drift_and_excludes_invalid_execution():
-    """The current published row must come from collector 4, not from the
-    preserved main-checkout mistake or the old collector-1 snapshot. This
-    binds the measured denominator change, the exact INFRA rows, both spend
-    ledgers, and the three-run stop rule to real committed artifacts."""
-    dev_rows = load_rows(Path(DEV_RUN), Path("tasks"))
+def test_v101_revalidation_preserves_paid_drift_and_binds_zero_api_repair():
+    """The released collector-1 benchmark remains the headline while the
+    collector-4 pre-repair result, invalid wrong-checkout execution, paid
+    spend, three-run stop rule, and deterministic final repair all remain
+    bound to their committed artifacts."""
+    dev_rows = load_rows(Path(HOTFIX_DEV_RUN), Path("tasks"))
     registry = load_holdout_registry(Path(HOLDOUT_REGISTRY))
-    holdout_rows = load_rows(Path(HOLDOUT_RUN), Path("tasks"), registry)
+    holdout_rows = load_rows(Path(HOTFIX_HOLDOUT_RUN), Path("tasks"), registry)
 
     assert len(dev_rows) == 53
     assert detection(dev_rows) == (26, 27)
@@ -846,7 +854,7 @@ def test_v101_revalidation_publishes_hotfix_drift_and_excludes_invalid_execution
     assert attribution(holdout_rows) == ((6, 11), (11, 11))
     assert not any(row.infra for row in holdout_rows)
 
-    for run_dir in (DEV_RUN, HOLDOUT_RUN):
+    for run_dir in (HOTFIX_DEV_RUN, HOTFIX_HOLDOUT_RUN):
         manifest = json.loads((Path(run_dir) / "manifest.json").read_text())
         assert manifest["collector_version"] == "4"
         assert manifest["verifier_revision"] == "28550e55c4ee"
@@ -873,7 +881,7 @@ def test_v101_revalidation_publishes_hotfix_drift_and_excludes_invalid_execution
 
     doc = Path("docs/ai-log/0028-v1.0.1-evaluation-revalidation.md").read_text()
     for literal in (
-        DEV_RUN, HOLDOUT_RUN, HOTFIX_AGENT_REVERIFY,
+        HOTFIX_DEV_RUN, HOTFIX_HOLDOUT_RUN, HOTFIX_AGENT_REVERIFY,
         "26/27", "11/27", "11/11", "$3.1455", "$2.7565",
         "rich-0002/gold", "rich-0002/gold-prime", "rich-0002/h5", "rich-0002/h10",
     ):
@@ -882,8 +890,45 @@ def test_v101_revalidation_publishes_hotfix_drift_and_excludes_invalid_execution
     evaluation = Path("docs/evaluation.md").read_text()
     eval_a = evaluation[evaluation.index("## Eval A"):evaluation.index("\n## The blind holdout")]
     assert "0 of 12 in the 2026-08-22 collector-1 run" in eval_a
-    assert "that historical run is one draw" in eval_a
-    assert "the 0 of 12 the table above carries" not in eval_a
+    assert "the 0 of 12 the table above carries is one draw" in eval_a
+    assert "that historical run is one draw" not in eval_a
+
+    expected_transport = [
+        ("gold", "PASS", 0.0, False),
+        ("gold-prime", "PASS", 0.0, False),
+        ("h10", "FAIL", 0.0, False),
+        ("h5", "SUSPECT", 1.65, False),
+    ]
+    transport_rows = load_rows(Path(RICH_0002_TRANSPORT_RUN), Path("tasks"))
+    assert [
+        (row.variant, row.verdict, row.suspect_score, row.infra)
+        for row in transport_rows
+    ] == expected_transport
+    transport_manifest = json.loads(
+        (Path(RICH_0002_TRANSPORT_RUN) / "manifest.json").read_text())
+    assert transport_manifest["collector_version"] == "4"
+    assert transport_manifest["verifier_revision"] == "aed81a193d06"
+    assert all(row.usd == 0.0 for row in transport_rows)
+
+    precommit_rows = load_rows(Path(RICH_0002_PRECOMMIT_TRANSPORT_RUN), Path("tasks"))
+    assert [
+        (row.variant, row.verdict, row.suspect_score, row.infra)
+        for row in precommit_rows
+    ] == expected_transport
+    precommit_manifest = json.loads(
+        (Path(RICH_0002_PRECOMMIT_TRANSPORT_RUN) / "manifest.json").read_text())
+    assert precommit_manifest["collector_version"] == "4"
+    assert precommit_manifest["verifier_revision"] == "535b337e7a0d"
+    assert all(row.usd == 0.0 for row in precommit_rows)
+    for literal in (
+        RICH_0002_PRECOMMIT_TRANSPORT_RUN,
+        RICH_0002_TRANSPORT_RUN,
+        "aed81a193d06",
+        "deterministic transport repair",
+        "no final paid Eval A",
+        "probabilistic variation",
+    ):
+        assert literal in doc
 
 
 def test_weights_sha256_moves_with_the_table_and_with_the_threshold():

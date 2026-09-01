@@ -599,14 +599,12 @@ class RunContainer:
     def run_capture(self, script: str, timeout_s: int, quarantine: Path,
                     env: dict[str, str] | None = None, *,
                     deadline: HostDeadline | None = None) -> ExecResult:
-        """Run with private output and copy it under one optional host deadline."""
+        """Run with volume-private output and copy it under one host deadline."""
         def bounded_timeout(cap_s: int, operation: str) -> int:
             if deadline is None:
                 return cap_s
             return min(cap_s, deadline.remaining_timeout_s(operation))
 
-        primary_timeout_s = bounded_timeout(
-            timeout_s, "capture primary Docker run")
         try:
             quarantine.mkdir(mode=0o700)
         except FileExistsError as exc:
@@ -628,8 +626,17 @@ class RunContainer:
             self.workspace_mode,
         )
         args.remove("--rm")
-        name = f"skeptic-{os.getpid()}-{uuid.uuid4().hex}"
+        user_index = args.index("--user")
+        del args[user_index:user_index + 2]
+        token = f"{os.getpid()}-{uuid.uuid4().hex}"
+        name = f"skeptic-{token}"
+        volume_name = f"skeptic-artifacts-{token}"
+        helper_name = f"skeptic-copy-{token}"
         args[2:2] = ["--name", name]
+        args[-1:-1] = [
+            "--mount",
+            f"type=volume,src={volume_name},dst=/tmp/skeptic-artifacts",
+        ]
         install = (
             f"{overlay_install_cmd(self._VENV)} || exit {INSTALL_FAILURE_EXIT}\n"
             if self.install_overlay else ""
@@ -639,9 +646,38 @@ class RunContainer:
             f"{install}"
             f"{{ {script}\n}}"
         )
-        full = args + ["sh", "-c", prepared]
+        initialize_volume = (
+            f"chown {os.getuid()}:{os.getgid()} /tmp/skeptic-artifacts "
+            f"|| exit {INSTALL_FAILURE_EXIT}\n"
+            f"command -v setpriv >/dev/null || exit {INSTALL_FAILURE_EXIT}\n"
+            f"exec setpriv --reuid {os.getuid()} --regid {os.getgid()} "
+            f"--clear-groups sh -c \"$1\""
+        )
+        full = args + ["sh", "-c", initialize_volume, "sh", prepared]
 
+        volume_attempted = False
+        candidate_attempted = False
+        helper_attempted = False
         try:
+            volume_timeout_s = bounded_timeout(
+                30, "capture artifact-volume creation")
+            volume_attempted = True
+            volume_created = _run(
+                ["docker", "volume", "create", volume_name],
+                cwd=self.workspace, timeout_s=volume_timeout_s, env=None)
+            if volume_created.exit_code != 0:
+                raise SkepticInfraError(
+                    f"capture artifact volume {volume_name} could not be created "
+                    f"(exit {volume_created.exit_code}). Skeptic gives every "
+                    f"candidate execution a fresh engine-managed output volume; "
+                    f"without it there is no private output boundary. Next: "
+                    f"inspect Docker volume storage and re-run.\n"
+                    f"stderr tail:\n{volume_created.stderr[-800:]}"
+                )
+
+            primary_timeout_s = bounded_timeout(
+                timeout_s, "capture primary Docker run")
+            candidate_attempted = True
             primary = _run(
                 full, cwd=self.workspace, timeout_s=primary_timeout_s, env=None)
             if primary.exit_code == -1:
@@ -659,10 +695,40 @@ class RunContainer:
                         f"code may still be writing it. Next: inspect Docker daemon "
                         f"health and remove the container if it remains."
                     )
+            helper_timeout_s = bounded_timeout(
+                30, "capture read-only copy-helper creation")
+            helper_attempted = True
+            helper_created = _run(
+                [
+                    "docker", "create", "--name", helper_name,
+                    "--mount",
+                    (f"type=volume,src={volume_name},"
+                     f"dst=/tmp/skeptic-artifacts,readonly"),
+                    self.image, "true",
+                ],
+                cwd=self.workspace,
+                timeout_s=helper_timeout_s,
+                env=None,
+            )
+            if helper_created.exit_code != 0:
+                raise SkepticInfraError(
+                    f"capture copy helper {helper_name} could not be created "
+                    f"from stopped candidate volume {volume_name} "
+                    f"(exit {helper_created.exit_code}). The helper is never "
+                    f"started and exposes only that volume read-only; without "
+                    f"it Skeptic refuses to copy through the candidate's "
+                    f"workspace mounts. Next: inspect Docker container and "
+                    f"volume storage and re-run.\n"
+                    f"stderr tail:\n{helper_created.stderr[-800:]}"
+                )
             copy_timeout_s = bounded_timeout(
                 60, "capture private-output copy")
             copied = _run(
-                ["docker", "cp", f"{name}:/tmp/skeptic-artifacts/.", str(quarantine)],
+                [
+                    "docker", "cp",
+                    f"{helper_name}:/tmp/skeptic-artifacts/.",
+                    str(quarantine),
+                ],
                 cwd=self.workspace,
                 timeout_s=copy_timeout_s,
                 env=None,
@@ -689,8 +755,15 @@ class RunContainer:
                     f"copy stderr tail:\n{copied.stderr[-800:]}"
                 )
         finally:
-            _run(["docker", "rm", "-f", name], cwd=self.workspace,
-                 timeout_s=30, env=None)
+            if helper_attempted:
+                _run(["docker", "rm", "-f", helper_name], cwd=self.workspace,
+                     timeout_s=30, env=None)
+            if candidate_attempted:
+                _run(["docker", "rm", "-f", name], cwd=self.workspace,
+                     timeout_s=30, env=None)
+            if volume_attempted:
+                _run(["docker", "volume", "rm", "-f", volume_name],
+                     cwd=self.workspace, timeout_s=30, env=None)
         if deadline is not None:
             deadline.require_active("capture evidence admission")
         return primary

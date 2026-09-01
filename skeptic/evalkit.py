@@ -366,16 +366,23 @@ def build_manifest(
 
 
 class EvidenceRule(NamedTuple):
-    """One evidence entry's `(rule, severity)`, everything `score_evidence`
-    needs to re-score a row under a candidate weights table (task 18): a
-    plain tuple, so `EvalRow.evidence` stays the minimal shape the brief
-    calls for, but a `NamedTuple`'s attribute access (`.rule`, `.severity`)
+    """One evidence entry's `(rule, severity, category)`. The first two are
+    everything `score_evidence` needs to re-score a row under a candidate
+    weights table (task 18); `category` rides along for folds that drop one
+    category's evidence and never reaches the scorer. A plain tuple, so
+    `EvalRow.evidence` stays the minimal shape the brief calls for, but a
+    `NamedTuple`'s attribute access (`.rule`, `.severity`)
     also satisfies `aggregate.EvidenceLike`, the protocol `score_evidence`
     reads its argument through.
     """
 
     rule: str
     severity: str
+    # the category the check labeled the entry with (`H1`..`H10`, `scope`,
+    # `coverage`, `regression`), the same field `anywhere` reads per row;
+    # kept per entry so a fold can drop one category's evidence and rescore.
+    # Defaults to None so a two-field construction still means what it did.
+    category: str | None = None
 
 
 @dataclass(frozen=True)
@@ -384,7 +391,7 @@ class EvalRow:
     fold below shares. `top1`/`anywhere` come from `verdict.json`'s ordered
     `evidence` list (`top1` is `evidence[0]`'s category, `anywhere` every
     category present); `evidence` is that same list reduced to `EvidenceRule`
-    pairs, the raw material `rescore` (task 18) re-scores under a candidate
+    triples, the raw material `rescore` (task 18) re-scores under a candidate
     weights table; `infra` is `verdict is None`, task 11's
     INFRA_ERROR-or-missing-snapshot state."""
 
@@ -458,7 +465,8 @@ def load_rows(
             evidence = verdict_data.get("evidence", [])
             top1 = evidence[0]["category"] if evidence else None
             anywhere = frozenset(e["category"] for e in evidence)
-            evidence_rules = tuple(EvidenceRule(e["rule"], e["severity"]) for e in evidence)
+            evidence_rules = tuple(
+                EvidenceRule(e["rule"], e["severity"], e["category"]) for e in evidence)
 
             t1_path = variant_dir / "t1_outcomes.json"
             fix_verified = (
@@ -733,6 +741,59 @@ def baseline_judge_alone(rows: list[EvalRow]) -> BaselineRow:
             return None
         return "SUSPECT" if r.judge_flagged else "PASS"
     return _baseline(rows, verdict_of, "judge-alone")
+
+
+def changed_lines(patch: Path) -> int:
+    """Added plus removed lines in a git-format unified diff: every `+`/`-`
+    line inside a hunk. Lines outside a hunk (the `---`/`+++` file headers,
+    `diff`, `index`) do not count, and a hunk runs from its `@@` line to the
+    next `diff` line, so a removed line that happens to start with `--`
+    still counts as the one changed line it is. Every file in the diff has
+    to start with a `diff` line, which `git diff` and `git format-patch`
+    both emit; a bare `diff -u` of several files does not, and its second
+    file's headers would count."""
+    count = 0
+    in_hunk = False
+    for line in patch.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("diff "):
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line[:1] in ("+", "-"):
+            count += 1
+    return count
+
+
+def variant_patches(
+    rows: list[EvalRow], tasks_dir: Path, registry: HoldoutRegistry,
+) -> dict[tuple[str, str], Path]:
+    """`{(task_id, variant): patch path}` for every variant the rows' tasks
+    declare, plus every holdout row in `registry`: the two places
+    `load_rows` takes its labels from, read for their patch paths instead.
+    Paths are cwd-relative, the convention both sources already use."""
+    patches: dict[tuple[str, str], Path] = {}
+    for task_id in sorted({row.task_id for row in rows}):
+        for variant in find_task(task_id, tasks_dir).evaluation.variants:
+            patches[(task_id, variant.id)] = Path(variant.patch)
+    for variant in registry.variants:
+        patches[(variant.task_id, variant.variant_id)] = Path(variant.patch)
+    return patches
+
+
+def baseline_size_only(
+    rows: list[EvalRow], patch_lines: Mapping[tuple[str, str], int], threshold: int,
+) -> BaselineRow:
+    """No check consulted, no code read: SUSPECT when the variant's patch
+    changes more than `threshold` lines, PASS otherwise. A row with no
+    entry in `patch_lines` drops rather than guessing, as the other
+    baselines do for missing data. A size rule emits no hard row, so its
+    strict figure is zero by construction."""
+    def verdict_of(r: EvalRow) -> str | None:
+        lines = patch_lines.get((r.task_id, r.variant))
+        if lines is None:
+            return None
+        return "SUSPECT" if lines > threshold else "PASS"
+    return _baseline(rows, verdict_of, f"diff-size >{threshold} lines")
 
 
 def render_table(rows: list[EvalRow], baselines: list[BaselineRow]) -> str:

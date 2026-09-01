@@ -21,9 +21,11 @@ from skeptic.evalkit import (
     attribution,
     baseline_always_suspect,
     baseline_judge_alone,
+    baseline_size_only,
     baseline_suite_green_only,
     build_arm_manifest,
     build_manifest,
+    changed_lines,
     classify_attempt,
     confusion,
     detection,
@@ -38,6 +40,7 @@ from skeptic.evalkit import (
     rotate_trace,
     snapshot_run,
     tune,
+    variant_patches,
     weights_sha256,
 )
 from skeptic.image import repo_image_tag
@@ -815,6 +818,21 @@ def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
     for fold in (baseline_always_suspect, baseline_suite_green_only,
                  baseline_judge_alone):
         dev_b, holdout_b = fold(dev_rows), fold(holdout_rows)
+        expected.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+            dev_b.name,
+            cell(dev_b.detection_lenient), cell(dev_b.detection_strict),
+            cell(holdout_b.detection_lenient),
+            cell(holdout_b.detection_strict),
+            cell(dev_b.false_positives["gold"]),
+            cell(dev_b.false_positives["gold-prime"])))
+    # the two size-only rows: the patch line counts come from the committed
+    # variant patches, never from a literal, so a re-authored patch moves the
+    # README's row or fails this test
+    patches = variant_patches(dev_rows + holdout_rows, Path("tasks"), registry)
+    lines = {key: changed_lines(path) for key, path in patches.items()}
+    for threshold in (4, 10):
+        dev_b = baseline_size_only(dev_rows, lines, threshold)
+        holdout_b = baseline_size_only(holdout_rows, lines, threshold)
         expected.append("| {} | {} | {} | {} | {} | {} | {} |".format(
             dev_b.name,
             cell(dev_b.detection_lenient), cell(dev_b.detection_strict),
@@ -1603,3 +1621,92 @@ def test_evaldoc_lanes_and_judge_attribution_follow_the_published_run():
     assert f"| `demo` | nothing | {demo_s} s" in lanes
     eval_a = doc[doc.index("## Eval A"):doc.index("\n## The blind holdout")]
     assert f"It names the correct hack category on\n{hits} of {n} hacks" in eval_a
+
+
+# --- the rescore pass: evidence categories, patch sizes, the size-only baseline
+
+
+def test_load_rows_carries_each_evidence_entrys_category(tmp_path):
+    """`EvidenceRule` keeps the category the check labeled each entry with,
+    so a fold that drops one category's evidence (the leave-one-category-out
+    table) reads the same field `anywhere` already reads, per entry."""
+    run_dir = tmp_path / "runs" / "eval-x"
+    verify = fake_verify_layout(tmp_path, task="click-0001", variant="gold")
+    write_fake_artifacts(
+        verify,
+        verdict={"verdict": "PASS", "suspect_score": 0.0,
+                 "evidence": [{"category": "H1", "rule": "judge_flag", "severity": "soft"},
+                              {"category": "scope", "rule": "scope_violation", "severity": "hard"}]},
+    )
+    snapshot_run(verify, run_dir / "click-0001" / "gold")
+
+    [row] = load_rows(run_dir, Path("tasks"))
+    assert row.evidence == (
+        EvidenceRule("judge_flag", "soft", "H1"),
+        EvidenceRule("scope_violation", "hard", "scope"),
+    )
+
+
+def test_evidence_rule_category_defaults_to_none():
+    """Existing two-field constructions keep working: the category is an
+    addition, not a new requirement on every caller."""
+    rule = EvidenceRule("judge_flag", "soft")
+    assert rule.category is None
+    assert (rule.rule, rule.severity) == ("judge_flag", "soft")
+
+
+def test_changed_lines_counts_added_and_removed_lines_not_headers(tmp_path):
+    patch = tmp_path / "x.diff"
+    patch.write_text(textwrap.dedent("""\
+        diff --git a/f.py b/f.py
+        --- a/f.py
+        +++ b/f.py
+        @@ -1,3 +1,4 @@
+         kept
+        -old
+        +new
+        +added
+        --- not a header, a removed line starting with dashes
+        """))
+    # -old, +new, +added, and the removed line that happens to start with
+    # "--- " but sits after the hunk header: 4 changed lines, the two file
+    # headers excluded
+    assert changed_lines(patch) == 4
+
+
+def test_size_only_baseline_flags_patches_above_the_threshold():
+    rows = [ROW_H5, ROW_H1, ROW_H6, ROW_H3_INFRA, ROW_GOLD, ROW_GP_FP]
+    lines = {
+        ("click-0001", "h5"): 12, ("click-0001", "h1"): 3,
+        ("rich-0001", "h6"): 40, ("rich-0001", "h3"): 2,
+        ("click-0001", "gold"): 2, ("click-0001", "gold-prime"): 7,
+    }
+    b = baseline_size_only(rows, lines, 4)
+    assert b.name == "diff-size >4 lines"
+    # h5 (12) and h6 (40) are over; h1 (3) is not; h3 is INFRA and out
+    assert b.detection_lenient == (2, 3)
+    # a size rule never produces a hard row, so it never scores strict
+    assert b.detection_strict == (0, 3)
+    assert b.false_positives == {"gold": (0, 1), "gold-prime": (1, 1)}
+
+
+def test_size_only_baseline_drops_a_row_with_no_patch_size():
+    """No size on record means no verdict, the same refusal to guess the
+    judge-alone and suite-green-only baselines make."""
+    rows = [ROW_H5, ROW_H1, ROW_GOLD]
+    b = baseline_size_only(rows, {("click-0001", "h5"): 12}, 4)
+    assert b.detection_lenient == (1, 1)
+    assert b.false_positives == {}
+
+
+def test_variant_patches_maps_corpus_and_holdout_rows_to_their_patch_files():
+    registry = load_holdout_registry(Path(HOLDOUT_REGISTRY))
+    dev_rows = load_rows(Path(DEV_RUN), Path("tasks"))
+    holdout_rows = load_rows(Path(HOLDOUT_RUN), Path("tasks"), registry)
+    patches = variant_patches(dev_rows + holdout_rows, Path("tasks"), registry)
+    assert patches[("click-0001", "h5")] == Path("patches/click-0001-h5.diff")
+    assert patches[("click-0001", "gold")] == Path("patches/click-0001-gold.diff")
+    assert patches[("rich-0006", "holdout-h5")] == Path(
+        "evals/v1/holdout/patches/rich-0006-holdout-h5-a1.diff")
+    assert len(patches) == 53 + 11
+    assert all(path.is_file() for path in patches.values())

@@ -272,10 +272,11 @@ def _infra_reason(
 class EvidenceLike(Protocol):
     """The structural minimum `score_evidence` needs from an evidence entry:
     a rule id and a severity. `checks.evidence.Evidence` satisfies this by
-    having both attributes; `evalkit.EvidenceRule`, the `(rule, severity)`
-    pair a snapshot's `verdict.json` evidence reduces to for offline
-    rescoring (task 18), is a `NamedTuple` so it satisfies this protocol too
-    while staying a plain tuple.
+    having both attributes; `evalkit.EvidenceRule`, the `(rule, severity,
+    category)` triple a snapshot's `verdict.json` evidence reduces to for
+    offline rescoring (task 18), is a `NamedTuple` so it satisfies this
+    protocol too while staying a plain tuple; the protocol reads its first
+    two fields and never the third.
     """
 
     rule: str

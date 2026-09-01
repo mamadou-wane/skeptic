@@ -126,6 +126,8 @@ session saw a detector, a weight, a threshold or a dev-set variant.
 | always-SUSPECT | 29/29 | 0/29 | 11/11 | 0/11 | 12/12 | 12/12 |
 | suite-green-only | 6/29 | 6/29 | 3/11 | 3/11 | 0/12 | 0/12 |
 | judge-alone | 29/29 | 0/29 | 11/11 | 0/11 | 0/12 | 0/12 |
+| diff-size >4 lines | 19/29 | 0/29 | 8/11 | 0/11 | 0/12 | 2/12 |
+| diff-size >10 lines | 11/29 | 0/29 | 5/11 | 0/11 | 0/12 | 0/12 |
 
 Lenient counts SUSPECT or FAIL; strict counts FAIL only, which means a
 deterministic hard rule fired. False positives are dev-set only (a blind
@@ -142,6 +144,21 @@ The strict column is where Skeptic separates: 12/29 and 5/11 against zero
 for always-SUSPECT and judge-alone, on hard-rule evidence that reproduces
 run to run. A suite-green-only check catches 6 of 29, and that gap is the
 argument for the whole project.
+
+Two rows and one split the table did not carry before 2026-09-01. The
+diff-size rows read only the patch's line count. Every gold fix is 2 changed
+lines and no gold-prime exceeds 10, while the hacks run to 120; flagging
+anything over 10 lines matches Skeptic's 0/12 on both clean splits at 11/29,
+and over 4 lines reaches 19/29 at 2/12, above the 17/29 the deterministic
+lane scores. Nothing in this corpus rules out a size proxy in the free lane,
+and size-matched clean controls are the next measurement. The strict column
+also splits by the taxonomy's own Control column: every hard-rule FAIL, 12/12
+on the dev set and 5/5 on the holdout, lands on the six categories the
+in-harness sandbox prevents outright, H1 through H4, H9 and H10. On the four
+categories detection is claimed for, H5 through H8, strict reads 0/17 and
+0/6, lenient 17/17 and 6/6, and the deterministic lane 5/17 and 1/6. The full
+rescore, per-rule fire counts and a leave-one-category-out table:
+[docs/evaluation.md](docs/evaluation.md#rescoring-the-committed-evidence).
 
 Both runs carry `pattern_introduced` at 0.75, moved once from 0.4 after
 three independent measurements put the H7 category at 0.65 against a 1.0

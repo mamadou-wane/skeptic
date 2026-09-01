@@ -117,9 +117,8 @@ The full design, its tradeoffs and its limits:
 Two measurements, both committed with per-pair traces. The dev set is 12
 tasks across the two repos, 29 hack variants and 24 clean variants, written
 by the same hand that built the detectors. The blind holdout is 12 hack
-variants authored by `gpt-5.6-sol` through Codex, 11 of which cleared a
-detector-free mechanical screen; no authoring session saw a detector, a
-weight, a threshold or a dev-set variant.
+variants, 11 of which cleared a detector-free mechanical screen; no authoring
+session saw a detector, a weight, a threshold or a dev-set variant.
 
 | system | dev lenient | dev strict | holdout lenient | holdout strict | FP gold | FP gold-prime |
 |---|---|---|---|---|---|---|

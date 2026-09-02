@@ -20,6 +20,7 @@ from typing import Protocol
 
 from defusedxml import ElementTree as ET
 
+from skeptic.candidate import snapshot
 from skeptic.errors import SkepticInfraError
 from skeptic.spec import TaskSpec
 from skeptic.workspace import (
@@ -218,11 +219,18 @@ def run_acceptance(
     without re-deriving admission's mechanics. `check_task` below calls this
     with its own closed-over `acc_src`/`runner_factory`/`env.timeout_s`/
     `spec.seed.quarantine`; behavior is unchanged from before the lift.
+
+    `snapshot` rather than a bare `copytree` (issue #34): a pytest-rewritten
+    pyc under `acc_src/__pycache__` survives a plain copy with its mtime and
+    size, so pytest loads it in the copied tree and the junit `file`
+    attribute carries the source path from its `co_filename`. `parse_junit`
+    then refuses the classname as unmappable, and the check reports INFRA on
+    a clean suite.
     """
     dest = tree / ".skeptic-acceptance"
     if dest.exists():
         shutil.rmtree(dest)
-    shutil.copytree(acc_src, dest)
+    snapshot(acc_src, dest)
     acc_runner = runner_factory(tree)
     result = run_suite(acc_runner, "python -m pytest -q .skeptic-acceptance",
                        timeout_s, tree / ".skeptic-acceptance-junit.xml")

@@ -1,3 +1,6 @@
+import shlex
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -484,6 +487,43 @@ def test_acceptance_matrix_collection_error_is_infra():
     # nothing (spec §Error handling).
     with pytest.raises(SkepticInfraError):
         run_check_with_acceptance(acceptance_raises=True)
+
+
+def test_run_acceptance_drops_stale_bytecode_from_the_suite_copy(tmp_path, monkeypatch):
+    """Issue #34. A pytest-rewritten pyc under `acceptance/<task>/__pycache__`
+    survives a bare copytree: copy2 keeps mtime and size, so pytest's
+    freshness check accepts it in the copied tree and loads it instead of
+    recompiling. Its code objects still carry the source path in
+    `co_filename`, the junit `file` attribute then points outside the tree
+    while the classname names `.skeptic-acceptance`, and `parse_junit`
+    raises INFRA on the pair. Real pytest on both sides; only the venv is
+    replaced by the host interpreter. Both subprocesses inherit this
+    environment: with `PYTHONDONTWRITEBYTECODE` the plant never lands, and
+    with `PYTHONPYCACHEPREFIX` it lands under the prefix instead, so neither
+    may reach them."""
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+    acc_src = tmp_path / "acceptance"
+    acc_src.mkdir()
+    (acc_src / "test_acceptance.py").write_text("def test_real_fix():\n    pass\n")
+    # Someone ran pytest in acceptance/ directly, as the authoring agents did.
+    subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(acc_src)],
+        cwd=tmp_path, check=True, capture_output=True, timeout=60,
+    )
+    assert list((acc_src / "__pycache__").glob("test_acceptance.*-pytest-*.pyc"))
+    tree = tmp_path / "seeded"
+    tree.mkdir()
+
+    class HostRunner:
+        def exec(self, cmd: str, timeout_s: int, env: dict[str, str] | None = None) -> ExecResult:
+            argv = [sys.executable, *shlex.split(cmd)[1:]]
+            proc = subprocess.run(argv, cwd=tree, capture_output=True, text=True,
+                                  timeout=timeout_s, check=False)
+            return ExecResult(proc.returncode, proc.stdout, proc.stderr, 0)
+
+    result = seedcheck.run_acceptance(tree, acc_src, lambda _tree: HostRunner(), 60, [])
+    assert result.outcomes == {".skeptic-acceptance/test_acceptance.py::test_real_fix": "passed"}
 
 
 def test_quarantined_flake_does_not_break_pristine_green_x2():

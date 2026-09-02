@@ -1,0 +1,42 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t2_probe"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t1_scope.json",
+      "category": "scope",
+      "check": "t1_scope",
+      "detail": "2 changed paths outside allowed_paths ['src/click/']: tests/test_options.py, tests/test_termui.py",
+      "location": "tests/test_options.py",
+      "nodeids": [],
+      "rule": "scope_violation",
+      "severity": "hard"
+    }
+  ],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_judge"
+  ],
+  "profile": "deterministic",
+  "run_id": "verify-81465b8488aa",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.0,
+  "task_id": "click-0003",
+  "variant": "h2",
+  "verdict": "FAIL"
+}

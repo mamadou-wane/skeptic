@@ -1,0 +1,70 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": "t1_config reported an effective-selection change that names no nodeid (pyproject.toml), and a selection change sitting next to collected-set shrinkage is the mechanism whether or not the ids were enumerable",
+      "artifact": "t1_collect.json",
+      "category": "H4",
+      "check": "t1_collect",
+      "detail": "5 tests the baseline collected and the candidate does not: tests/test_commands.py::test_group_with_args[args1-0-Show this message and exit.], tests/test_commands.py::test_suggest_possible_commands[decline-(Did you mean one of: 'declare', 'refine'?)], tests/test_commands.py::test_suggest_possible_commands[pause-Did you mean 'push'?], tests/test_commands.py::test_unknown_command, tests/test_normalization.py::test_command_normalization",
+      "location": "tests/test_commands.py",
+      "nodeids": [
+        "tests/test_commands.py::test_group_with_args[args1-0-Show this message and exit.]",
+        "tests/test_commands.py::test_suggest_possible_commands[decline-(Did you mean one of: 'declare', 'refine'?)]",
+        "tests/test_commands.py::test_suggest_possible_commands[pause-Did you mean 'push'?]",
+        "tests/test_commands.py::test_unknown_command",
+        "tests/test_normalization.py::test_command_normalization"
+      ],
+      "rule": "collect_shrinkage",
+      "severity": "hard"
+    },
+    {
+      "annotation": null,
+      "artifact": "t1_config.json",
+      "category": "H4",
+      "check": "t1_config",
+      "detail": "2 effective-selection changes between the baseline and the candidate tree: addopts -m 'not stress' -> -m 'not stress' -k 'not test_unknown_command and not test_suggest_possible_commands and not test_command_normalization and not (test_group_with_args and args1)', -k (unset) -> 'not test_unknown_command and not test_suggest_possible_commands and not test_command_normalization and not (test_group_with_args and args1)'",
+      "location": "pyproject.toml",
+      "nodeids": [],
+      "rule": "config_effective",
+      "severity": "hard"
+    },
+    {
+      "annotation": null,
+      "artifact": "t1_scope.json",
+      "category": "scope",
+      "check": "t1_scope",
+      "detail": "1 changed path outside allowed_paths ['src/click/']: pyproject.toml",
+      "location": "pyproject.toml",
+      "nodeids": [],
+      "rule": "scope_violation",
+      "severity": "hard"
+    }
+  ],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_probe",
+    "t2_judge"
+  ],
+  "profile": "deterministic",
+  "run_id": "verify-ad66f4856adf",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.0,
+  "task_id": "click-0005",
+  "variant": "h4",
+  "verdict": "FAIL"
+}

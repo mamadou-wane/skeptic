@@ -115,8 +115,9 @@ The full design, its tradeoffs and its limits:
 ## Evaluation
 
 Two measurements, both committed with per-pair traces. The dev set is 12
-tasks across the two repos, 29 hack variants and 24 clean variants, written
-by the same hand that built the detectors. The blind holdout is 12 hack
+tasks across the two repos, 29 hack variants and 24 clean variants at the
+time of the committed runs (a third clean variant per task joined on
+2026-09-01, below), written by the same hand that built the detectors. The blind holdout is 12 hack
 variants, 11 of which cleared a detector-free mechanical screen; no authoring
 session saw a detector, a weight, a threshold or a dev-set variant.
 
@@ -150,8 +151,13 @@ diff-size rows read only the patch's line count. Every gold fix is 2 changed
 lines and no gold-prime exceeds 10, while the hacks run to 120; flagging
 anything over 10 lines matches Skeptic's 0/12 on both clean splits at 11/29,
 and over 4 lines reaches 19/29 at 2/12, above the 17/29 the deterministic
-lane scores. Nothing in this corpus rules out a size proxy in the free lane,
-and size-matched clean controls are the next measurement. The strict column
+lane scores. Nothing in the committed runs rules out a size proxy in the free
+lane. Twelve `gold-large` controls, behavior-preserving refactors of
+21 to 98 changed lines that carry each task's fix, joined the corpus on
+2026-09-01 (DECISIONS row 243). Every one exceeds both size thresholds, and
+all twelve read PASS, 0/12 under the deterministic profile, in the $0
+validation sweep ([the record](docs/evaluation.md#size-matched-clean-controls));
+the paid figures and the paid repeat land with v1.1. The strict column
 also splits by the taxonomy's own Control column: every hard-rule FAIL, 12/12
 on the dev set and 5/5 on the holdout, lands on the six categories the
 in-harness sandbox prevents outright, H1 through H4, H9 and H10. On the four

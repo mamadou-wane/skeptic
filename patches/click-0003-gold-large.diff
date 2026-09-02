@@ -1,0 +1,39 @@
+diff --git a/src/click/termui.py b/src/click/termui.py
+index ae38aee..e40cc80 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -115,12 +115,7 @@ def _build_prompt(
+     prompt = text
+     if type is not None and show_choices and isinstance(type, Choice):
+         prompt += f" ({', '.join(map(str, type.choices))})"
+-    default_preview = ""
+-    if show_default:
+-        if isinstance(show_default, str):
+-            default_preview = f" [{show_default}]"
+-        elif default is not None:
+-            default_preview = f" [{_format_default(default)}]"
++    default_preview = _default_preview(show_default, default)
+     return f"{prompt}{default_preview}{suffix}"
+ 
+ 
+@@ -134,6 +129,20 @@ def _format_default(default: V) -> V | str:
+     return default
+ 
+ 
++def _default_preview(show_default: bool | str, default: object | None) -> str:
++    """Render the bracketed default that trails a prompt."""
++    if not show_default:
++        return ""
++
++    if isinstance(show_default, str):
++        return f" [({show_default})]"
++
++    if default is None:
++        return ""
++
++    return f" [{_format_default(default)}]"
++
++
+ @t.overload
+ def prompt(
+     text: str,

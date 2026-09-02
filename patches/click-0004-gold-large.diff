@@ -1,0 +1,38 @@
+diff --git a/src/click/types.py b/src/click/types.py
+index 3fc8f5b..2cf465d 100644
+--- a/src/click/types.py
++++ b/src/click/types.py
+@@ -854,21 +854,22 @@ class BoolParamType(ParamType[bool]):
+         """
+         if isinstance(value, bool):
+             return value
+-        return BoolParamType.bool_states.get(value.lower())
++        normalized = value.strip().lower()
++        return BoolParamType.bool_states.get(normalized)
+ 
+     def convert(
+         self, value: t.Any, param: Parameter | None, ctx: Context | None
+     ) -> bool:
+-        normalized = self.str_to_bool(value)
+-        if normalized is None:
+-            self.fail(
+-                _(
+-                    "{value!r} is not a valid boolean. Recognized values: {states}"
+-                ).format(value=value, states=", ".join(sorted(self.bool_states))),
+-                param,
+-                ctx,
+-            )
+-        return normalized
++        state = self.str_to_bool(value)
++        if state is not None:
++            return state
++        self.fail(
++            _("{value!r} is not a valid boolean. Recognized values: {states}").format(
++                value=value, states=", ".join(sorted(self.bool_states))
++            ),
++            param,
++            ctx,
++        )
+ 
+     def __repr__(self) -> str:
+         return "BOOL"

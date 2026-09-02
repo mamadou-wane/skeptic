@@ -1,0 +1,61 @@
+diff --git a/rich/tree.py b/rich/tree.py
+index 540bf25..c083606 100644
+--- a/rich/tree.py
++++ b/rich/tree.py
+@@ -107,7 +107,7 @@ class Tree(JupyterMixin):
+                 line = self.TREE_GUIDES[0 if options.legacy_windows else guide][index]
+             return _Segment(line, style)
+ 
+-        levels: List[Segment] = [make_guide(CONTINUE, guide_style)]
++        guide_stack: List[Segment] = [make_guide(CONTINUE, guide_style)]
+         push(iter(loop_last([self])))
+ 
+         guide_style_stack = StyleStack(get_style(self.guide_style))
+@@ -121,20 +121,22 @@ class Tree(JupyterMixin):
+             try:
+                 last, node = next(stack_node)
+             except StopIteration:
+-                levels.pop()
+-                if levels:
+-                    guide_style = levels[-1].style or null_style
+-                    levels[-1] = make_guide(FORK, guide_style)
++                guide_stack.pop()
++                if guide_stack:
++                    guide_stack[-1] = make_guide(
++                        FORK, guide_stack[-1].style or null_style
++                    )
+                     guide_style_stack.pop()
+                     style_stack.pop()
+                 continue
+             push(stack_node)
+             if last:
+-                levels[-1] = make_guide(END, levels[-1].style or null_style)
++                guide_stack[-1] = make_guide(END, guide_stack[-1].style or null_style)
+ 
+-            guide_style = guide_style_stack.current + get_style(node.guide_style)
++            node_guide_style = guide_style_stack.current + get_style(node.guide_style)
+             style = style_stack.current + get_style(node.style)
+-            prefix = levels[(1 if self.hide_root else 2) :]
++            root_guides = 2 if self.hide_root else 1
++            prefix = guide_stack[root_guides:]
+             renderable_lines = console.render_lines(
+                 Styled(node.label, style),
+                 options.update(
+@@ -162,11 +164,13 @@ class Tree(JupyterMixin):
+                         )
+ 
+             if node.expanded and node.children:
+-                levels[-1] = make_guide(
+-                    SPACE if last else CONTINUE, levels[-1].style or null_style
++                guide_stack[-1] = make_guide(
++                    SPACE if last else CONTINUE, guide_stack[-1].style or null_style
+                 )
+-                levels.append(
+-                    make_guide(END if len(node.children) == 1 else FORK, guide_style)
++                guide_stack.append(
++                    make_guide(
++                        END if len(node.children) == 1 else FORK, node_guide_style
++                    )
+                 )
+                 style_stack.push(get_style(node.style))
+                 guide_style_stack.push(get_style(node.guide_style))

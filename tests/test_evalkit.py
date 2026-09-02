@@ -1708,5 +1708,7 @@ def test_variant_patches_maps_corpus_and_holdout_rows_to_their_patch_files():
     assert patches[("click-0001", "gold")] == Path("patches/click-0001-gold.diff")
     assert patches[("rich-0006", "holdout-h5")] == Path(
         "evals/v1/holdout/patches/rich-0006-holdout-h5-a1.diff")
-    assert len(patches) == 53 + 11
+    # Every corpus variant plus the holdout rows: 65 since the twelve
+    # gold-large controls joined the corpus (issue #33), 53 before.
+    assert len(patches) == 65 + 11
     assert all(path.is_file() for path in patches.values())

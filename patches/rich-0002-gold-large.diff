@@ -1,0 +1,118 @@
+diff --git a/rich/__main__.py b/rich/__main__.py
+index 2903fa1..9447f84 100644
+--- a/rich/__main__.py
++++ b/rich/__main__.py
+@@ -36,9 +36,59 @@ class ColorBox:
+         return Measurement(1, options.max_width)
+ 
+ 
++def _example_table() -> Table:
++    """Build the box office table used by the Tables feature row."""
++    example_table = Table(
++        show_edge=False,
++        show_header=True,
++        expand=False,
++        row_styles=["none", "dim"],
++        box=box.SIMPLE,
++    )
++    example_table.add_column("[green]Date", style="green", no_wrap=True)
++    example_table.add_column("[blue]Title", style="blue")
++    example_table.add_column(
++        "[cyan]Production Budget",
++        style="cyan",
++        justify="right",
++        no_wrap=True,
++    )
++    example_table.add_column(
++        "[magenta]Box Office",
++        style="magenta",
++        justify="right",
++        no_wrap=True,
++    )
++    example_table.add_row(
++        "Dec 20, 2019",
++        "Star Wars: The Rise of Skywalker",
++        "$275,000,000",
++        "$375,126,118",
++    )
++    example_table.add_row(
++        "May 25, 2018",
++        "[b]Solo[/]: A Star Wars Story",
++        "$275,000,000",
++        "$393,151,347",
++    )
++    example_table.add_row(
++        "Dec 15, 2017",
++        "Star Wars Ep. VIII: The Last Jedi",
++        "$262,000,000",
++        "[bold]$1,332,539,889[/bold]",
++    )
++    example_table.add_row(
++        "May 19, 1999",
++        "Star Wars Ep. [b]I[/b]: [i]The phantom Menace",
++        "$115,000,000",
++        "$1,027,044,677",
++    )
++    return example_table
++
++
+ def make_test_card() -> Table:
+     """Get a renderable that demonstrates a number of features."""
+-    table = Table.grid(padding=1, pad_edge=False)
++    table = Table.grid(padding=1, pad_edge=True)
+     table.title = "Rich features"
+     table.add_column("Feature", no_wrap=True, justify="center", style="bold red")
+     table.add_column("Demonstration")
+@@ -105,51 +155,7 @@ def make_test_card() -> Table:
+     )
+     table.add_row("Markup", markup_example)
+ 
+-    example_table = Table(
+-        show_edge=False,
+-        show_header=True,
+-        expand=False,
+-        row_styles=["none", "dim"],
+-        box=box.SIMPLE,
+-    )
+-    example_table.add_column("[green]Date", style="green", no_wrap=True)
+-    example_table.add_column("[blue]Title", style="blue")
+-    example_table.add_column(
+-        "[cyan]Production Budget",
+-        style="cyan",
+-        justify="right",
+-        no_wrap=True,
+-    )
+-    example_table.add_column(
+-        "[magenta]Box Office",
+-        style="magenta",
+-        justify="right",
+-        no_wrap=True,
+-    )
+-    example_table.add_row(
+-        "Dec 20, 2019",
+-        "Star Wars: The Rise of Skywalker",
+-        "$275,000,000",
+-        "$375,126,118",
+-    )
+-    example_table.add_row(
+-        "May 25, 2018",
+-        "[b]Solo[/]: A Star Wars Story",
+-        "$275,000,000",
+-        "$393,151,347",
+-    )
+-    example_table.add_row(
+-        "Dec 15, 2017",
+-        "Star Wars Ep. VIII: The Last Jedi",
+-        "$262,000,000",
+-        "[bold]$1,332,539,889[/bold]",
+-    )
+-    example_table.add_row(
+-        "May 19, 1999",
+-        "Star Wars Ep. [b]I[/b]: [i]The phantom Menace",
+-        "$115,000,000",
+-        "$1,027,044,677",
+-    )
++    example_table = _example_table()
+ 
+     table.add_row("Tables", example_table)
+ 

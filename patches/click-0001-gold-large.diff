@@ -1,0 +1,55 @@
+diff --git a/src/click/utils.py b/src/click/utils.py
+index b5e2477..d7ee2be 100644
+--- a/src/click/utils.py
++++ b/src/click/utils.py
+@@ -80,36 +80,36 @@ def _make_default_short_help(help: str, max_length: int = 45) -> str:
+     if words[0] == "\b":
+         words = words[1:]
+ 
+-    total_length = 0
++    used_width = 0
+     last_index = len(words) - 1
+ 
+-    for i, word in enumerate(words):
+-        total_length += len(word) + (i > 0)
++    for index, word in enumerate(words):
++        used_width += len(word) + (index > 0)
+ 
+-        if total_length >= max_length:  # too long, truncate
++        if used_width > max_length:  # too long, truncate
+             break
+ 
+         if word[-1] == ".":  # sentence end, truncate without "..."
+-            return " ".join(words[: i + 1])
++            return " ".join(words[: index + 1])
+ 
+-        if total_length == max_length and i != last_index:
++        if used_width == max_length and index != last_index:
+             break  # not at sentence end, truncate with "..."
+     else:
+         return " ".join(words)  # no truncation needed
+ 
+-    # Account for the length of the suffix.
+-    total_length += len("...")
++    # Account for the width of the suffix.
++    used_width += len("...")
+ 
+-    # remove words until the length is short enough
+-    while i > 0:
+-        total_length -= len(words[i]) + (i > 0)
++    # remove words until the width is short enough
++    while index > 0:
++        used_width -= len(words[index]) + (index > 0)
+ 
+-        if total_length <= max_length:
++        if used_width <= max_length:
+             break
+ 
+-        i -= 1
++        index -= 1
+ 
+-    return " ".join(words[:i]) + "..."
++    return " ".join(words[:index]) + "..."
+ 
+ 
+ class _LazyFile:

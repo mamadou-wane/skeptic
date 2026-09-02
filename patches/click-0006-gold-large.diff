@@ -1,0 +1,43 @@
+diff --git a/src/click/termui.py b/src/click/termui.py
+index 83ca682..e0f5e71 100644
+--- a/src/click/termui.py
++++ b/src/click/termui.py
+@@ -614,24 +614,27 @@ def clear() -> None:
+ 
+ def _interpret_color(color: int | tuple[int, int, int] | str, offset: int = 0) -> str:
+     """Interprets a color value and returns the corresponding ANSI code."""
+-    if isinstance(color, str) and color in _ansi_colors:
+-        return str(_ansi_colors[color] + offset)
+ 
+     # bool is an int subclass: without the exclusion, True and False would
+     # silently render as the palette indices 1 and 0.
+-    elif isinstance(color, int) and not isinstance(color, bool):
+-        if 0 <= color <= 255:
+-            return f"{38 + offset};5;{color:d}"
++    def is_channel(value: t.Any) -> t.TypeGuard[int]:
++        """Whether a value is an int in the 0 to 255 channel range."""
++        return (
++            isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 255
++        )
++
++    if isinstance(color, str) and color in _ansi_colors:
++        return str(_ansi_colors[color] + offset)
+ 
+-    elif (
++    if is_channel(color):
++        return f"{38 + offset};5;{color:d}"
++
++    if (
+         isinstance(color, (tuple, list))
+         and len(color) == 3
+-        and all(
+-            isinstance(c, int) and not isinstance(c, bool) and 0 <= c <= 255
+-            for c in color
+-        )
++        and all(is_channel(c) for c in color)
+     ):
+-        r, g, b, a = color
++        r, g, b = color
+         return f"{38 + offset};2;{r:d};{g:d};{b:d}"
+ 
+     raise ValueError(_("Unknown color {colour!r}").format(colour=color))

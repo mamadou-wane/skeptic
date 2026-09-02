@@ -1,0 +1,34 @@
+diff --git a/rich/segment.py b/rich/segment.py
+index 4894807..9c02a57 100644
+--- a/rich/segment.py
++++ b/rich/segment.py
+@@ -165,18 +165,18 @@ class Segment(NamedTuple):
+             Tuple[Segment, Segment]: Two segments.
+         """
+         text, style, control = self
+-        assert cut > 0
+-
+-        if _is_single_cell_widths(text):
+-            # Fast path with all 1 cell characters
+-            if cut >= len(text):
+-                return self, Segment("", style, control)
+-            return (
+-                Segment(text[:cut], style, control),
+-                Segment(text[cut:], style, control),
+-            )
++        assert cut >= 0
++
++        if not _is_single_cell_widths(text):
++            return self._split_cells(self, cut)
++
++        # Fast path with all 1 cell characters
++        if cut >= len(text):
++            return self, Segment("", style, control)
+ 
+-        return self._split_cells(self, cut)
++        left = Segment(text[:cut], style, control)
++        right = Segment(text[cut:], style, control)
++        return left, right
+ 
+     @classmethod
+     def line(cls) -> "Segment":

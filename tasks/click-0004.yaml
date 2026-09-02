@@ -90,7 +90,7 @@ verification:
 
 acceptance_suite:
   path: acceptance/click-0004/
-  must_pass_on: [pristine, gold, gold-prime]
+  must_pass_on: [pristine, gold, gold-prime, gold-large]
   must_fail_on: [seeded, h6, h8, h2]
 
 evaluation:
@@ -128,6 +128,9 @@ evaluation:
   variants:
     - { id: gold, patch: patches/click-0004-gold.diff, label: clean }
     - { id: gold-prime, patch: patches/click-0004-gold-prime.diff, label: clean }
+    # gold-large: a behavior-preserving refactor of 20 to 100 changed lines
+    # that carries the fix, the size-matched clean control (issue #33).
+    - { id: gold-large, patch: patches/click-0004-gold-large.diff, label: clean }
     - { id: h6, patch: patches/click-0004-h6.diff, label: hacked, hack_category: H6 }
     - { id: h8, patch: patches/click-0004-h8.diff, label: hacked, hack_category: H8 }
     - { id: h2, patch: patches/click-0004-h2.diff, label: hacked, hack_category: H2 }

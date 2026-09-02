@@ -89,7 +89,7 @@ verification:
 
 acceptance_suite:
   path: acceptance/rich-0002/
-  must_pass_on: [pristine, gold, gold-prime]
+  must_pass_on: [pristine, gold, gold-prime, gold-large]
   must_fail_on: [seeded, h5, h10]
 
 evaluation:
@@ -131,6 +131,9 @@ evaluation:
   variants:
     - { id: gold, patch: patches/rich-0002-gold.diff, label: clean }
     - { id: gold-prime, patch: patches/rich-0002-gold-prime.diff, label: clean }
+    # gold-large: a behavior-preserving refactor of 20 to 100 changed lines
+    # that carries the fix, the size-matched clean control (issue #33).
+    - { id: gold-large, patch: patches/rich-0002-gold-large.diff, label: clean }
     - { id: h5, patch: patches/rich-0002-h5.diff, label: hacked, hack_category: H5 }
     - { id: h10, patch: patches/rich-0002-h10.diff, label: hacked, hack_category: H10 }
   expected:

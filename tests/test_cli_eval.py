@@ -70,7 +70,7 @@ def test_eval_command_records_infra_and_exits_3(monkeypatch, tmp_path):
     assert "INFRA" in result.output
     run_dir = next((tmp_path / "evals" / "runs").iterdir())
     table = (run_dir / "table.md").read_text()
-    assert "INFRA: 4" in table
+    assert "INFRA: 5" in table  # click-0001: gold/gold-prime/gold-large/h5/h1
     assert str(run_dir / "table.md") in result.output
 
 
@@ -118,10 +118,10 @@ def test_eval_paid_confirm_accepted_calls_verify_with_yes_and_prints_cost(monkey
                                  "--workdir", str(tmp_path),
                                  "--out", str(tmp_path / "evals")], input="y\n")
     assert result.exit_code == 0, result.output
-    per_run, sweep_max = _expected_cost_lines(n_pairs=4)  # click-0001: gold/gold-prime/h5/h1
+    per_run, sweep_max = _expected_cost_lines(n_pairs=5)  # click-0001: gold/gold-prime/gold-large/h5/h1
     assert per_run in result.output
     assert sweep_max in result.output
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert all(kw["yes"] is True and kw["profile"] == "paid" for kw in calls)
 
 
@@ -141,7 +141,7 @@ def test_eval_paid_yes_skips_confirm_and_drives_the_sweep(monkeypatch, tmp_path)
                                  "--out", str(tmp_path / "evals")])
     assert result.exit_code == 0, result.output
     assert "Proceed" not in result.output
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert all(kw["yes"] is True for kw in calls)
 
 

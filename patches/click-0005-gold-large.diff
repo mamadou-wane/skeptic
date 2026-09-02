@@ -1,0 +1,47 @@
+diff --git a/src/click/core.py b/src/click/core.py
+index 722741d..e0af2ca 100644
+--- a/src/click/core.py
++++ b/src/click/core.py
+@@ -1931,7 +1931,7 @@ class Group(Command):
+         """Given a context and a command name, this returns a :class:`Command`
+         object if it exists or returns ``None``.
+         """
+-        return self.commands[cmd_name]
++        return self.commands.get(cmd_name)
+ 
+     def list_commands(self, ctx: Context) -> list[str]:
+         """Returns a list of subcommand names in the order they should appear."""
+@@ -2056,19 +2056,23 @@ class Group(Command):
+                     rv.append(sub_ctx.command.invoke(sub_ctx))
+             return _process_result(rv)
+ 
++    def _find_command(self, ctx: Context, cmd_name: str) -> tuple[str, Command | None]:
++        """Look up a subcommand, retrying under the token normalization function."""
++        cmd = self.get_command(ctx, cmd_name)
++
++        if cmd is not None:
++            return cmd_name, cmd
++
++        if ctx.token_normalize_func is None:
++            return cmd_name, None
++
++        cmd_name = ctx.token_normalize_func(cmd_name)
++        return cmd_name, self.get_command(ctx, cmd_name)
++
+     def resolve_command(
+         self, ctx: Context, args: list[str]
+     ) -> tuple[str | None, Command | None, list[str]]:
+-        cmd_name = make_str(args[0])
+-
+-        # Get the command
+-        cmd = self.get_command(ctx, cmd_name)
+-
+-        # If we can't find the command but there is a normalization
+-        # function available, we try with that one.
+-        if cmd is None and ctx.token_normalize_func is not None:
+-            cmd_name = ctx.token_normalize_func(cmd_name)
+-            cmd = self.get_command(ctx, cmd_name)
++        cmd_name, cmd = self._find_command(ctx, make_str(args[0]))
+ 
+         # If we don't find the command we want to show an error message
+         # to the user that it was not provided.  However, there is

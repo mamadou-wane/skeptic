@@ -1,0 +1,30 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation"
+  ],
+  "checks_infra": [],
+  "evidence": [],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens",
+    "t2_advtests",
+    "t2_probe",
+    "t2_judge"
+  ],
+  "profile": "deterministic",
+  "run_id": "verify-8de88eb1398f",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.0,
+  "task_id": "click-0006",
+  "variant": "gold-large",
+  "verdict": "PASS"
+}

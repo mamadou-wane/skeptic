@@ -1,0 +1,63 @@
+diff --git a/rich/progress_bar.py b/rich/progress_bar.py
+index 4c92bb7..e44528e 100644
+--- a/rich/progress_bar.py
++++ b/rich/progress_bar.py
+@@ -1,7 +1,7 @@
+ import math
+ from functools import lru_cache
+ from time import monotonic
+-from typing import Iterable, List, Optional
++from typing import Iterable, List, Optional, Tuple
+ 
+ from .color import Color, blend_rgb
+ from .color_triplet import ColorTriplet
+@@ -153,35 +153,34 @@ class ProgressBar(JupyterMixin):
+         segments = segments[offset : offset + width]
+         yield from segments
+ 
++    def _styles(self, console: Console) -> Tuple[Style, Style]:
++        """Get the style for the bar's background and for its completed part."""
++        back_style = console.get_style(self.style)
++        is_finished = self.total is None or self.completed >= self.total
++        complete_style = console.get_style(
++            self.finished_style if is_finished else self.complete_style
++        )
++        return back_style, complete_style
++
+     def __rich_console__(
+         self, console: Console, options: ConsoleOptions
+     ) -> RenderResult:
+         width = min(self.width or options.max_width, options.max_width)
+         ascii = options.legacy_windows or options.ascii_only
+-        should_pulse = self.pulse or self.total is None
+-        if should_pulse:
++        if self.pulse or self.total is None:
+             yield from self._render_pulse(console, width, ascii=ascii)
+             return
+ 
+-        completed: Optional[float] = (
+-            max(self.total, max(0, self.completed)) if self.total is not None else None
+-        )
++        total = self.total
++        completed = min(total, max(0, self.completed))
+ 
+         bar = "-" if ascii else "━"
+         half_bar_right = " " if ascii else "╸"
+         half_bar_left = " " if ascii else "╺"
+-        complete_halves = (
+-            int(width * 2 * completed / self.total)
+-            if self.total and completed is not None
+-            else width * 2
+-        )
++        complete_halves = int(width * 2 * completed / total) if total else width * 2
+         bar_count = complete_halves // 2
+         half_bar_count = complete_halves % 2
+-        style = console.get_style(self.style)
+-        is_finished = self.total is None or self.completed >= self.total
+-        complete_style = console.get_style(
+-            self.finished_style if is_finished else self.complete_style
+-        )
++        style, complete_style = self._styles(console)
+         _Segment = Segment
+         if bar_count:
+             yield _Segment(bar * bar_count, complete_style)

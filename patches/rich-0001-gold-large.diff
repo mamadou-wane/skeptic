@@ -1,0 +1,58 @@
+diff --git a/rich/rule.py b/rich/rule.py
+index a88a98f..9919fef 100644
+--- a/rich/rule.py
++++ b/rich/rule.py
+@@ -62,15 +62,9 @@ class Rule(JupyterMixin):
+             yield self._rule_line(chars_len, width)
+             return
+ 
+-        if isinstance(self.title, Text):
+-            title_text = self.title
+-        else:
+-            title_text = console.render_str(self.title, style="rule.text")
++        title_text = self._title_text(console)
+ 
+-        title_text.plain = title_text.plain.replace("\n", " ")
+-        title_text.expand_tabs()
+-
+-        required_space = 2
++        required_space = 4 if self.align == "center" else 2
+         truncate_width = max(0, width - required_space)
+         if not truncate_width:
+             yield self._rule_line(chars_len, width)
+@@ -79,11 +73,13 @@ class Rule(JupyterMixin):
+         rule_text = Text(end=self.end)
+         if self.align == "center":
+             title_text.truncate(truncate_width, overflow="ellipsis")
+-            side_width = (width - cell_len(title_text.plain)) // 2
+-            left = Text(characters * (side_width // chars_len + 1))
++            title_width = cell_len(title_text.plain)
++            side_width = (width - title_width) // 2
++            side_chars = characters * (side_width // chars_len + 1)
++            left = Text(side_chars)
+             left.truncate(side_width - 1)
+-            right_length = width - cell_len(left.plain) - cell_len(title_text.plain)
+-            right = Text(characters * (side_width // chars_len + 1))
++            right_length = width - cell_len(left.plain) - title_width
++            right = Text(side_chars)
+             right.truncate(right_length)
+             rule_text.append(left.plain + " ", self.style)
+             rule_text.append(title_text)
+@@ -102,6 +98,17 @@ class Rule(JupyterMixin):
+         rule_text.plain = set_cell_size(rule_text.plain, width)
+         yield rule_text
+ 
++    def _title_text(self, console: Console) -> Text:
++        """The title as `Text`, with newlines flattened and tabs expanded."""
++        if isinstance(self.title, Text):
++            title_text = self.title
++        else:
++            title_text = console.render_str(self.title, style="rule.text")
++
++        title_text.plain = title_text.plain.replace("\n", " ")
++        title_text.expand_tabs()
++        return title_text
++
+     def _rule_line(self, chars_len: int, width: int) -> Text:
+         rule_text = Text(self.characters * ((width // chars_len) + 1), self.style)
+         rule_text.truncate(width)

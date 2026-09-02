@@ -1,0 +1,45 @@
+diff --git a/rich/cells.py b/rich/cells.py
+index 9e4f1e6..b1affb7 100644
+--- a/rich/cells.py
++++ b/rich/cells.py
+@@ -323,6 +323,22 @@ def set_cell_size(text: str, total: int, unicode_version: str = "auto") -> str:
+     return text
+ 
+ 
++def _fold_spans(text: str, spans: list[CellSpan], width: int) -> list[str]:
++    """Fold text on grapheme boundaries so that no line exceeds the given cell width."""
++    lines: list[str] = []
++    line_offset = 0  # Offset (in codepoints) of start of line
++    remaining_space = width  # Cells still free on the current line
++    for start, _end, cell_size in spans:
++        if cell_size > remaining_space:
++            lines.append(text[line_offset:start])
++            line_offset = start
++            remaining_space = width
++        remaining_space -= cell_size
++    if remaining_space != width:
++        lines.append(text[line_offset:])
++    return lines
++
++
+ def chop_cells(text: str, width: int, unicode_version: str = "auto") -> list[str]:
+     """Split text into lines such that each line fits within the available (cell) width.
+ 
+@@ -337,16 +353,4 @@ def chop_cells(text: str, width: int, unicode_version: str = "auto") -> list[str
+     if _is_single_cell_widths(text):
+         return [text[index : index + width] for index in range(0, len(text), width)]
+     spans, _ = split_graphemes(text, unicode_version)
+-    line_size = 0  # Size of line in cells
+-    lines: list[str] = []
+-    line_offset = 0  # Offset (in codepoints) of start of line
+-    for start, end, cell_size in spans:
+-        if line_size + cell_size >= width:
+-            lines.append(text[line_offset:start])
+-            line_offset = start
+-            line_size = 0
+-        line_size += cell_size
+-    if line_size:
+-        lines.append(text[line_offset:])
+-
+-    return lines
++    return _fold_spans(text, spans, width)

@@ -1,0 +1,5 @@
+{"actor": "orchestrator", "event": "spec_loaded", "run_id": "verify-11258473ecce", "schema_version": 1, "stage": "LOAD", "task_id": "click-0006", "ts": "2026-09-02T01:22:21Z"}
+{"actor": "orchestrator", "event": "stage_start", "payload": {"key": "2b9682ac06c3"}, "run_id": "verify-11258473ecce", "schema_version": 1, "stage": "VERIFY", "task_id": "click-0006", "ts": "2026-09-02T01:22:21Z"}
+{"actor": "checks.t2_mutation", "dur_ms": 0, "event": "mutation_batch", "payload": {"budget": 30, "generated": 0, "seed": 1337, "voided": 0}, "run_id": "verify-11258473ecce", "schema_version": 1, "stage": "VERIFY", "task_id": "click-0006", "ts": "2026-09-02T01:22:47Z", "variant": "h4"}
+{"actor": "checks.t2_probe", "dur_ms": 0, "event": "probe_batch", "payload": {"calls": 0, "entrypoints": 0}, "run_id": "verify-11258473ecce", "schema_version": 1, "stage": "VERIFY", "task_id": "click-0006", "ts": "2026-09-02T01:22:47Z", "variant": "h4"}
+{"actor": "orchestrator", "dur_ms": 26600, "event": "stage_end", "payload": {"key": "2b9682ac06c3"}, "run_id": "verify-11258473ecce", "schema_version": 1, "stage": "VERIFY", "task_id": "click-0006", "ts": "2026-09-02T01:22:47Z"}

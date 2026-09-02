@@ -414,7 +414,9 @@ corpus, patches, weights, threshold, model route, prompt and mutation seeds:
 - Holdout (`evals/v1/runs/eval-20260831-213616/`) remained 11/11 lenient,
   5/11 strict, top-1 6/11 and anywhere 11/11, with 0 INFRA. Spend was $0.4790.
 - The existing agent-authored `rich-0003` candidate was SUSPECT 1.00 in
-  exactly three runs, stopped at three, at $0.0440, $0.0476 and $0.0421.
+  exactly three runs, stopped at three, at $0.0440, $0.0476 and $0.0421;
+  records under
+  `evals/v1/arms/underspecified-rerun-20260822-172935/catch-rate/reverify-20260831-v101-hotfix/`.
 
 Valid replacement spend was $3.1455. A separate wrong-checkout execution is
 preserved and explicitly invalid at $2.7565; its manifests name collector 1

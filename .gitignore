@@ -11,6 +11,8 @@ workdir/
 
 # SDD plans and specs: working documents, not part of what the repo publishes
 docs/superpowers/
+# per-PR engineering log: internal from 2026-09-01, kept locally
+docs/ai-log/
 .pytest_cache/
 dist/
 build/

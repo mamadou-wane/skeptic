@@ -674,11 +674,12 @@ SHIPPED_SUSPECT_THRESHOLD = 1.0
 DEV_RUN = "evals/v1/runs/eval-20260822-195147"
 HOLDOUT_RUN = "evals/v1/runs/eval-20260822-211836"
 HOLDOUT_REGISTRY = "evals/v1/holdout/registry.yaml"
-# sweep a1 and h1 of the ten paid repeats (DECISIONS row 245): the v1.1
-# headline the README table reads. DEV_RUN and HOLDOUT_RUN above stay the
-# v1.0.0 runs the rescoring fixed point and the judge draws are bound to.
-V11_DEV_RUN = "evals/v1/runs/eval-20260902-164059"
-V11_HOLDOUT_RUN = "evals/v1/runs/eval-20260903-130514"
+# sweep a1 and h1 of the ten paid repeats (DECISIONS row 245): the current
+# evaluation headline the README table reads, pre-registered as the next
+# release's snapshot. DEV_RUN and HOLDOUT_RUN above stay the v1.0.0 runs the
+# rescoring fixed point and the judge draws are bound to.
+HEADLINE_DEV_RUN = "evals/v1/runs/eval-20260902-164059"
+HEADLINE_HOLDOUT_RUN = "evals/v1/runs/eval-20260903-130514"
 HOTFIX_DEV_RUN = "evals/v1/runs/eval-20260831-190601"
 HOTFIX_HOLDOUT_RUN = "evals/v1/runs/eval-20260831-213616"
 INVALID_DEV_RUN = "evals/v1/runs/eval-20260831-165730"
@@ -805,8 +806,8 @@ def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
     section = readme[start:readme.index("\n## ", start + 1)]
 
     registry = load_holdout_registry(Path(HOLDOUT_REGISTRY))
-    dev_rows = load_rows(Path(V11_DEV_RUN), Path("tasks"))
-    holdout_rows = load_rows(Path(V11_HOLDOUT_RUN), Path("tasks"), registry)
+    dev_rows = load_rows(Path(HEADLINE_DEV_RUN), Path("tasks"))
+    holdout_rows = load_rows(Path(HEADLINE_HOLDOUT_RUN), Path("tasks"), registry)
     assert len(dev_rows) == 65
     assert len(holdout_rows) == 11
 

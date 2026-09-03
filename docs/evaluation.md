@@ -11,8 +11,9 @@ rest is quoted from the tables and ledgers those snapshots carry.
 
 ## Eval A, the dev set
 
-The v1.1 headline is sweep a1 of the paid repeats (the section of that
-name below), run 2026-09-02 at `verifier_revision` b18754bfacc3 and
+The current evaluation headline is sweep a1 of the paid repeats (the
+section of that name below), pre-registered in row 243 as the next
+release's snapshot, run 2026-09-02 at `verifier_revision` b18754bfacc3 and
 `collector_version` 4 over the 65-row corpus: 27/29 lenient, 12/29
 strict, 0/12 on each of gold, gold-prime and gold-large. The table below
 is the v1.0.0 run it succeeds, kept as published; the rescoring section
@@ -99,7 +100,7 @@ measurements agreed on where the gap was (rows 226, 227, 229).
 
 ## The blind holdout
 
-The v1.1 headline holdout figure is sweep h1 of the paid repeats (the
+The current holdout headline is sweep h1 of the paid repeats (the
 section of that name below), run 2026-09-03 at `verifier_revision`
 b18754bfacc3: 10/11 lenient, 5/11 strict. Across the five holdout draws
 lenient read 10, 11, 9, 11 and 9 of 11; h3 and h5 sit under the 85 percent
@@ -421,8 +422,9 @@ commit `1d1a000`, after PR #36, at `verifier_revision` b18754bfacc3 and
 five paid holdout sweeps over the 11 registry rows, sequential from one
 driver, each from a fresh `--workdir` because the verify cache is
 content-keyed and would replay the first draw, hard cap $30 checked after
-every sweep. Sweep a1 is the v1.1 headline the README carries; the other
-nine sit here. The runs, in order: `evals/v1/runs/eval-20260902-164059/`
+every sweep. Sweep a1 is the current evaluation headline the README
+carries, pre-registered in row 243 as the next release's snapshot; the
+release itself is a separate decision. The other nine sit here. The runs, in order: `evals/v1/runs/eval-20260902-164059/`
 (a1), `evals/v1/runs/eval-20260902-201826/` (a2),
 `evals/v1/runs/eval-20260903-001440/` (a3),
 `evals/v1/runs/eval-20260903-042605/` (a4),
@@ -898,15 +900,15 @@ re-audits were deterministic. Left open and named in row 237: the guard-probe
 follow-ups, `t1_coverage` under a repo's own `--cov`, and a second machine's
 footprint run.
 
-The unreleased v1.0.1 integrity candidate was revalidated on 2026-08-31
+The v1.0.1 integrity candidate was revalidated on 2026-08-31, before its release
 (DECISIONS row 239). That paid collector-4 run remains pre-repair evidence:
 holdout stayed 11/11 and the agent-authored H7 re-verification stayed three
 SUSPECT outcomes, while Eval A measured one H6 PASS and four `rich-0002` INFRA
 rows. The transport defect was repaired afterward and all four affected rows
 completed in a zero-API deterministic sweep (row 240). The v1.0.0 benchmark
 stayed the headline until the paid repeats below, the first complete paid
-Eval A after the repair. Merge, version bump, tag and release remain pending human
-review.
+Eval A after the repair. v1.0.1 itself was merged as PR #28 and released on
+2026-09-01, tag `v1.0.1` at `70d7832`.
 
 On 2026-09-01 the committed evidence was rescored four ways (DECISIONS row
 241, the section above): the strict column split by the taxonomy's Control
@@ -920,8 +922,8 @@ On 2026-09-02 and 03 the ten pre-registered paid sweeps ran at commit
 `1d1a000` (DECISIONS row 245, the section above): 0 INFRA in 380 rows,
 strict 12/29 and 5/11 and 0/12 on every clean split in every draw, lenient
 26 to 29 of 29 and 9 to 11 of 11 with every moving row decided by the
-sampled adversarial-test rule, $20.4120 spent. Sweep a1 is the v1.1
-headline and the README table now reads from it and from h1, with a third
+sampled adversarial-test rule, $20.4120 spent. Sweep a1 is the current
+evaluation headline and the README table now reads from it and from h1, with a third
 false-positive column for gold-large. No weight, threshold, detector or
-corpus row moved. The version bump, tag and release remain the owner's
-call.
+corpus row moved. A v1.1.0 release is a separate decision; this change does
+not bump the version.

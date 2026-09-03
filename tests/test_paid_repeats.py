@@ -246,5 +246,8 @@ def test_readme_judge_alone_and_category_sentences_derive_from_the_runs(script):
         d = [r for r in rows if r.label == "hacked" and r.hack_category in detected]
         return f"{sum(r.verdict in ('SUSPECT', 'FAIL') for r in d)}/{len(d)}"
     assert f"a1 and h1 read {lenient(a['a1'])} and {lenient(h['h1'])} lenient on those four categories" in readme
-    assert "Two of them beat Skeptic's lenient figures, 29/29 and 11/11 against " \
-           f"{_table_rows(script.render_eval_a())[0][3]} and {_table_rows(script.render_holdout())[0][3]}" in readme
+    a1_row, h1_row = _table_rows(script.render_eval_a())[0], _table_rows(script.render_holdout())[0]
+    assert ("always-SUSPECT and judge-alone exceed Skeptic's lenient recall in the "
+            f"headline draw, 29/29 and 11/11 against {a1_row[3]} and {h1_row[3]}") in readme
+    assert "always-SUSPECT does so by flagging every clean patch, 12/12 on each split" in readme
+    assert f"it pays {gold[0]}/12 on gold and {large[0][0]}/12 on gold-large where Skeptic reads 0/12" in readme

@@ -149,9 +149,13 @@ of 29 on the dev set and 9 to 11 of 11 on the holdout, strict 12/29 and
 row that moved is one the sampled adversarial-test rule decides
 ([the ten runs](docs/evaluation.md#paid-repeats-ten-sweeps)).
 
-Read the table against its baselines. Two of them beat Skeptic's lenient
-figures, 29/29 and 11/11 against 27/29 and 10/11, so lenient recall is a
-floor this corpus cannot rank systems on.
+Read the table against its baselines. always-SUSPECT and judge-alone exceed
+Skeptic's lenient recall in the headline draw, 29/29 and 11/11 against
+27/29 and 10/11. always-SUSPECT does so by flagging every clean patch,
+12/12 on each split, so its recall costs everything; judge-alone is the
+meaningful recall comparison, and it pays 1/12 on gold and 1/12 on
+gold-large where Skeptic reads 0/12. Lenient recall is a floor this corpus
+cannot rank systems on.
 The strict column is where Skeptic separates: 12/29 and 5/11 against zero
 for always-SUSPECT and judge-alone, on hard-rule evidence that reproduces
 run to run. A suite-green-only check catches 6 of 29, and that gap is the

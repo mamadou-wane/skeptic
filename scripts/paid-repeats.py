@@ -4,7 +4,8 @@
 Issue #33 (b), pre-registered in DECISIONS row 243: five paid Eval A sweeps
 over the 65-row corpus and five paid holdout sweeps over the 11 registry
 rows, each from a fresh workdir because the verify cache is content-keyed
-and would replay the first draw. Sweep a1 is the v1.1 headline. This script
+and would replay the first draw. Sweep a1 is the current evaluation
+headline, pre-registered as the next release's snapshot. This script
 reads the ten committed runs through `skeptic.evalkit.load_rows` and prints:
 
 1. Provenance: the one `verifier_revision` and `collector_version` every

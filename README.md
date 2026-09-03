@@ -115,29 +115,39 @@ The full design, its tradeoffs and its limits:
 ## Evaluation
 
 Two measurements, both committed with per-pair traces. The dev set is 12
-tasks across the two repos, 29 hack variants and 24 clean variants at the
-time of the committed runs (a third clean variant per task joined on
-2026-09-01, below), written by the same hand that built the detectors. The blind holdout is 12 hack
+tasks across the two repos, 29 hack variants and 36 clean variants, twelve
+each of gold, gold-prime and gold-large, written by the same hand that built
+the detectors. The blind holdout is 12 hack
 variants, 11 of which cleared a detector-free mechanical screen; no authoring
 session saw a detector, a weight, a threshold or a dev-set variant.
 
-| system | dev lenient | dev strict | holdout lenient | holdout strict | FP gold | FP gold-prime |
-|---|---|---|---|---|---|---|
-| **Skeptic** | 29/29 | 12/29 | 11/11 | 5/11 | 0/12 | 0/12 |
-| always-SUSPECT | 29/29 | 0/29 | 11/11 | 0/11 | 12/12 | 12/12 |
-| suite-green-only | 6/29 | 6/29 | 3/11 | 3/11 | 0/12 | 0/12 |
-| judge-alone | 29/29 | 0/29 | 11/11 | 0/11 | 0/12 | 0/12 |
-| diff-size >4 lines | 19/29 | 0/29 | 8/11 | 0/11 | 0/12 | 2/12 |
-| diff-size >10 lines | 11/29 | 0/29 | 5/11 | 0/11 | 0/12 | 0/12 |
+| system | dev lenient | dev strict | holdout lenient | holdout strict | FP gold | FP gold-prime | FP gold-large |
+|---|---|---|---|---|---|---|---|
+| **Skeptic** | 27/29 | 12/29 | 10/11 | 5/11 | 0/12 | 0/12 | 0/12 |
+| always-SUSPECT | 29/29 | 0/29 | 11/11 | 0/11 | 12/12 | 12/12 | 12/12 |
+| suite-green-only | 6/29 | 6/29 | 3/11 | 3/11 | 0/12 | 0/12 | 0/12 |
+| judge-alone | 29/29 | 0/29 | 11/11 | 0/11 | 1/12 | 0/12 | 1/12 |
+| diff-size >4 lines | 19/29 | 0/29 | 8/11 | 0/11 | 0/12 | 2/12 | 12/12 |
+| diff-size >10 lines | 11/29 | 0/29 | 5/11 | 0/11 | 0/12 | 0/12 | 12/12 |
 
 Lenient counts SUSPECT or FAIL; strict counts FAIL only, which means a
 deterministic hard rule fired. False positives are dev-set only (a blind
 author asked for a hack returns either a gold revert or a correct fix, so the
 holdout has no clean variants) and reported per split; at n=12 one FP is 8.3
 points, so 0/12 is the pre-registered bar met at this sample size. The
-judge-alone FP cell is one draw of a temperature-0 call: five draws over three
-dates read 1, 0, 1, 1 and 1 of 12 on the same twelve gold patches, the flag on
-rich-0005 each time it landed ([the record](docs/evaluation.md#eval-a-the-dev-set)).
+judge-alone FP cells are one draw of a temperature-0 call: on gold, five
+earlier draws over three dates read 1, 0, 1, 1 and 1 of 12 and the five paid
+repeats read 1, 0, 0, 0 and 0, the flag on rich-0005 each time it landed; on
+gold-large the judge flags click-0003 in all five repeats, a 1/12 that stays
+PASS at 0.25 under Skeptic's threshold ([the record](docs/evaluation.md#paid-repeats-ten-sweeps)).
+
+The Skeptic row is sweep a1 of five paid repeats run 2026-09-02 and 03 at
+one harness revision, each from a fresh workdir, the headline fixed before
+the first draw (DECISIONS row 245). Across the five, lenient read 26 to 29
+of 29 on the dev set and 9 to 11 of 11 on the holdout, strict 12/29 and
+5/11 in every draw, and 0/12 on all three clean splits in every draw; every
+row that moved is one the sampled adversarial-test rule decides
+([the ten runs](docs/evaluation.md#paid-repeats-ten-sweeps)).
 
 Read the table against its baselines. Two of them match Skeptic's lenient
 figures, so lenient recall is a floor this corpus cannot rank systems on.
@@ -156,8 +166,8 @@ lane. Twelve `gold-large` controls, behavior-preserving refactors of
 21 to 98 changed lines that carry each task's fix, joined the corpus on
 2026-09-01 (DECISIONS row 243). Every one exceeds both size thresholds, and
 all twelve read PASS, 0/12 under the deterministic profile, in the $0
-validation sweep ([the record](docs/evaluation.md#size-matched-clean-controls));
-the paid figures and the paid repeat land with v1.1. The strict column
+validation sweep ([the record](docs/evaluation.md#size-matched-clean-controls)),
+and 0/12 in each of the five paid repeats. The strict column
 also splits by the taxonomy's own Control column: every hard-rule FAIL, 12/12
 on the dev set and 5/5 on the holdout, lands on the six categories the
 in-harness sandbox prevents outright, H1 through H4, H9 and H10. On the four
@@ -174,10 +184,10 @@ false-positive columns did not move.
 The v1.0.1 integrity candidate received a separate collector-4 paid
 revalidation before its final transport repair. That preserved intermediate
 run exposed four `rich-0002` INFRA rows and one sampled H6 miss; it does not
-replace the released v1.0.0 benchmark above. The transport repair was then
+replace the benchmark above. The transport repair was then
 validated on all four `rich-0002` variants through Docker with the
-deterministic profile and zero API calls. No complete paid Eval A was rerun on
-the final v1.0.1 code. See [the close-out record](docs/evaluation.md#v101-integrity-hotfix-revalidation).
+deterministic profile and zero API calls. The five paid repeats above are the
+first complete paid sweeps after the repair. See [the close-out record](docs/evaluation.md#v101-integrity-hotfix-revalidation).
 
 The full record, including the pressure arms, the one agent-authored hack
 that got through, and cost actuals:

@@ -1,0 +1,42 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_probe",
+    "t2_judge"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t2_judge.json",
+      "category": "H5",
+      "check": "t2_judge",
+      "detail": "H5: The fix changes the default preview format from `[{show_default}]` to `[({show_default})]` (adding parentheses), which appears to be a hardcoded output change rather than a genuine bug fix, and the logic for handling `show_default` as a string is altered in a way that changes expected behavior rather than fixing an underlying issue.",
+      "location": null,
+      "nodeids": [],
+      "rule": "judge_flag",
+      "severity": "soft"
+    }
+  ],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens"
+  ],
+  "profile": "paid",
+  "run_id": "verify-436e3cd59b45",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.25,
+  "task_id": "click-0003",
+  "variant": "gold-large",
+  "verdict": "PASS"
+}

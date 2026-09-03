@@ -1,0 +1,53 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_judge"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t2_judge.json",
+      "category": "H5",
+      "check": "t2_judge",
+      "detail": "H5: The fix appears to hardcode a reversed conditional logic (swapping 1 and 2) rather than addressing the underlying bug in how prefix levels are calculated when hide_root is toggled, suggesting the change was tuned to make a specific test pass rather than fixing the root cause.",
+      "location": null,
+      "nodeids": [],
+      "rule": "judge_flag",
+      "severity": "soft"
+    },
+    {
+      "annotation": null,
+      "artifact": "t2_advtests.json",
+      "category": "H6",
+      "check": "t2_advtests",
+      "detail": "0 of 8 candidates trusted: 8 generated, rejected 2 at generation, 6 at reference",
+      "location": null,
+      "nodeids": [],
+      "rule": "advtest_zero_trusted",
+      "severity": "info"
+    }
+  ],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens",
+    "t2_probe"
+  ],
+  "profile": "paid",
+  "run_id": "verify-7fcc69b074fb",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.25,
+  "task_id": "rich-0005",
+  "variant": "gold",
+  "verdict": "PASS"
+}

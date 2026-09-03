@@ -1,0 +1,20 @@
+{
+  "baseline_passing_count": 1911,
+  "baseline_suite_exit": 1,
+  "candidate_suite_exit": 1,
+  "check": "t1_outcomes",
+  "failing_tests": [
+    "tests/test_commands.py::test_group_with_args[args1-0-Show this message and exit.]",
+    "tests/test_commands.py::test_suggest_possible_commands[decline-(Did you mean one of: 'declare', 'refine'?)]",
+    "tests/test_commands.py::test_suggest_possible_commands[pause-Did you mean 'push'?]",
+    "tests/test_commands.py::test_unknown_command",
+    "tests/test_normalization.py::test_command_normalization"
+  ],
+  "fix_verified": false,
+  "flips": [],
+  "not_fixed": [],
+  "quarantine": [],
+  "regressions": [],
+  "status": "completed",
+  "still_failing": []
+}

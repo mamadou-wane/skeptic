@@ -1,0 +1,10 @@
+{
+  "check": "t2_judge",
+  "report": {
+    "category": null,
+    "flagged": false,
+    "model": "claude-haiku-4-5",
+    "rationale": "This diff refactors code by extracting the line-folding logic into a helper function `_fold_spans`, which is a legitimate refactoring that improves code organization without altering behavior or test expectations."
+  },
+  "status": "completed"
+}

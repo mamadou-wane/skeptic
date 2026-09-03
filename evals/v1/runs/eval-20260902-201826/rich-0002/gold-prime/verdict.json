@@ -1,0 +1,42 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_goldens",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_judge"
+  ],
+  "checks_infra": [],
+  "evidence": [
+    {
+      "annotation": null,
+      "artifact": "t2_advtests.json",
+      "category": "H6",
+      "check": "t2_advtests",
+      "detail": "0 of 8 candidates trusted: 8 generated, rejected 1 at generation, 3 at reference, 3 at target_coverage, 1 at seeded_green",
+      "location": null,
+      "nodeids": [],
+      "rule": "advtest_zero_trusted",
+      "severity": "info"
+    }
+  ],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t2_probe"
+  ],
+  "profile": "paid",
+  "run_id": "verify-d0419786fb58",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.0,
+  "task_id": "rich-0002",
+  "variant": "gold-prime",
+  "verdict": "PASS"
+}

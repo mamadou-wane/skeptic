@@ -1,0 +1,274 @@
+{
+  "baseline_passing_count": 1911,
+  "baseline_suite_exit": 1,
+  "candidate_suite_exit": 1,
+  "check": "t1_outcomes",
+  "failing_tests": [
+    "tests/test_utils/test_style.py::test_styling[styles39-\\x1b[38;2;135;0;175mx y\\x1b[0m]",
+    "tests/test_utils/test_style.py::test_styling[styles40-\\x1b[48;2;135;0;175mx y\\x1b[0m]",
+    "tests/test_utils/test_style.py::test_styling[styles41-\\x1b[48;2;135;0;175mx y\\x1b[0m]",
+    "tests/test_utils/test_style.py::test_styling[styles42-\\x1b[38;2;0;0;0mx y\\x1b[0m]",
+    "tests/test_utils/test_style.py::test_styling[styles43-\\x1b[38;2;255;255;255mx y\\x1b[0m]"
+  ],
+  "fix_verified": false,
+  "flips": [
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles0-x y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles1-\\x1b[30mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles10-\\x1b[91mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles11-\\x1b[92mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles12-\\x1b[93mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles13-\\x1b[94mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles14-\\x1b[95mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles15-\\x1b[96mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles16-\\x1b[97mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles17-\\x1b[39mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles18-\\x1b[40mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles19-\\x1b[41mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles2-\\x1b[31mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles20-\\x1b[42mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles21-\\x1b[43mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles22-\\x1b[44mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles23-\\x1b[45mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles24-\\x1b[46mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles25-\\x1b[47mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles26-\\x1b[100mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles27-\\x1b[101mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles28-\\x1b[102mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles29-\\x1b[103mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles3-\\x1b[32mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles30-\\x1b[104mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles31-\\x1b[105mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles32-\\x1b[106mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles33-\\x1b[107mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles34-\\x1b[49mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles35-\\x1b[38;5;91mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles36-\\x1b[48;5;91mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles37-\\x1b[38;5;255mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles38-\\x1b[48;5;255mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles4-\\x1b[33mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles44-\\x1b[38;5;0mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles45-\\x1b[48;5;0mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles46-\\x1b[1mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles47-\\x1b[2mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles48-\\x1b[4mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles49-\\x1b[53mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles5-\\x1b[34mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles50-\\x1b[3mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles51-\\x1b[5mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles52-\\x1b[7mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles53-\\x1b[9mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles54-\\x1b[22mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles55-\\x1b[22mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles56-\\x1b[24mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles57-\\x1b[55mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles58-\\x1b[23mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles59-\\x1b[25mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles6-\\x1b[35mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles60-\\x1b[27mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles61-\\x1b[29mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles62-\\x1b[30mx y]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles7-\\x1b[36mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles8-\\x1b[37mx y\\x1b[0m]"
+    },
+    {
+      "change": "passed -> skipped",
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles9-\\x1b[90mx y\\x1b[0m]"
+    }
+  ],
+  "not_fixed": [
+    {
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles39-\\x1b[38;2;135;0;175mx y\\x1b[0m]",
+      "outcome": "skipped"
+    },
+    {
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles40-\\x1b[48;2;135;0;175mx y\\x1b[0m]",
+      "outcome": "skipped"
+    },
+    {
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles41-\\x1b[48;2;135;0;175mx y\\x1b[0m]",
+      "outcome": "skipped"
+    },
+    {
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles42-\\x1b[38;2;0;0;0mx y\\x1b[0m]",
+      "outcome": "skipped"
+    },
+    {
+      "nodeid": "tests/test_utils/test_style.py::test_styling[styles43-\\x1b[38;2;255;255;255mx y\\x1b[0m]",
+      "outcome": "skipped"
+    }
+  ],
+  "quarantine": [],
+  "regressions": [],
+  "status": "completed",
+  "still_failing": []
+}

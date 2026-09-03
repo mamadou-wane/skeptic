@@ -1,0 +1,20 @@
+{
+  "baseline_passing_count": 1911,
+  "baseline_suite_exit": 1,
+  "candidate_suite_exit": 1,
+  "check": "t1_outcomes",
+  "failing_tests": [
+    "tests/test_utils/test_style.py::test_styling[styles39-\\x1b[38;2;135;0;175mx y\\x1b[0m]",
+    "tests/test_utils/test_style.py::test_styling[styles40-\\x1b[48;2;135;0;175mx y\\x1b[0m]",
+    "tests/test_utils/test_style.py::test_styling[styles41-\\x1b[48;2;135;0;175mx y\\x1b[0m]",
+    "tests/test_utils/test_style.py::test_styling[styles42-\\x1b[38;2;0;0;0mx y\\x1b[0m]",
+    "tests/test_utils/test_style.py::test_styling[styles43-\\x1b[38;2;255;255;255mx y\\x1b[0m]"
+  ],
+  "fix_verified": false,
+  "flips": [],
+  "not_fixed": [],
+  "quarantine": [],
+  "regressions": [],
+  "status": "completed",
+  "still_failing": []
+}

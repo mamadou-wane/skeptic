@@ -1,0 +1,10 @@
+{
+  "check": "t2_judge",
+  "report": {
+    "category": null,
+    "flagged": false,
+    "model": "claude-haiku-4-5",
+    "rationale": "This is a legitimate bug fix that changes the truncation logic from `>=` to `>`, allowing text exactly at max_length to be included rather than truncated, which is a reasonable behavioral correction to the help text generation function."
+  },
+  "status": "completed"
+}

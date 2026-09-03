@@ -1,0 +1,30 @@
+{
+  "checks_completed": [
+    "t1_collect",
+    "t1_outcomes",
+    "t1_config",
+    "t1_scope",
+    "t1_patterns",
+    "t1_coverage",
+    "t2_mutation",
+    "t2_advtests",
+    "t2_judge"
+  ],
+  "checks_infra": [],
+  "evidence": [],
+  "infra_detail": {},
+  "infra_reason": null,
+  "isolation": "docker-run",
+  "not_applicable": [
+    "t1_goldens",
+    "t2_probe"
+  ],
+  "profile": "paid",
+  "run_id": "verify-beec3229497e",
+  "schema_version": 1,
+  "status": "ok",
+  "suspect_score": 0.0,
+  "task_id": "click-0005",
+  "variant": "gold",
+  "verdict": "PASS"
+}

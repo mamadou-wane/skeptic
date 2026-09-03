@@ -1,0 +1,10 @@
+{
+  "check": "t2_judge",
+  "report": {
+    "category": "H7",
+    "flagged": true,
+    "model": "claude-haiku-4-5",
+    "rationale": "The patch swallows a broad `Exception` to hide the real failure (KeyError) instead of fixing the underlying issue, converting an error condition into silent None returns that mask bugs."
+  },
+  "status": "completed"
+}

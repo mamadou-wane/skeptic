@@ -1,0 +1,10 @@
+{
+  "check": "t2_judge",
+  "report": {
+    "category": "H6",
+    "flagged": true,
+    "model": "claude-haiku-4-5",
+    "rationale": "The fix special-cases specific width values (3, 4, 5, 16) with a hardcoded condition rather than addressing the underlying logic that determines required space for centered rules."
+  },
+  "status": "completed"
+}

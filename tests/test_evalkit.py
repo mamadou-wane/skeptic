@@ -674,6 +674,12 @@ SHIPPED_SUSPECT_THRESHOLD = 1.0
 DEV_RUN = "evals/v1/runs/eval-20260822-195147"
 HOLDOUT_RUN = "evals/v1/runs/eval-20260822-211836"
 HOLDOUT_REGISTRY = "evals/v1/holdout/registry.yaml"
+# sweep a1 and h1 of the ten paid repeats (DECISIONS row 245): the current
+# evaluation headline the README table reads, pre-registered as the next
+# release's snapshot. DEV_RUN and HOLDOUT_RUN above stay the v1.0.0 runs the
+# rescoring fixed point and the judge draws are bound to.
+HEADLINE_DEV_RUN = "evals/v1/runs/eval-20260902-164059"
+HEADLINE_HOLDOUT_RUN = "evals/v1/runs/eval-20260903-130514"
 HOTFIX_DEV_RUN = "evals/v1/runs/eval-20260831-190601"
 HOTFIX_HOLDOUT_RUN = "evals/v1/runs/eval-20260831-213616"
 INVALID_DEV_RUN = "evals/v1/runs/eval-20260831-165730"
@@ -800,9 +806,9 @@ def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
     section = readme[start:readme.index("\n## ", start + 1)]
 
     registry = load_holdout_registry(Path(HOLDOUT_REGISTRY))
-    dev_rows = load_rows(Path(DEV_RUN), Path("tasks"))
-    holdout_rows = load_rows(Path(HOLDOUT_RUN), Path("tasks"), registry)
-    assert len(dev_rows) == 53
+    dev_rows = load_rows(Path(HEADLINE_DEV_RUN), Path("tasks"))
+    holdout_rows = load_rows(Path(HEADLINE_HOLDOUT_RUN), Path("tasks"), registry)
+    assert len(dev_rows) == 65
     assert len(holdout_rows) == 11
 
     def cell(figure):
@@ -810,21 +816,23 @@ def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
         return f"{hits}/{n}"
 
     dev_fp = false_positives(dev_rows)
-    expected = ["| **Skeptic** | {} | {} | {} | {} | {} | {} |".format(
+    expected = ["| **Skeptic** | {} | {} | {} | {} | {} | {} | {} |".format(
         cell(detection(dev_rows)), cell(detection(dev_rows, strict=True)),
         cell(detection(holdout_rows)),
         cell(detection(holdout_rows, strict=True)),
-        cell(dev_fp["gold"]), cell(dev_fp["gold-prime"]))]
+        cell(dev_fp["gold"]), cell(dev_fp["gold-prime"]),
+        cell(dev_fp["gold-large"]))]
     for fold in (baseline_always_suspect, baseline_suite_green_only,
                  baseline_judge_alone):
         dev_b, holdout_b = fold(dev_rows), fold(holdout_rows)
-        expected.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+        expected.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
             dev_b.name,
             cell(dev_b.detection_lenient), cell(dev_b.detection_strict),
             cell(holdout_b.detection_lenient),
             cell(holdout_b.detection_strict),
             cell(dev_b.false_positives["gold"]),
-            cell(dev_b.false_positives["gold-prime"])))
+            cell(dev_b.false_positives["gold-prime"]),
+            cell(dev_b.false_positives["gold-large"])))
     # the two size-only rows: the patch line counts come from the committed
     # variant patches, never from a literal, so a re-authored patch moves the
     # README's row or fails this test
@@ -833,13 +841,14 @@ def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
     for threshold in (4, 10):
         dev_b = baseline_size_only(dev_rows, lines, threshold)
         holdout_b = baseline_size_only(holdout_rows, lines, threshold)
-        expected.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+        expected.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
             dev_b.name,
             cell(dev_b.detection_lenient), cell(dev_b.detection_strict),
             cell(holdout_b.detection_lenient),
             cell(holdout_b.detection_strict),
             cell(dev_b.false_positives["gold"]),
-            cell(dev_b.false_positives["gold-prime"])))
+            cell(dev_b.false_positives["gold-prime"]),
+            cell(dev_b.false_positives["gold-large"])))
     for row in expected:
         assert row in section, (
             f"row is not in the README's evaluation table: {row}")

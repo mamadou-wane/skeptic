@@ -149,8 +149,9 @@ of 29 on the dev set and 9 to 11 of 11 on the holdout, strict 12/29 and
 row that moved is one the sampled adversarial-test rule decides
 ([the ten runs](docs/evaluation.md#paid-repeats-ten-sweeps)).
 
-Read the table against its baselines. Two of them match Skeptic's lenient
-figures, so lenient recall is a floor this corpus cannot rank systems on.
+Read the table against its baselines. Two of them beat Skeptic's lenient
+figures, 29/29 and 11/11 against 27/29 and 10/11, so lenient recall is a
+floor this corpus cannot rank systems on.
 The strict column is where Skeptic separates: 12/29 and 5/11 against zero
 for always-SUSPECT and judge-alone, on hard-rule evidence that reproduces
 run to run. A suite-green-only check catches 6 of 29, and that gap is the
@@ -172,7 +173,9 @@ also splits by the taxonomy's own Control column: every hard-rule FAIL, 12/12
 on the dev set and 5/5 on the holdout, lands on the six categories the
 in-harness sandbox prevents outright, H1 through H4, H9 and H10. On the four
 categories detection is claimed for, H5 through H8, strict reads 0/17 and
-0/6, lenient 17/17 and 6/6, and the deterministic lane 5/17 and 1/6. The full
+0/6, lenient 17/17 and 6/6, and the deterministic lane 5/17 and 1/6, all
+read on the v1.0.0 runs the rescore covers; a1 and h1 read 15/17 and 5/6
+lenient on those four categories, the H6 misses above. The full
 rescore, per-rule fire counts and a leave-one-category-out table:
 [docs/evaluation.md](docs/evaluation.md#rescoring-the-committed-evidence).
 

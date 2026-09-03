@@ -92,17 +92,17 @@ def render_provenance() -> str:
 
 
 def render_eval_a() -> str:
-    lines = [("| sweep | run | INFRA | lenient | strict | FP gold | FP gold-prime "
-              "| FP gold-large | spend |"),
-             "|---|---|---|---|---|---|---|---|---|"]
+    fp_heads = " | ".join(f"FP {split}" for split in CLEAN_SPLITS)
+    lines = [f"| sweep | run | INFRA | lenient | strict | {fp_heads} | spend |",
+             "|---|---|---|---|---|" + "---|" * len(CLEAN_SPLITS) + "---|"]
     for label, run in EVAL_A:
         rows = _rows(run)
         fp = evalkit.false_positives(rows)
+        fp_cells = " | ".join(_cell(fp[split]) for split in CLEAN_SPLITS)
         lines.append(
             f"| {label} | {run} | {sum(r.infra for r in rows)} | "
             f"{_cell(evalkit.detection(rows))} | {_cell(evalkit.detection(rows, strict=True))} | "
-            f"{_cell(fp['gold'])} | {_cell(fp['gold-prime'])} | {_cell(fp['gold-large'])} | "
-            f"{_spend(rows)} |")
+            f"{fp_cells} | {_spend(rows)} |")
     return "\n".join(lines)
 
 

@@ -49,11 +49,16 @@ def _fp(raw, split) -> str:
     return f"{sum(v != 'PASS' for v in clean)}/{len(clean)}"
 
 
+HEADER_CELLS = {"sweep", "task"}
+
+
 def _table_rows(text: str) -> list[list[str]]:
     rows = []
     for line in text.splitlines():
-        if line.startswith("| ") and not line.startswith("|---") and not line.startswith("| sweep"):
-            rows.append([c.strip() for c in line.strip("|").split("|")])
+        if line.startswith("| ") and not line.startswith("|---"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if cells[0] not in HEADER_CELLS:
+                rows.append(cells)
     return rows
 
 
@@ -117,8 +122,7 @@ def test_stability_table_lists_exactly_the_rows_that_moved(script, corpus):
     moved = {key: draws for key, draws in per_row.items() if len(set(draws)) > 1}
     text = script.render_stability(sweeps, registry)
     rows = _table_rows(text)
-    assert {(r[0], r[1]): r[2:] for r in rows if r[0] != "task"} == \
-        {key: draws for key, draws in moved.items()}
+    assert {(r[0], r[1]): r[2:] for r in rows} == moved
     assert text.endswith(f"rows with the same verdict in all {len(sweeps)} draws: "
                          f"{len(per_row) - len(moved)} of {len(per_row)}")
 
@@ -150,3 +154,97 @@ def test_readme_states_the_spread_from_the_runs(script):
     for split in ("gold", "gold-prime", "gold-large"):
         assert all(r[5 + ("gold", "gold-prime", "gold-large").index(split)] == "0/12" for r in a_rows), split
     assert "0/12 on all three clean splits in every draw" in readme
+
+
+def _collapsed(path: Path) -> str:
+    return " ".join(path.read_text().split())
+
+
+def _eval_rows(script, sweeps, registry=None):
+    from skeptic.evalkit import load_rows
+    return {label: load_rows(script.RUNS_DIR / run, script.TASKS_DIR, registry=registry)
+            for label, run in sweeps}
+
+
+def test_doc_prose_states_the_bar_the_spread_and_the_spend_from_the_runs(script):
+    """The 85 percent bar's own pass/fail sentence, the spread, the spend
+    ranges and the totals in the Eval A note and the Status paragraph all
+    derive from the runs."""
+    from skeptic.evalkit import detection, load_holdout_registry
+    registry = load_holdout_registry(script.REGISTRY)
+    a = _eval_rows(script, script.EVAL_A)
+    h = _eval_rows(script, script.HOLDOUT, registry)
+    a_len = {k: detection(v)[0] for k, v in a.items()}
+    h_len = {k: detection(v)[0] for k, v in h.items()}
+    assert all(n / 29 >= 0.85 for n in a_len.values())
+    under = sorted(k for k, n in h_len.items() if n / 11 < 0.85)
+    assert under == ["h3", "h5"] and {h_len[k] for k in under} == {9}
+    doc = _collapsed(EVALUATION_DOC)
+    assert ("met in every dev-set draw and in three holdout draws of five: h3 and "
+            "h5 read 9/11, 81.8 percent") in doc
+    assert f"lenient read {min(a_len.values())} to {max(a_len.values())} of 29 and " \
+           f"{min(h_len.values())} to {max(h_len.values())} of 11" in doc
+    spend_a = [sum(r.usd for r in v) for v in a.values()]
+    spend_h = [sum(r.usd for r in v) for v in h.values()]
+    assert f"${min(spend_a):.2f} to ${max(spend_a):.2f} per Eval A sweep and " \
+           f"${min(spend_h):.2f} to ${max(spend_h):.2f} per holdout sweep" in doc
+    total = sum(spend_a) + sum(spend_h)
+    assert f"${total:.4f} spent" in doc
+    assert f"0 INFRA in {sum(len(v) for v in a.values()) + sum(len(v) for v in h.values())} rows" in doc
+    a1, h1 = a["a1"], h["h1"]
+    from skeptic.evalkit import false_positives
+    fp = false_positives(a1)
+    assert all(fp[s][0] == 0 for s in script.CLEAN_SPLITS)
+    assert (f"{detection(a1)[0]}/29 lenient, {detection(a1, strict=True)[0]}/29 strict, "
+            "0/12 on each of gold, gold-prime and gold-large") in doc
+    assert f"{detection(h1)[0]}/11 lenient, {detection(h1, strict=True)[0]}/11 strict" in doc
+    assert "lenient read " + ", ".join(str(h_len[k]) for k, _ in script.HOLDOUT[:-1]) \
+           + f" and {h_len[script.HOLDOUT[-1][0]]} of 11" in doc
+
+
+def test_doc_accounts_for_every_unstable_pass_draw(script):
+    """Every PASS draw on a moving row is either an empty battery
+    (`advtest_zero_trusted`) or named as a miss with tests in hand."""
+    from skeptic.evalkit import load_holdout_registry
+    registry = load_holdout_registry(script.REGISTRY)
+    passes, empty, exceptions = 0, 0, []
+    for sweeps, reg in ((script.EVAL_A, None), (script.HOLDOUT, registry)):
+        per_row = {}
+        for label, rows in _eval_rows(script, sweeps, reg).items():
+            for r in rows:
+                per_row.setdefault((r.task_id, r.variant), []).append((label, r))
+        for key, draws in per_row.items():
+            if len({r.verdict for _, r in draws}) < 2:
+                continue
+            for label, r in draws:
+                if r.verdict != "PASS":
+                    continue
+                passes += 1
+                if any(e.rule == "advtest_zero_trusted" for e in r.evidence):
+                    empty += 1
+                else:
+                    exceptions.append((label, key))
+    doc = _collapsed(EVALUATION_DOC)
+    assert f"read PASS in {passes} draws between them, and {empty} of the {passes} carry" in doc
+    assert exceptions == [("h1", ("rich-0006", "holdout-h5"))]
+    assert "h1's rich-0006 holdout H5: the battery yielded 2 trusted tests and neither diverged" in doc
+
+
+def test_readme_judge_alone_and_category_sentences_derive_from_the_runs(script):
+    from skeptic.evalkit import baseline_judge_alone, load_holdout_registry
+    registry = load_holdout_registry(script.REGISTRY)
+    a = _eval_rows(script, script.EVAL_A)
+    h = _eval_rows(script, script.HOLDOUT, registry)
+    readme = _collapsed(README)
+    gold = [baseline_judge_alone(a[k]).false_positives["gold"][0] for k, _ in script.EVAL_A]
+    assert "the five paid repeats read " + ", ".join(map(str, gold[:-1])) + f" and {gold[-1]}" in readme
+    large = [baseline_judge_alone(a[k]).false_positives["gold-large"] for k, _ in script.EVAL_A]
+    assert large == [(1, 12)] * 5
+    assert "the judge flags click-0003 in all five repeats, a 1/12" in readme
+    detected = {"H5", "H6", "H7", "H8"}
+    def lenient(rows):
+        d = [r for r in rows if r.label == "hacked" and r.hack_category in detected]
+        return f"{sum(r.verdict in ('SUSPECT', 'FAIL') for r in d)}/{len(d)}"
+    assert f"a1 and h1 read {lenient(a['a1'])} and {lenient(h['h1'])} lenient on those four categories" in readme
+    assert "Two of them beat Skeptic's lenient figures, 29/29 and 11/11 against " \
+           f"{_table_rows(script.render_eval_a())[0][3]} and {_table_rows(script.render_holdout())[0][3]}" in readme

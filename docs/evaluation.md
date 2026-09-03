@@ -99,6 +99,12 @@ measurements agreed on where the gap was (rows 226, 227, 229).
 
 ## The blind holdout
 
+The v1.1 headline holdout figure is sweep h1 of the paid repeats (the
+section of that name below), run 2026-09-03 at `verifier_revision`
+b18754bfacc3: 10/11 lenient, 5/11 strict. Across the five holdout draws
+lenient read 10, 11, 9, 11 and 9 of 11; h3 and h5 sit under the 85 percent
+bar. The table below is the v1.0.0 run it succeeds, kept as published.
+
 Eval A measures a corpus whose hacks were written by the same hand that built
 the detectors. That is circular. The holdout is the second measurement.
 
@@ -263,7 +269,7 @@ the dev set and 5 of 5 on the holdout, lands on one of the six categories the
 in-harness sandbox refuses by mount (the plan's Part 2 table, Control column).
 On the four categories the plan scopes detection to, strict reads 0 of 17 and
 0 of 6. Those catches are all soft-lane, and in the deterministic lane the
-Action runs they fall to 5 of 17 and 1 of 6. The headline 29/29 and 12/29
+Action runs they fall to 5 of 17 and 1 of 6. The v1.0.0 headline 29/29 and 12/29
 pool the two populations; the split is what an eval-literate reader computes
 first, and it was not on the page. It does not make the hard rules
 decorative. In `--diff` mode there is no prevention tier: the patch arrives
@@ -405,7 +411,7 @@ around: `run_acceptance` copies `acceptance/<task>/` with a bare
 `copytree`, so a stale pytest `__pycache__` left by running an acceptance
 suite directly rides into the workspace and trips the junit classname guard
 with INFRA, which happened on 8 of 12 tasks on the first `seed --check`
-pass. Deleting the caches cleared it; the fix belongs in a separate change.
+pass. Deleting the caches cleared it; PR #36 fixed the copy (row 244).
 
 ## Paid repeats, ten sweeps
 
@@ -484,17 +490,20 @@ hard rules reproduce.
 Lenient moves, and it moves in one place. Five rows change verdict between
 draws, three on the dev set and two on the holdout, and every one of them
 is decided by `advtest_divergence`, the weight-1.0 rule over LLM-generated
-tests. In each unstable draw the row carries `judge_flag` at 0.25 and the
-info row `advtest_zero_trusted`: the judge flagged it, as it did in every
-draw, and the generated battery produced no test that survived the
-reference rung, so there was nothing to diverge and the row reads PASS
-0.25. When the battery does yield trusted tests the same row reads SUSPECT
-1.25. Four of the five are H6, input special-casing, the category
-adversarial testing was built for; the fifth, rich-0006's holdout H5, is
-decided the same way. click-0005/h6 missed in four draws of five; it is
-the row that moved between draws in row 239 as well. This is a measurement
-of the adversarial-test rung's yield, not of the detectors' judgement, and
-it is open, not mandatory work.
+tests. Those five rows read PASS in 13 draws between them, and 12 of the 13
+carry the info row `advtest_zero_trusted`: the generated battery produced
+no test that survived the reference rung, so there was nothing to diverge,
+and the row reads PASS 0.25 on `judge_flag` alone. The thirteenth is h1's
+rich-0006 holdout H5: the battery yielded 2 trusted tests and neither
+diverged (`trusted: 2, divergences: 0` in its trace), a miss by the tests
+themselves rather than an empty draw. When a generated test does diverge
+the same row reads SUSPECT 1.25. The judge flagged all five rows in every
+draw. Four of the five are H6, input special-casing, the category
+adversarial testing was built for; the fifth is that H5. click-0005/h6
+missed in four draws of five; it is the row that moved between draws in
+row 239 as well. This measures the adversarial-test rung's yield and, in
+one draw, its miss rate with tests in hand, not the deterministic
+detectors' judgement; it is open, not mandatory work.
 
 What the headline draw says, and what it does not. a1 reads 27/29 lenient
 and 12/29 strict on the dev set and h1 reads 10/11 and 5/11 on the holdout,
@@ -517,8 +526,9 @@ interval and not a general false-positive rate.
 
 ## v1.0.1 integrity hotfix revalidation
 
-The released v1.0.0 collector-1 measurements above remain the project's
-headline benchmark. The v1.0.1 candidate nevertheless received a frozen-input
+The released v1.0.0 collector-1 measurements above remained the project's
+headline benchmark until sweep a1 of the paid repeats (the section above)
+succeeded them. The v1.0.1 candidate nevertheless received a frozen-input
 paid revalidation after its integrity changes advanced the collector to 4.
 That preserved pre-repair run, at verifier `28550e55c4ee`, used the same
 corpus, patches, weights, threshold, model route, prompt and mutation seeds:
@@ -566,8 +576,11 @@ Those artifacts do not prove a deterministic transport regression, so the
 movement is recorded as unresolved probabilistic variation. No API credits
 were spent to distinguish it further.
 
-There was no final paid Eval A, holdout, `rich-0003`, pressure-arm,
-judge-alone, Builder or footprint rerun after the transport repair. The paid
+At the time of this revalidation there was no final paid Eval A, holdout,
+`rich-0003`, pressure-arm, judge-alone, Builder or footprint rerun after
+the transport repair; the ten paid sweeps of 2026-09-02 and 03 (Paid
+repeats, above) are the first paid Eval A and holdout runs after it, and
+the other five reruns still have not happened. The paid
 collector-4 snapshots remain valid pre-repair evidence and are not rewritten;
 they do not claim to measure the final v1.0.1 revision.
 
@@ -873,7 +886,7 @@ On 2026-09-01 twelve size-matched clean controls joined the corpus
 (`gold-large`, DECISIONS row 243, the section above): 21 to 98 changed
 lines each, all twelve PASS at 0.00 under the deterministic profile, every
 clean split 0/12 at $0. The paid figure for the new split and five paid
-repeats of Eval A and the holdout are pre-registered and pending approval.
+repeats of Eval A and the holdout followed on 2026-09-02 and 03, below.
 
 M7 closed 2026-08-29 (DECISIONS row 237) against its row as amended by row
 236: report polish and the GIF/PNG deliverable were cut, the H7 work item
@@ -891,8 +904,8 @@ holdout stayed 11/11 and the agent-authored H7 re-verification stayed three
 SUSPECT outcomes, while Eval A measured one H6 PASS and four `rich-0002` INFRA
 rows. The transport defect was repaired afterward and all four affected rows
 completed in a zero-API deterministic sweep (row 240). The v1.0.0 benchmark
-remains the headline because no complete paid Eval A was rerun on the final
-v1.0.1 revision. Merge, version bump, tag and release remain pending human
+stayed the headline until the paid repeats below, the first complete paid
+Eval A after the repair. Merge, version bump, tag and release remain pending human
 review.
 
 On 2026-09-01 the committed evidence was rescored four ways (DECISIONS row

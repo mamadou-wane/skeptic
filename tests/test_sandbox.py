@@ -4,12 +4,12 @@ import shutil
 import pytest
 
 from skeptic import sandbox as sandbox_module
-from skeptic.errors import SkepticInfraError, VenvBuildRefused
+from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import (
-    VenvRunner,
     docker_available,
     docker_run_args,
 )
+from skeptic.seedcheck import _TrustedCorpusVenvRunner as VenvRunner
 
 needs_docker = pytest.mark.docker
 
@@ -48,12 +48,6 @@ def test_venv_exec_timeout_is_reported_not_raised(venv_runner):
     result = venv_runner.exec("python -c 'import time; time.sleep(30)'", timeout_s=1)
     assert result.exit_code == -1
     assert "timed out" in result.stderr.lower()
-
-
-def test_venv_runner_refuses_build_stage(venv_runner):
-    with pytest.raises(VenvBuildRefused):
-        venv_runner.build_stage_guard()
-    assert venv_runner.isolation == "venv-reduced-isolation"
 
 
 def test_venv_exec_missing_executable_reports_127(venv_runner):

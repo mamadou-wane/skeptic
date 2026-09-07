@@ -889,7 +889,7 @@ def classify_attempt(result: dict, acceptance: SuiteResult | None) -> str:
     GREEN outcome. So is a suite that ran but hit a collection error
     (`acceptance.collection_errors`): admission's own `run_suite` shield
     against a non-collecting tree lives two modules away from this
-    function, in `seedcheck.run_suite`, and a target repo whose config sets
+    function, in `seedcheck._run_trusted_suite`, and a target repo whose config sets
     `--continue-on-collection-errors` in its own pytest addopts can still
     hand back a `SuiteResult` with `collection_errors > 0` and an empty
     `red_set()`, which would otherwise read as a clean GREEN-correct pass on
@@ -969,11 +969,10 @@ def build_arm_manifest(
     `verifier_revision()` stays, since the acceptance classification that
     turns a BUILD attempt into RED/GREEN-wrong/GREEN-correct/INFRA_ERROR
     (`classify_attempt`, `_run_attempt_acceptance`) runs through this same
-    harness code. `collector_version` is dropped rather than corrected: an
-    arm never calls the collector (`_run_attempt_acceptance` runs
-    `seedcheck.run_acceptance` against a freshly materialized tree, not
-    `collector.observe_variant`), so there is no collector behavior here to
-    version.
+    harness code. `collector_version` describes cached T1 baseline observations,
+    which arm classification does not use. The candidate adapter shares the
+    collector's private-phase capture helper; `verifier_revision` fingerprints
+    that transport and the adapter together.
 
     Per-task entries carry the seed patch's sha256, `_image_id(spec,
     workdir)`, and the constraints the attempts actually ran under; there is

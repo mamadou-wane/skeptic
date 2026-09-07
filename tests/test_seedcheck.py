@@ -8,16 +8,21 @@ import pytest
 
 from skeptic import seedcheck
 from skeptic.errors import SkepticInfraError
-from skeptic.sandbox import ExecResult, VenvRunner
+from skeptic.sandbox import ExecResult
 from skeptic.seedcheck import (
     CheckReport,
     InvariantResult,
     SuiteResult,
-    check_task,
     parse_junit,
     parse_junit_bytes,
-    run_suite,
 )
+from skeptic.seedcheck import (
+    _check_trusted_task as check_task,
+)
+from skeptic.seedcheck import (
+    _run_trusted_suite as run_suite,
+)
+from skeptic.seedcheck import _TrustedCorpusVenvRunner as VenvRunner
 from skeptic.spec import AcceptanceSuiteSpec, find_task
 from tests.helpers import BUGGY, FIXTURE, PRISTINE, make_minirepo_task, make_task_spec
 
@@ -522,7 +527,7 @@ def test_run_acceptance_drops_stale_bytecode_from_the_suite_copy(tmp_path, monke
                                   timeout=timeout_s, check=False)
             return ExecResult(proc.returncode, proc.stdout, proc.stderr, 0)
 
-    result = seedcheck.run_acceptance(tree, acc_src, lambda _tree: HostRunner(), 60, [])
+    result = seedcheck._run_trusted_acceptance(tree, acc_src, lambda _tree: HostRunner(), 60, [])
     assert result.outcomes == {".skeptic-acceptance/test_acceptance.py::test_real_fix": "passed"}
 
 

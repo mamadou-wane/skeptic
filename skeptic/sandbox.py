@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import posixpath
-import shutil
 import stat
 import subprocess
 import time
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal, Self
 
-from skeptic.errors import SkepticInfraError, VenvBuildRefused
+from skeptic.errors import SkepticInfraError
 from skeptic.spec import normalize_ro_subpath
 
 
@@ -381,122 +381,6 @@ def docker_run_args(
     return args
 
 
-class VenvRunner:
-    """Reduced-isolation runner for verify-only work. Never runs BUILD."""
-
-    def __init__(self, workspace: Path, venv_dir: Path) -> None:
-        self.workspace = workspace
-        self.venv_dir = venv_dir
-
-    @property
-    def isolation(self) -> str:
-        return "venv-reduced-isolation"
-
-    @property
-    def _python(self) -> Path:
-        return self.venv_dir / "bin" / "python"
-
-    def setup(self, install_cmds: list[str], python: str = "python3.12",
-              constraints: Path | None = None) -> None:
-        if not self.venv_dir.exists():
-            resolved = shutil.which(python)
-            if resolved is None:
-                raise SkepticInfraError(
-                    f"Interpreter {python!r} not found on PATH. "
-                    f"Skeptic builds the verify venv with the interpreter "
-                    f"named in repo.python. "
-                    f"Next: install {python!r}, or fix repo.python in the "
-                    f"task spec."
-                )
-            proc = subprocess.run(
-                [resolved, "-m", "venv", str(self.venv_dir)],
-                capture_output=True, text=True, check=False,
-            )
-            if proc.returncode != 0:
-                raise SkepticInfraError(
-                    f"venv creation failed for {python!r} ({resolved}) "
-                    f"(exit {proc.returncode}).\n"
-                    f"stderr tail:\n{proc.stderr[-2000:]}\n"
-                    f"Skeptic needs a working venv to install and run the "
-                    f"target repo's tests. "
-                    f"Next: check {resolved} is a working interpreter, or "
-                    f"fix repo.python in the task spec, then re-run "
-                    f"`skeptic seed --task <id> --check`."
-                )
-        # The install lines run verbatim, so the pin reaches pip the one way
-        # that covers every command as written: its environment. Absent a
-        # pin, no key is set and the install resolves as it always did.
-        pin_env = {"PIP_CONSTRAINT": str(constraints.resolve())} if constraints else None
-        for cmd in install_cmds:
-            result = self.exec(cmd, timeout_s=900, env=pin_env)
-            if result.exit_code != 0:
-                raise SkepticInfraError(
-                    f"Install command failed in venv runner: {cmd!r} "
-                    f"(exit {result.exit_code}).\nstderr tail:\n{result.stderr[-2000:]}\n"
-                    f"Skeptic needs the target repo installed to run its tests. "
-                    f"Next: fix the environment.install commands in the task spec, "
-                    f"then re-run `skeptic seed --task <id> --check`."
-                )
-        if constraints is not None:
-            # Read the closure back, as the image build does: a constraint pip
-            # did not honor is silent otherwise. The venv installs a subset of
-            # the pin (no build backends, no harness tooling), so the check is
-            # that every version present is one the pin names.
-            frozen = self.exec("pip freeze --exclude-editable", timeout_s=120)
-            named = set(constraints.read_text().splitlines())
-            off = [line for line in frozen.stdout.splitlines() if line and line not in named]
-            if frozen.exit_code != 0 or off:
-                raise SkepticInfraError(
-                    f"the venv at {self.venv_dir} resolved versions the pin "
-                    f"{constraints} does not name: {', '.join(off[:8]) or frozen.stderr[-300:]}.\n"
-                    f"Skeptic pins task installs so a fresh machine measures "
-                    f"what the corpus measured. Next: rewrite the pin from a "
-                    f"closure you stand behind and record the move in "
-                    f"DECISIONS.md, or fix the install lines the pin does not cover."
-                )
-
-    def exec(self, cmd: str, timeout_s: int, env: dict[str, str] | None = None) -> ExecResult:
-        venv_bin = str(self.venv_dir / "bin")
-        # COLUMNS is deliberately absent. Pinning it looks like determinism and
-        # is not: a suite that renders to a terminal width sets that width
-        # explicitly, while a suite that probes terminal-size *fallback* is
-        # testing the behavior when COLUMNS is unset, and pinning it fails those
-        # tests for a reason unrelated to any seeded bug. Measured on both
-        # corpus repos: rich fails 3 tests with COLUMNS pinned, and click's
-        # 1939 pass identically either way, so the pin cost coverage and bought
-        # nothing (DECISIONS.md #68).
-        #
-        # Locale and timezone ARE pinned, because those change program output
-        # without any test opting in.
-        # venv_env keeps this distinct from the module-level base_env(),
-        # which builds the container environment. This one is the host venv's.
-        venv_env = {
-            "PATH": f"{venv_bin}:/usr/bin:/bin",
-            "VIRTUAL_ENV": str(self.venv_dir),
-            "HOME": str(self.workspace),
-            "TERM": "dumb",
-            "NO_COLOR": "1",
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "TZ": "UTC",
-        }
-        if env:
-            venv_env.update(env)
-        # sh -c on purpose, matching the container runners: the same command
-        # string must mean the same thing on every runner (M1 review
-        # deferral, DECISIONS.md #70). Commands here are spec-authored
-        # trusted input. A missing binary is exit 127 from sh; callers
-        # convert nonzero exits into SkepticInfraError with the stderr tail.
-        return _run(["sh", "-c", cmd], cwd=self.workspace, timeout_s=timeout_s, env=venv_env)
-
-    def build_stage_guard(self) -> None:
-        raise VenvBuildRefused(
-            "The venv runner is verify-only: the Builder (an LLM with shell "
-            "access) never runs outside Docker. Start Docker Desktop and re-run, "
-            "or use verify-only commands (`skeptic seed --check`, `skeptic verify`)."
-        )
-
-
 class RunContainer:
     """One fresh `docker run --rm` per VERIFY observation unit.
 
@@ -852,10 +736,40 @@ class SessionContainer:
         first token cannot chain further commands."""
         return self._exec(list(argv), timeout_s, env)
 
+    def file_operation(self, operation: str, arguments: dict) -> dict:
+        """Operate inside the session; never open a candidate path on the host."""
+        source = Path(__file__).with_name("_builder_files.py").read_text()
+        result = self.exec_argv(
+            ["/usr/local/bin/python", "-I", "-S", "-c", source,
+             operation, json.dumps(arguments)], timeout_s=120)
+        if result.exit_code != 0:
+            raise SkepticInfraError(
+                f"Builder filesystem helper exited {result.exit_code}: {result.stderr[-800:]}. "
+                "Next: inspect the session container and retry the tool."
+            )
+        try:
+            value = json.loads(result.stdout)
+            if (not isinstance(value, dict) or not isinstance(value.get("text"), str)
+                    or type(value.get("refused")) is not bool):
+                raise ValueError("invalid helper response")
+        except (ValueError, TypeError) as exc:
+            raise SkepticInfraError(
+                "Builder filesystem helper returned malformed data. "
+                "Next: inspect the session container and retry the tool."
+            ) from exc
+        return {"text": value["text"], "refused": value["refused"]}
+
     def stop(self) -> None:
         if self._container_id is not None:
-            _run(["docker", "rm", "-f", self._container_id],
-                 cwd=self.workspace, timeout_s=30, env=None)
+            result = _run(["docker", "rm", "-f", self._container_id],
+                          cwd=self.workspace, timeout_s=30, env=None)
+            if result.exit_code != 0:
+                raise SkepticInfraError(
+                    f"Cannot confirm termination of Builder container {self._container_id} "
+                    f"(exit {result.exit_code}): {result.stderr[-800:]}. "
+                    "Skeptic refuses host extraction while a candidate may still write. "
+                    "Next: inspect Docker health and stop the named container before retrying."
+                )
             self._container_id = None
 
     def __enter__(self) -> Self:

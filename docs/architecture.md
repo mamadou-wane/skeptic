@@ -107,6 +107,33 @@ Infrastructure failures never degrade into evidence. A missing coverage file
 aborts as INFRA_ERROR rather than reading as 0 percent coverage, because a
 silent 0 percent would fail a correct patch and poison the false-positive rate.
 
+## Builder tools and candidate acceptance
+
+BUILD keeps one session container alive for the agent's tool calls. File
+listing, reads, edits, and JUnit readback run through a fixed helper inside
+that container, using the image's interpreter with isolated Python startup.
+The host parses bounded returned bytes; it does not reopen a candidate-writable
+pathname after checking containment. Session removal must succeed before host
+snapshotting and candidate extraction may begin. An unconfirmed removal is
+an infrastructure failure, with the container identity retained for diagnosis.
+
+`candidate_runtime.py` runs `build-arm` acceptance and both holdout-screen
+suite phases through the existing Docker capture and artifact-admission
+boundary. Each invocation reconstructs a fresh tree from the pinned commit,
+seed and candidate patch. Acceptance inputs are protected read-only, candidate
+installation runs inside the container, and admitted JUnit plus execution
+diagnostics outlive the disposable tree. The API accepts no host runner or
+runner factory and has no reduced-isolation fallback.
+
+`seed --check` is a separate, owner-trusted corpus-authoring operation.
+`seedcheck.check_trusted_task` constructs its private host venv runner
+internally and evaluates only the material registered in the selected task
+spec. The task spec and its authoring patches must be trusted before using
+that command. This path is not a sandbox for an arbitrary candidate patch.
+
+These boundaries constrain execution and later evidence replacement. Candidate
+code can still influence measurements produced during its own execution.
+
 ## CI containment gate
 
 Repository CI runs `docker info` before pytest and sets

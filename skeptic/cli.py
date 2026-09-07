@@ -112,15 +112,15 @@ def seed(
     check: bool = typer.Option(False, "--check", help="Run corpus admission invariants."),
     tasks_dir: Path = typer.Option(Path("tasks"), "--tasks-dir"),  # noqa: B008
     workdir: Path = typer.Option(Path("workdir"), "--workdir"),  # noqa: B008
-    runner: str = typer.Option("venv", "--runner", help="venv (verify-only) or docker."),
+    runner: str = typer.Option(
+        "venv", "--runner", help="venv: owner-trusted corpus admission, reduced isolation."),
     self_validate: bool = typer.Option(
         False, "--self-validate",
         help="After a passing --check, run full deterministic VERIFY on every "
              "clean variant and require PASS (plan invariant 4; needs docker)."),
 ) -> None:
     """Apply a task's seed bug and (with --check) enforce admission invariants."""
-    from skeptic.sandbox import VenvRunner
-    from skeptic.seedcheck import check_task
+    from skeptic.seedcheck import check_trusted_task
     from skeptic.spec import find_task
     from skeptic.trace import TraceWriter, config_hash
 
@@ -152,25 +152,17 @@ def seed(
             raise typer.Exit(EXIT_INFRA)
         if runner != "venv":
             typer.echo(
-                "Only --runner venv is wired in M1 (verify-only, reduced "
-                "isolation). Docker runner lands with the BUILD stage."
+                "Trusted corpus admission uses --runner venv (reduced "
+                "isolation). Candidate evaluation uses Docker."
             )
             raise typer.Exit(EXIT_INFRA)
 
-        def runner_factory(workspace: Path) -> VenvRunner:
-            venv_runner = VenvRunner(
-                workspace=workspace,
-                venv_dir=task_workdir / "venvs" / workspace.name,
-            )
-            venv_runner.setup(spec.environment.install,
-                              constraints=spec.environment.constraints_file)
-            return venv_runner
-
+        typer.echo("Trusted corpus admission: reduced host isolation; use owner-trusted task material.")
         trace.event(stage="SEED", actor="orchestrator", event="check_start")
-        report = check_task(
+        report = check_trusted_task(
             spec,
             workroot=task_workdir / "work",
-            runner_factory=runner_factory,
+            venv_root=task_workdir / "venvs",
             repo_cache=task_workdir / "repo-cache",
         )
         for item in report.results:
@@ -390,7 +382,7 @@ def build(
     from skeptic.errors import VenvBuildRefused
     from skeptic.image import ensure_repo_image
     from skeptic.orchestrator import StageCache, run_stage
-    from skeptic.sandbox import SessionContainer, VenvRunner
+    from skeptic.sandbox import SessionContainer
     from skeptic.spec import find_task
     from skeptic.trace import TraceWriter, config_hash
     from skeptic.workspace import apply_patch, clone_pinned, materialize
@@ -424,7 +416,10 @@ def build(
             spec, max_iterations=max_iterations, token_budget=token_budget,
             cost_ceiling=cost_ceiling, statement_mode=statement_mode)
         if runner == "venv":
-            VenvRunner(workspace=Path("."), venv_dir=Path(".")).build_stage_guard()
+            raise VenvBuildRefused(
+                "The venv runner is for trusted corpus admission only; BUILD requires Docker. "
+                "Next: start Docker and re-run with --runner docker."
+            )
         if runner != "docker":
             typer.echo(f"Unknown runner {runner!r}: build runs in docker only.")
             raise typer.Exit(EXIT_INFRA)
@@ -648,96 +643,24 @@ def _candidate_abs(stored: str, workdir: Path) -> Path:
     return path if path.is_absolute() else workdir / path
 
 
-def _acceptance_venv_dir(workdir: Path, task_id: str) -> Path:
-    """The venv `seed --check` builds for a task's `seeded` workspace
-    (`cli.py`'s own `seed` command: `task_workdir / "venvs" / workspace.name`,
-    here with `workspace.name` fixed to `"seeded"`, the tree invariant 4
-    always materializes regardless of whether the task declares an
-    acceptance suite). `build-arm` reuses this venv rather than building a
-    fresh one per attempt: it is verify-only work (running a test suite
-    against a materialized tree), the same shape admission itself runs.
-    """
-    return workdir / task_id / "venvs" / "seeded"
-
-
 def _run_attempt_acceptance(
     spec: TaskSpec, result: dict, workdir: Path, attempt: int
 ) -> SuiteResult:
-    """Classify one green, non-empty BUILD attempt's candidate against its
-    task's acceptance suite, on a FRESH materialized tree.
-
-    Never the BUILD workspace: `candidate.EXCLUDE_GLOBS` does not match
-    `.skeptic-acceptance`, so a copy landing there would leak into the
-    candidate diff the next time `extract_candidate` ran. Instead: fresh
-    `materialize`, apply the seed patch, apply the candidate diff
-    (`workspace.apply_candidate`), copy the suite in, run
-    (`seedcheck.run_acceptance`), the same sequence VERIFY uses to judge a
-    variant, with the seed's own tree materialized once and the extracted
-    diff played back onto it.
-
-    Runs on a venv runner, not the docker session BUILD itself ran in
-    (`run_suite`'s protocol is `SandboxRunnerLike.exec`, which only
-    `VenvRunner` satisfies today; a docker-side acceptance run would need a
-    `RunContainer` script in the BUILD/VERIFY mold). The tradeoff
-    (classification runs outside the container the candidate was built in)
-    is recorded in DECISIONS. The venv itself is admission's own, reused
-    rather than rebuilt per attempt (`_acceptance_venv_dir`); a task this
-    machine has never run `seed --check` against, or one declaring no
-    `acceptance_suite` at all, raises `SkepticInfraError`, which the caller
-    catches per attempt so a missing venv on one task does not end the arm.
-
-    The materialized tree is removed again once this attempt's run finishes,
-    win or lose: a base arm classifies 24 attempts, and leaving a full repo
-    checkout behind per attempt is disk nobody needs once its verdict is on
-    disk in `classification.json`.
-    """
-    import shutil
-
-    from skeptic.sandbox import VenvRunner
-    from skeptic.seedcheck import run_acceptance
-    from skeptic.workspace import apply_candidate, apply_patch, clone_pinned, materialize
+    """Classify a candidate through fresh Docker execution and admitted JUnit."""
+    from skeptic.candidate_runtime import run_candidate_acceptance
+    from skeptic.workspace import clone_pinned
 
     if spec.acceptance_suite is None:
         raise SkepticInfraError(
-            f"{spec.task_id} declares no acceptance_suite: build-arm's "
-            f"GREEN-correct/GREEN-wrong split needs one to tell a real fix "
-            f"from a build that only made the seeded suite pass (task 7's "
-            f"invariant). Next: add acceptance_suite to "
-            f"tasks/{spec.task_id}.yaml."
+            f"{spec.task_id} declares no acceptance_suite. "
+            "Next: provide a frozen suite before classifying a candidate."
         )
-
-    task_workdir = workdir / spec.task_id
-    venv_dir = _acceptance_venv_dir(workdir, spec.task_id)
-    if not venv_dir.is_dir():
-        raise SkepticInfraError(
-            f"no admission venv at {venv_dir} for {spec.task_id}: build-arm "
-            f"classifies acceptance on the venv `seed --check` builds for "
-            f"the seeded tree, and this machine has never run it for this "
-            f"task. Next: `skeptic seed --task {spec.task_id} --check`, "
-            f"then re-run `skeptic build-arm`."
-        )
-
-    tree = task_workdir / "build-arm-classify" / f"attempt-{attempt}" / "seeded"
-    if tree.parent.exists():
-        shutil.rmtree(tree.parent)
-    try:
-        repo = clone_pinned(spec.repo.url, spec.repo.commit, task_workdir / "repo-cache")
-        materialize(repo, spec.repo.commit, tree)
-        apply_patch(tree, Path(spec.seed.bug_patch))
-        apply_candidate(tree, _candidate_abs(result["candidate"], workdir))
-
-        def runner_factory(workspace: Path) -> VenvRunner:
-            venv_runner = VenvRunner(workspace=workspace, venv_dir=venv_dir)
-            venv_runner.setup(spec.environment.install,
-                              constraints=spec.environment.constraints_file)
-            return venv_runner
-
-        return run_acceptance(
-            tree, Path(spec.acceptance_suite.path), runner_factory,
-            spec.environment.timeout_s, spec.seed.quarantine,
-        )
-    finally:
-        shutil.rmtree(tree.parent, ignore_errors=True)
+    task_root = workdir / spec.task_id
+    repo = clone_pinned(spec.repo.url, spec.repo.commit, task_root / "repo-cache")
+    observed = run_candidate_acceptance(
+        spec, repo, _candidate_abs(result["candidate"], workdir),
+        task_root / "build-arm-classify" / f"attempt-{attempt}")
+    return observed.suite
 
 
 @app.command(name="build-arm")

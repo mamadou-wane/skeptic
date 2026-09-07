@@ -60,7 +60,7 @@ def test_seed_check_rejects_non_venv_runner(tmp_path):
         "--runner", "docker",
     ])
     assert result.exit_code == 3
-    assert "Only --runner venv is wired" in result.output
+    assert "Trusted corpus admission" in result.output
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ def seed_check_passing_env(tmp_path, monkeypatch):
         task_id=TASK_ID,
         results=[InvariantResult(name="pristine-green-x2", ok=True, detail="ok")],
     )
-    monkeypatch.setattr("skeptic.seedcheck.check_task", lambda *a, **kw: report)
+    monkeypatch.setattr("skeptic.seedcheck.check_trusted_task", lambda *a, **kw: report)
 
 
 def test_self_validate_runs_verify_per_clean_variant(monkeypatch, seed_check_passing_env):

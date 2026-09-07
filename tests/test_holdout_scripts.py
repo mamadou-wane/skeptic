@@ -273,15 +273,7 @@ def test_self_test_fails_when_the_check_stops_catching_the_plant(
 
 @pytest.fixture
 def screen_task(corpus, monkeypatch, tmp_path):
-    """The screen with every tree, venv and suite runner replaced.
-
-    `_fresh_seeded` and `clone_pinned` are the two the ladder calls before it
-    touches a patch, `VenvRunner` is what `runner_factory` would otherwise
-    build a real venv with, and `run_suite`/`run_acceptance` are the two
-    runners whose results the ladder reads. `_fresh_seeded` hands back a new
-    directory per call, the way the real one does, so a test can tell the two
-    legs' trees apart.
-    """
+    """Replace external execution while testing the screen's classification flow."""
     spec, _, _ = corpus
     spec = spec.model_copy(update={"acceptance_suite": _AcceptanceStub()})
     trees = []
@@ -293,7 +285,6 @@ def screen_task(corpus, monkeypatch, tmp_path):
 
     monkeypatch.setattr(holdout_screen, "clone_pinned", lambda *a, **k: tmp_path / "repo")
     monkeypatch.setattr(holdout_screen, "_fresh_seeded", fresh_seeded)
-    monkeypatch.setattr(holdout_screen, "VenvRunner", _VenvRunnerStub)
     monkeypatch.setattr(holdout_screen, "apply_candidate", lambda *a, **k: None)
     return spec, tmp_path, trees
 
@@ -317,6 +308,11 @@ class _VenvRunnerStub:
 
 def _suite(red: list[str]) -> SuiteResult:
     return SuiteResult(outcomes={node: "failed" for node in red}, collection_errors=0)
+
+
+def _observed(red):
+    from skeptic.candidate_runtime import CandidateSuiteResult
+    return CandidateSuiteResult(_suite(red), Path("/artifacts"), "sha256:image")
 
 
 def _patch_file(tmp_path: Path) -> Path:
@@ -343,9 +339,9 @@ def test_screen_reports_a_patch_that_does_not_apply(screen_task, monkeypatch):
 
 def test_screen_reports_a_patch_that_leaves_named_tests_red(screen_task, monkeypatch):
     spec, tmp_path, _ = screen_task
-    monkeypatch.setattr(holdout_screen, "run_suite",
-                        lambda *a, **k: _suite(["tests/test_minirepo.py::test_one"]))
-    monkeypatch.setattr(holdout_screen, "run_acceptance", _never_called)
+    monkeypatch.setattr(holdout_screen, "run_candidate_suite",
+                        lambda *a, **k: _observed(["tests/test_minirepo.py::test_one"]))
+    monkeypatch.setattr(holdout_screen, "run_candidate_acceptance", _never_called)
     result = holdout_screen.screen_patch(
         spec, _patch_file(tmp_path), tmp_path / "work")
     assert (result.verdict, result.condition) == ("REJECTED", "tests-red")
@@ -356,8 +352,8 @@ def test_screen_reports_a_patch_that_leaves_named_tests_red(screen_task, monkeyp
 def test_screen_reports_a_correct_fix_naming_the_asked_for_category(
         screen_task, monkeypatch):
     spec, tmp_path, _ = screen_task
-    monkeypatch.setattr(holdout_screen, "run_suite", lambda *a, **k: _suite([]))
-    monkeypatch.setattr(holdout_screen, "run_acceptance", lambda *a, **k: _suite([]))
+    monkeypatch.setattr(holdout_screen, "run_candidate_suite", lambda *a, **k: _observed([]))
+    monkeypatch.setattr(holdout_screen, "run_candidate_acceptance", lambda *a, **k: _observed([]))
     monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
                         spec.task_id, "H5")
     result = holdout_screen.screen_patch(
@@ -370,9 +366,9 @@ def test_screen_reports_a_correct_fix_naming_the_asked_for_category(
 def test_screen_admits_a_patch_that_is_green_and_fails_acceptance(
         screen_task, monkeypatch):
     spec, tmp_path, _ = screen_task
-    monkeypatch.setattr(holdout_screen, "run_suite", lambda *a, **k: _suite([]))
-    monkeypatch.setattr(holdout_screen, "run_acceptance",
-                        lambda *a, **k: _suite(["acceptance::test_real_fix"]))
+    monkeypatch.setattr(holdout_screen, "run_candidate_suite", lambda *a, **k: _observed([]))
+    monkeypatch.setattr(holdout_screen, "run_candidate_acceptance",
+                        lambda *a, **k: _observed(["acceptance::test_real_fix"]))
     monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
                         spec.task_id, "H5")
     result = holdout_screen.screen_patch(
@@ -393,57 +389,38 @@ def test_run_acceptance_copies_its_suite_into_the_tree_it_runs_on(tmp_path,
     acc_src = tmp_path / "acceptance"
     acc_src.mkdir()
     (acc_src / "test_acceptance.py").write_text("def test_real_fix():\n    pass\n")
-    monkeypatch.setattr(seedcheck, "run_suite", lambda *a, **k: _suite([]))
+    monkeypatch.setattr(seedcheck, "_run_trusted_suite", lambda *a, **k: _suite([]))
 
-    seedcheck.run_acceptance(tree, acc_src, lambda _tree: _VenvRunnerStub(), 60, [])
+    seedcheck._run_trusted_acceptance(tree, acc_src, lambda _tree: _VenvRunnerStub(), 60, [])
     assert (tree / ".skeptic-acceptance" / "test_acceptance.py").is_file()
 
 
-def test_screen_runs_acceptance_on_its_own_fresh_tree(screen_task, monkeypatch):
-    """Admission's `resolve_tree` discipline: one materialize per leg.
-
-    The tree the task suite ran on carries `.pytest_cache/`, junit output and
-    populated `__pycache__/`, and click-0006's pre-registered H4 is exactly
-    the category whose config edits can read that cache."""
-    spec, tmp_path, trees = screen_task
-    seen = {}
-
-    def acceptance(tree, *_args, **_kwargs):
-        seen["tree"] = tree
-        return _suite(["acceptance::test_real_fix"])
-
-    monkeypatch.setattr(holdout_screen, "run_suite", lambda *a, **k: _suite([]))
-    monkeypatch.setattr(holdout_screen, "run_acceptance", acceptance)
-    monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
-                        spec.task_id, "H5")
-    result = holdout_screen.screen_patch(
-        spec, _patch_file(tmp_path), tmp_path / "work")
-    assert result.verdict == "ADMITTED"
-    assert len(trees) == 2 and trees[0] != trees[1]
-    assert seen["tree"] == trees[1]
-    assert trees[0].name == "seeded" and trees[1].name == "acceptance"
-
-
-def test_screen_quarantined_nodes_cannot_hold_a_patch_back(screen_task, monkeypatch):
+def test_screen_uses_separate_execution_roots(screen_task, monkeypatch):
     spec, tmp_path, _ = screen_task
-    spec = spec.model_copy(update={
-        "seed": spec.seed.model_copy(update={"quarantine": ["tests/test_flaky.py::t"]})})
-    monkeypatch.setattr(holdout_screen, "run_suite",
-                        lambda *a, **k: _suite(["tests/test_flaky.py::t"]))
-    monkeypatch.setattr(holdout_screen, "run_acceptance",
-                        lambda *a, **k: _suite(["acceptance::test_real_fix"]))
-    monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
-                        spec.task_id, "H5")
-    assert holdout_screen.screen_patch(
-        spec, _patch_file(tmp_path), tmp_path / "work").verdict == "ADMITTED"
+    seen = []
+
+    def suite(actual_spec, repo, patch, workdir):
+        seen.append(workdir)
+        return _observed([])
+
+    def acceptance(actual_spec, repo, patch, workdir):
+        seen.append(workdir)
+        return _observed(["acceptance::test_fix"])
+
+    monkeypatch.setattr(holdout_screen, "run_candidate_suite", suite)
+    monkeypatch.setattr(holdout_screen, "run_candidate_acceptance", acceptance)
+    result = holdout_screen.screen_patch(spec, _patch_file(tmp_path), tmp_path / "work")
+    assert result.verdict == "ADMITTED"
+    assert seen[0] != seen[1]
+    assert seen[0].name == "suite" and seen[1].name == "acceptance"
 
 
 def test_screen_writes_one_json_per_attempt(screen_task, monkeypatch, tmp_path):
     import json
     spec, work, _ = screen_task
-    monkeypatch.setattr(holdout_screen, "run_suite", lambda *a, **k: _suite([]))
-    monkeypatch.setattr(holdout_screen, "run_acceptance",
-                        lambda *a, **k: _suite(["acceptance::test_real_fix"]))
+    monkeypatch.setattr(holdout_screen, "run_candidate_suite", lambda *a, **k: _observed([]))
+    monkeypatch.setattr(holdout_screen, "run_candidate_acceptance",
+                        lambda *a, **k: _observed(["acceptance::test_real_fix"]))
     monkeypatch.setitem(holdout_screen.holdout_common.CATEGORY_BY_TASK,
                         spec.task_id, "H5")
     patch_path = _patch_file(work)

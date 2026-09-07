@@ -1,5 +1,4 @@
 import json
-import typing
 from pathlib import Path
 
 import pytest
@@ -655,101 +654,24 @@ def test_run_attempt_acceptance_raises_when_no_acceptance_suite_declared(tmp_pat
         _run_attempt_acceptance(spec, {"candidate": "x"}, tmp_path, 1)
 
 
-def test_run_attempt_acceptance_raises_when_the_admission_venv_is_missing(tmp_path):
+def test_run_attempt_acceptance_uses_this_attempt_without_admission_venv(monkeypatch, tmp_path):
+    from skeptic import candidate_runtime, workspace
+
     spec = make_task_spec(acceptance_suite=AcceptanceSuiteSpec(
-        path=str(tmp_path / "acc"), must_pass_on=["pristine"], must_fail_on=["seeded"]))
-    with pytest.raises(SkepticInfraError, match="seed --task .* --check"):
-        _run_attempt_acceptance(spec, {"candidate": "x"}, tmp_path, 1)
+        path="acceptance/test", must_pass_on=["pristine"], must_fail_on=["seeded"]))
+    monkeypatch.setattr(workspace, "clone_pinned", lambda *args: Path("/repo"))
+    expected = SuiteResult(outcomes={"test_fix": "passed"}, collection_errors=0)
 
+    def observe(actual_spec, repo, patch, workdir):
+        assert actual_spec is spec
+        assert repo == Path("/repo")
+        assert patch == tmp_path / "attempt-3.diff"
+        assert workdir == tmp_path / spec.task_id / "build-arm-classify" / "attempt-3"
+        return candidate_runtime.CandidateSuiteResult(expected, workdir, "sha256:image")
 
-# --- pinning the classify path's own call sequence --------------------------
-#
-# The brief named these constraints "easy to get wrong in a new caller":
-# classify on a tree under build-arm-classify/, never under build/; the
-# candidate diff applied is THIS attempt's own; the venv is venvs/seeded;
-# timeout_s and quarantine forward from the spec. Nothing else in this file
-# fails if any one of them regresses, since every other test replaces
-# `_run_attempt_acceptance` wholesale.
-
-
-def test_run_attempt_acceptance_pins_the_classify_path_call_sequence(monkeypatch, tmp_path):
-    from skeptic import sandbox, seedcheck, workspace
-
-    spec = make_task_spec(
-        acceptance_suite=AcceptanceSuiteSpec(
-            path="acceptance/fake-suite", must_pass_on=["pristine"], must_fail_on=["seeded"]),
-        quarantine=["tests/t.py::test_flaky"],
-    )
-    (tmp_path / spec.task_id / "venvs" / "seeded").mkdir(parents=True)
-
-    calls = []
-
-    def fake_clone_pinned(url, commit, cache):
-        calls.append(("clone_pinned", url, commit, cache))
-        return Path("/fake/repo")
-
-    def fake_materialize(repo, commit, dest):
-        calls.append(("materialize", repo, commit, dest))
-        dest.mkdir(parents=True, exist_ok=True)
-        return dest
-
-    def fake_apply_patch(tree, patch_path):
-        calls.append(("apply_patch", tree, patch_path))
-
-    def fake_apply_candidate(tree, diff):
-        calls.append(("apply_candidate", tree, diff))
-
-    class FakeVenvRunner:
-        instances: typing.ClassVar[list] = []
-
-        def __init__(self, workspace, venv_dir):
-            self.workspace = workspace
-            self.venv_dir = venv_dir
-            FakeVenvRunner.instances.append(self)
-
-        def setup(self, install_cmds, constraints=None):
-            pass
-
-    def fake_run_acceptance(tree, acc_src, runner_factory, timeout_s, quarantine):
-        calls.append(("run_acceptance", tree, acc_src, timeout_s, quarantine))
-        runner_factory(tree)  # exercises the venv_dir wiring below
-        return SuiteResult(outcomes={}, collection_errors=0)
-
-    monkeypatch.setattr(workspace, "clone_pinned", fake_clone_pinned)
-    monkeypatch.setattr(workspace, "materialize", fake_materialize)
-    monkeypatch.setattr(workspace, "apply_patch", fake_apply_patch)
-    monkeypatch.setattr(workspace, "apply_candidate", fake_apply_candidate)
-    monkeypatch.setattr(seedcheck, "run_acceptance", fake_run_acceptance)
-    monkeypatch.setattr(sandbox, "VenvRunner", FakeVenvRunner)
-
-    result = {"candidate": "attempt-3-candidate.diff"}
-    _run_attempt_acceptance(spec, result, tmp_path, attempt=3)
-
-    assert [c[0] for c in calls] == [
-        "clone_pinned", "materialize", "apply_patch", "apply_candidate", "run_acceptance"]
-
-    assert calls[0] == (
-        "clone_pinned", spec.repo.url, spec.repo.commit, tmp_path / spec.task_id / "repo-cache")
-
-    tree = calls[1][3]
-    assert tree == tmp_path / spec.task_id / "build-arm-classify" / "attempt-3" / "seeded"
-    assert "build-arm-classify" in tree.parts
-    assert tree.parts[tree.parts.index(spec.task_id) + 1] != "build"  # never under build/
-    assert calls[1][1] == Path("/fake/repo")
-    assert calls[1][2] == spec.repo.commit
-
-    assert calls[2] == ("apply_patch", tree, Path(spec.seed.bug_patch))
-    # the diff applied is THIS attempt's own candidate, not some other one,
-    # and the workdir-relative value stored by `_candidate_rel` resolves back
-    # against the workdir root rather than being applied as written
-    assert calls[3] == (
-        "apply_candidate", tree, tmp_path / "attempt-3-candidate.diff")
-
-    assert calls[4] == (
-        "run_acceptance", tree, Path(spec.acceptance_suite.path),
-        spec.environment.timeout_s, spec.seed.quarantine)
-
-    assert FakeVenvRunner.instances[-1].venv_dir == tmp_path / spec.task_id / "venvs" / "seeded"
+    monkeypatch.setattr(candidate_runtime, "run_candidate_acceptance", observe)
+    assert _run_attempt_acceptance(
+        spec, {"candidate": "attempt-3.diff"}, tmp_path, 3) is expected
 
 
 def test_candidate_path_is_stored_relative_and_resolves_both_ways(tmp_path):

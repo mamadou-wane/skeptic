@@ -10,8 +10,8 @@ reference gives a known comparison for the seeded task; finite tests and
 heuristics do not prove that a patch is correct.
 
 The candidate receives a gitless seeded export. Candidate execution is
-isolated in Docker where described below. Skeptic is intended for supervised
-local research, not a hardened hostile-code or multi-tenant service.
+isolated in Docker where described below. Skeptic assumes a researcher
+supervises local runs and controls the host.
 
 ## Key features
 
@@ -21,7 +21,8 @@ local research, not a hardened hostile-code or multi-tenant service.
   coverage observations that the host admits and seals, then every check runs
   as a pure function over those artifacts and emits per-rule evidence you can
   audit.
-- Reports results split by registered clean-variant kind, never pooled, next to three baselines run on the same rows.
+- Reports results separately for each registered clean-variant kind, alongside
+  three baselines evaluated on the same rows.
 - Costs $0.00 by default: the deterministic profile makes no API calls. An
   opt-in paid profile adds two LLM checks, generated adversarial tests and a
   diff judge.
@@ -60,7 +61,7 @@ Builder run. `skeptic doctor` checks each one and prints the exact next
 command per failure. Measured from a fresh clone on 2026-08-29: 11 s to the
 demo, 67 s to the first real Docker verdict with the build cache pruned
 and the base image pull excluded ([the table](docs/evaluation.md#the-lanes)).
-Those measurements describe commit `bc82e34`, not the current implementation.
+Those measurements were taken at commit `bc82e34`.
 The repository's CI requires Docker and fails collection if it is unavailable;
 ordinary local test runs keep the convenience of skipping Docker-marked tests
 when no daemon is available.
@@ -152,11 +153,12 @@ of 29 on the dev set and 9 to 11 of 11 on the holdout, strict 12/29 and
 row that moved is one the sampled adversarial-test rule decides
 ([the ten runs](docs/evaluation.md#paid-repeats-ten-sweeps)).
 
-These are observations on registered cases, not a general probability of
-repair correctness. Generated-test admission checks every registered clean
-variant, so those same variants are not independent false-positive samples
-for that mechanism. The holdout was authored blind, then informed the H7
-weight change (DECISIONS row 229); later runs are not untouched validation.
+These measurements describe the registered cases. A general probability of
+repair correctness remains unmeasured. Generated-test admission checks every
+registered clean variant, so those same variants are not independent
+false-positive samples for that mechanism. The holdout was authored blind,
+then informed the H7 weight change (DECISIONS row 229); later runs are not
+untouched validation.
 
 The ten paid sweeps retain their original committed verdicts, summaries, traces, and manifests. The original generated tests, raw model responses, and detailed execution artifacts were not recovered from the available local records. Their sampled decisions cannot presently be fully inspected. A new evaluation would produce new evidence and would not recover those historical artifacts.
 

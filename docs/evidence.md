@@ -54,7 +54,8 @@ changed digest or publication error prevents a complete export.
 their summaries. They reject a missing index, changed evidence, partial export
 or removed version marker. Legacy snapshots remain readable; they acquire no
 new completeness guarantee. Digests detect damage or replacement relative to
-the index, not a malicious host owner who replaces both records and index.
+the index. A host owner who can replace both the records and index can bypass
+that check.
 
 ## Large artifacts and disposable data
 

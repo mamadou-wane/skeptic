@@ -291,16 +291,16 @@ digests during streaming, and the index is published last. Readers reject
 missing, partial or changed new bundles; legacy snapshots remain readable
 without gaining a completeness claim. See [the evidence policy](evidence.md).
 
-The retained records support inspection of decisions, not authentication of
-same-phase candidate-produced measurements. PASS means the configured checks
-completed without meeting the rejection thresholds and the declared seeded
-outcomes passed. It is not proof of repair correctness.
+The retained records support inspection of decisions. Candidate code can
+influence measurements produced during its own phase. PASS means the configured
+checks completed without meeting the rejection thresholds and the declared
+seeded outcomes passed. Repair correctness remains unproven.
 
 Registered clean variants participate in generated-test admission, so their
 false-positive counts are not independent validation of that same mechanism.
-The originally blind holdout informed later tuning. The benchmark supports
-claims about these recorded cases under their measured revisions, not a general
-probability of correct repair. Skeptic remains a supervised research harness.
+The originally blind holdout informed later tuning. The benchmark describes
+recorded cases at their measured revisions. A general probability of correct
+repair remains unmeasured. Skeptic remains a supervised research harness.
 
 Dependency provenance is pinned since row 231. Each corpus repo has one
 closure under `constraints/`, read out of the image the published runs

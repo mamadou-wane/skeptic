@@ -367,6 +367,15 @@ def test_shortfall_triggers_exactly_one_topup_call(fake_client_factory, trace):
     assert len(io["responses"]) == 2
     assert len(candidates) == 8
 
+    import json
+    events, _ = read_trace(trace.path)
+    paths = [trace.path.parent/e["payload"]["path"] for e in events
+             if e["event"] == "model_record" and e["payload"]["path"].endswith("-request.json")]
+    prompts = [json.loads(path.read_text())["messages"][0]["content"] for path in paths]
+    assert len(prompts) == 2
+    assert "Produce exactly 8 separate test files" in prompts[0]
+    assert "Produce exactly 6 separate test files" in prompts[1]
+
 
 def test_full_first_response_makes_no_second_call(fake_client_factory, trace):
     client = fake_client_factory([eight_blocks_response])

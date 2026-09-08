@@ -22,8 +22,10 @@ def capture(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "materialize", materialize)
     monkeypatch.setattr(runtime, "apply_patch", lambda *args: None)
     monkeypatch.setattr(runtime, "apply_candidate", lambda *a, **k: None)
+    closure = tmp_path / "image-constraints.txt"
+    closure.write_text("pytest==8.0.0\n")
     monkeypatch.setattr(runtime, "ensure_repo_image", lambda *args: SimpleNamespace(
-        image_id="sha256:fixed", tag="mutable:tag"))
+        image_id="sha256:fixed", tag="mutable:tag", constraints_path=closure))
     patch = tmp_path / "input.diff"
     patch.write_text("diff --git a/mod.py b/mod.py\n--- a/mod.py\n+++ b/mod.py\n@@ -1 +1 @@\n-1\n+2\n")
     spec = make_task_spec(quarantine=["tests/test_x.py::test_fix"])
@@ -116,3 +118,14 @@ def test_candidate_acceptance_cannot_hide_a_collected_result(capture):
     run, _ = capture
     with pytest.raises(SkepticInfraError, match="terminal outcome"):
         run(collected=("tests/test_x.py::test_fix", "tests/test_x.py::test_other"))
+
+
+def test_candidate_suite_records_exportable_inputs_and_admitted_reports(capture):
+    import json
+    run, root = capture
+    observed = run()
+    plan = json.loads((root/'run/evidence-plan.json').read_text())
+    assert plan['status']=='complete'
+    assert 'reports/junit.xml' in plan['files']
+    assert 'inputs/candidate.diff' in plan['files']
+    assert plan['files']['reports/junit.xml']['source']==str(observed.artifacts/'junit.xml')

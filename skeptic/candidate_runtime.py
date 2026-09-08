@@ -53,7 +53,8 @@ def _run_suite(spec: TaskSpec, repo: Path, patch: Path, workdir: Path,
     # Evidence outlives the disposable tree. Each invocation has a fresh root;
     # no later candidate receives it as a writable mount.
     artifacts = Path(tempfile.mkdtemp(prefix="observed-", dir=workdir))
-    with tempfile.TemporaryDirectory(prefix="execution-", dir=workdir) as scratch:
+    from skeptic.evidence_bundle import suite_record
+    with suite_record(workdir, input_root, artifacts, spec), tempfile.TemporaryDirectory(prefix="execution-", dir=workdir) as scratch:
         scratch = Path(scratch)
         pristine = materialize(repo, spec.repo.commit, scratch / "pristine")
         try:
@@ -63,6 +64,10 @@ def _run_suite(spec: TaskSpec, repo: Path, patch: Path, workdir: Path,
                 f"Docker image preparation did not complete ({type(exc).__name__}). "
                 "Next: check Docker availability and retry the candidate evaluation."
             ) from exc
+        capture_file(image.constraints_path, input_root, "resolved-constraints.txt")
+        from skeptic.orchestrator import publish_cache_record
+        publish_cache_record(input_root / "execution.json", {"image_id": image.image_id,
+                                                             "repo": spec.repo.model_dump()})
         tree = materialize(repo, spec.repo.commit, scratch / "candidate")
         if spec.seed.bug_patch is not None:
             apply_patch(tree, Path(spec.seed.bug_patch))
@@ -78,6 +83,7 @@ def _run_suite(spec: TaskSpec, repo: Path, patch: Path, workdir: Path,
                     "Next: remove that candidate change before acceptance evaluation."
                 )
             snapshot(Path(spec.acceptance_suite.path), target)
+            snapshot(target, input_root / "acceptance")
             ro += (".skeptic-acceptance",)
             command = ["python", "-m", "pytest", "-q", ".skeptic-acceptance"]
         deadline = HostDeadline.after(spec.environment.timeout_s)

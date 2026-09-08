@@ -495,6 +495,9 @@ def write_fake_artifacts(
         json.dumps(t1_outcomes if t1_outcomes is not None else {"fix_verified": True}) + "\n")
     if t2_judge is not None:
         (artifacts / "t2_judge.json").write_text(json.dumps(t2_judge) + "\n")
+    if (verify_dir / "evidence-plan.json").exists():
+        from skeptic.evidence_bundle import source_plan, write_plan
+        write_plan(verify_dir, source_plan({p.name: p for p in artifacts.glob("*.json")}))
 
 
 def write_fake_run(workdir: Path, task: str, variant: str) -> Path:

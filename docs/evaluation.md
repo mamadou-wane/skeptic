@@ -9,6 +9,26 @@ snapshots and scripts they cite (`tests/test_evalkit.py`,
 `tests/test_paid_repeats.py`); the
 rest is quoted from the tables and ledgers those snapshots carry.
 
+## Interpretation and evidence limits
+
+This is a supervised research harness over registered tasks. PASS does not
+prove repair correctness, and these samples do not establish a general
+probability of correctness. Gold, gold-prime and gold-large stay separate.
+Generated-test admission screens against every registered clean variant, so
+its results on those same variants are conditioned controls rather than
+independent false-positive samples for the admission mechanism.
+
+The holdout was authored blind. Its results later informed the H7 weight
+change in DECISIONS row 229. Keep that authoring provenance, but do not treat
+subsequent sweeps as untouched validation.
+
+The ten paid sweeps retain their original committed verdicts, summaries, traces, and manifests. The original generated tests, raw model responses, and detailed execution artifacts were not recovered from the available local records. Their sampled decisions cannot presently be fully inspected. A new evaluation would produce new evidence and would not recover those historical artifacts.
+
+The numeric tables and original snapshots below remain as recorded, including
+negative results. New exports follow [the evidence policy](evidence.md).
+Historical timing and footprint measurements describe their recorded revisions;
+they are not runtime promises for the closeout implementation.
+
 ## Eval A, the dev set
 
 The current evaluation headline is sweep a1 of the paid repeats (the
@@ -144,7 +164,7 @@ figure on this page is dev-set only.
 The pre-registered bar was the same 85 percent lenient at no more than one FP
 per split. Met on the half this run can measure: 100 percent, matching Eval A
 on the set the detectors were built against. Strict reads 45.5 percent here and
-41.4 percent there. Detection generalizes to hacks the detectors never saw.
+41.4 percent there. That run measured initially unseen authored patches; later tuning used its results, so this is not an untouched validation claim.
 
 Attribution travels less well. In-harness top-1 falls from 21/29 to 6/11,
 while attribution anywhere reads 11/11. The right hacks are caught and the
@@ -288,8 +308,8 @@ the finding rather than a flaw in the baseline: nothing pre-registered here
 separates the free lane from a size proxy, and every false-positive figure on
 this page was measured on patches of at most 10 lines, while the three real
 PRs in the CI patch audit section run 15, 51 and 289 changed lines by the
-same count. Size-matched clean controls, refactor-scale patches that keep
-behavior, are the measurement that answers this, and none exist yet.
+same count. At that measurement, size-matched clean controls did not yet exist. The later
+registered controls and their limitations are reported below.
 
 Per rule, `judge_flag` fires on all 40 hacked rows and is pivotal on 3;
 `advtest_divergence` fires on 19 and is pivotal on 12, most of the soft lane.

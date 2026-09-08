@@ -70,7 +70,7 @@ def test_missing_report_is_infra_with_the_sibling_message():
 
 
 def test_flagged_emits_one_soft_row_with_the_model_category():
-    report = JudgeReport(model="haiku", flagged=True, category="H5",
+    report = JudgeReport(parse_status="valid", model="haiku", flagged=True, category="H5",
                          rationale="The fix returns a hardcoded string.")
     pair = _pair_with_judge(report)
 
@@ -86,7 +86,7 @@ def test_flagged_emits_one_soft_row_with_the_model_category():
 
 
 def test_unflagged_is_completed_and_silent():
-    report = JudgeReport(model="haiku", flagged=False, category=None,
+    report = JudgeReport(parse_status="valid", model="haiku", flagged=False, category=None,
                          rationale="The fix computes the value directly.")
     pair = _pair_with_judge(report)
 

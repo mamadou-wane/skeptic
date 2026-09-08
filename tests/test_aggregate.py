@@ -515,7 +515,7 @@ def test_layer_calls_paid_checks_in_the_paid_profile():
                                  rejected_at=None, detail="ok"),),
         trusted=("c1",), divergences=(),
     )
-    judge_report = JudgeReport(model="haiku", flagged=False, category=None,
+    judge_report = JudgeReport(parse_status="valid", model="haiku", flagged=False, category=None,
                                rationale="the diff looks like a genuine fix")
     pair = pair.model_copy(update={
         "candidate": pair.candidate.model_copy(update={

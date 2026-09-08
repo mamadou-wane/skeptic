@@ -10,10 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from skeptic.artifacts import STRUCTURED_MAX, ArtifactSpec, read_artifact_bytes
-from skeptic.candidate import snapshot
-from skeptic.collector import _run_private_phase
+from skeptic.candidate import snapshot, validate_submitted_patch
+from skeptic.checks.observations import parse_collect_manifest, require_terminal_outcomes
+from skeptic.collector import _collect_argv, _run_private_phase
 from skeptic.errors import SkepticInfraError
 from skeptic.image import ensure_repo_image
+from skeptic.run_inputs import capture_file, freeze_inputs
 from skeptic.sandbox import HostDeadline, RunContainer
 from skeptic.seedcheck import SuiteResult, _drop_quarantined, parse_junit_bytes
 from skeptic.spec import TaskSpec
@@ -45,6 +47,9 @@ def run_candidate_acceptance(spec: TaskSpec, repo: Path, patch: Path,
 def _run_suite(spec: TaskSpec, repo: Path, patch: Path, workdir: Path,
                *, acceptance: bool) -> CandidateSuiteResult:
     workdir.mkdir(parents=True, exist_ok=True)
+    spec, input_root = freeze_inputs(spec, workdir, variants=False)
+    patch = capture_file(patch, input_root, "candidate.diff")
+    validate_submitted_patch(patch)
     # Evidence outlives the disposable tree. Each invocation has a fresh root;
     # no later candidate receives it as a writable mount.
     artifacts = Path(tempfile.mkdtemp(prefix="observed-", dir=workdir))
@@ -75,8 +80,24 @@ def _run_suite(spec: TaskSpec, repo: Path, patch: Path, workdir: Path,
             snapshot(Path(spec.acceptance_suite.path), target)
             ro += (".skeptic-acceptance",)
             command = ["python", "-m", "pytest", "-q", ".skeptic-acceptance"]
-        command += ["--junitxml=/tmp/skeptic-artifacts/junit.xml", "-o", "junit_family=xunit1"]
         deadline = HostDeadline.after(spec.environment.timeout_s)
+        collection_tree = scratch / "collection-tree"
+        snapshot(tree, collection_tree)
+        collected_result = _run_private_phase(
+            container=RunContainer(image.image_id, collection_tree, ro_subpaths=ro, missing_ro="drop"),
+            script=shlex.join(_collect_argv(shlex.join(command))),
+            quarantine=scratch / "collection-quarantine", sealed=artifacts, output_specs=(),
+            timeout_s=spec.environment.timeout_s, output_prefix="collect.", deadline=deadline,
+        )
+        if collected_result.exit_code != 0:
+            raise SkepticInfraError(
+                f"Candidate collection exited {collected_result.exit_code}. "
+                f"Next: inspect {artifacts}/collect.err before classifying the candidate.")
+        collected = parse_collect_manifest(collected_result.stdout)
+        if not collected:
+            raise SkepticInfraError("Candidate suite collected no tests. "
+                                    "Next: inspect collection before classifying the candidate.")
+        command += ["--junitxml=/tmp/skeptic-artifacts/junit.xml", "-o", "junit_family=xunit1"]
         result = _run_private_phase(
             container=RunContainer(image.image_id, tree, ro_subpaths=ro, missing_ro="drop"),
             script=shlex.join(command), quarantine=scratch / "quarantine", sealed=artifacts,
@@ -98,6 +119,7 @@ def _run_suite(spec: TaskSpec, repo: Path, patch: Path, workdir: Path,
                 f"Candidate suite produced malformed JUnit ({type(exc).__name__}). "
                 f"Next: inspect {artifacts}/junit.xml and retry the evaluation."
             ) from exc
+        require_terminal_outcomes(collected, suite.outcomes, "Candidate suite")
         deadline.require_active("candidate suite read-back")
     deadline.require_active("candidate suite cleanup")
     return CandidateSuiteResult(_drop_quarantined(suite, spec.seed.quarantine),

@@ -2,25 +2,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+from skeptic.errors import SkepticInfraError
 from skeptic.trace import TraceWriter
+
+CACHE_CONTRACT = "evaluation-integrity-1"
 
 
 def verifier_revision(package_root: Path | None = None) -> str:
-    """Content hash (12 hex) over every `*.py` under the skeptic package,
-    sorted by relative path, hashing path and bytes. A dirty tree misses the
-    cache.
+    """Hash current package source paths and bytes for execution/cache identity.
 
-    This is the VERIFY-verdict half of the two-key design (`skeptic.
-    collector.COLLECTOR_VERSION` is the baseline-observation half): the
-    VERIFY cache key hashes this, so any edit to a check or the aggregator
-    re-verdicts every cached pair on the next run, with no re-collection.
-    A collector behavior change does not move this hash at all (nothing here
-    reads `skeptic/collector.py` differently), so it needs `COLLECTOR_VERSION`
-    bumped by hand to invalidate a baseline cached under the old behavior.
+    Collector and verifier changes both move this fingerprint. Explicit cache
+    and collector contract versions also prevent reuse of legacy layouts.
     """
     root = package_root or Path(__file__).resolve().parent
     digest = hashlib.sha256()
@@ -34,7 +32,7 @@ def verifier_revision(package_root: Path | None = None) -> str:
 
 
 class StageCache:
-    """Content-keyed cache for stage results. Unwired until M2: DECISIONS.md #67."""
+    """Versioned stage results bound to the required artifact bytes."""
 
     def __init__(self, cache_dir: Path) -> None:
         self.cache_dir = cache_dir
@@ -45,20 +43,50 @@ class StageCache:
 
     def get(self, key: str) -> dict | None:
         path = self._path(key)
-        if not path.is_file():
-            return None
         try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError:
-            # a truncated write from a killed run is a miss; the stage
-            # re-executes and overwrites it atomically
+            record = json.loads(path.read_text())
+            if not isinstance(record, dict) or record.get("contract") != CACHE_CONTRACT:
+                return None
+            value, artifacts = record["value"], record["artifacts"]
+            if not isinstance(value, dict) or not isinstance(artifacts, dict):
+                return None
+            for name, digest in artifacts.items():
+                if artifact_digest(Path(name)) != digest:
+                    return None
+            return value
+        except (OSError, ValueError, KeyError, TypeError):
             return None
 
     def put(self, key: str, value: dict) -> None:
-        path = self._path(key)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
-        tmp.replace(path)
+        try:
+            artifacts = {str(Path(p).absolute()): artifact_digest(Path(p))
+                         for p in value.get("_cache_artifacts", ())}
+        except (OSError, ValueError, TypeError) as exc:
+            raise SkepticInfraError(
+                "Required cache artifacts could not be validated. "
+                "Next: inspect the run's artifacts and retry with a fresh workdir.") from exc
+        publish_cache_record(self._path(key), {
+            "contract": CACHE_CONTRACT, "value": value, "artifacts": artifacts})
+
+
+def publish_cache_record(path: Path, record: dict) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(json.dumps(record, sort_keys=True, indent=2) + "\n")
+        temporary.replace(path)
+    except (OSError, TypeError) as exc:
+        raise SkepticInfraError(
+            f"Cannot publish cache record {path}: {exc}. "
+            "Next: inspect run-directory storage and retry with a fresh workdir.") from exc
+
+
+def artifact_digest(path: Path) -> str:
+    """Stream a regular cache dependency without following a final symlink."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError(f"cache dependency {path} is not a regular file")
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def run_stage(

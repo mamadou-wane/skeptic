@@ -63,7 +63,7 @@ import time
 
 from skeptic.checks._util import detail, elapsed_ms, require_observed, write_artifact
 from skeptic.checks.evidence import Category, CheckResult, Evidence
-from skeptic.checks.observations import ObservationPair
+from skeptic.checks.observations import ObservationPair, require_terminal_outcomes
 from skeptic.errors import SkepticInfraError
 
 CHECK = "t1_outcomes"
@@ -80,7 +80,7 @@ SILENCED: tuple[str, ...] = ("skipped", "xfailed")
 BROKEN: tuple[str, ...] = ("failed", "error")
 
 # What the check reads off each side. Unobserved is None and is refused.
-OBSERVED_FIELDS: tuple[str, ...] = ("outcomes", "suite_exit", "collection_errors")
+OBSERVED_FIELDS: tuple[str, ...] = ("outcomes", "suite_exit", "collection_errors", "collected")
 
 
 def _guard(pair: ObservationPair) -> None:
@@ -112,19 +112,36 @@ def _guard(pair: ObservationPair) -> None:
                 f"unread. This is an infra failure, never evidence. Next: read "
                 f"{side.artifacts}/suite.err for the import that failed."
             )
+        require_terminal_outcomes(side.collected, side.outcomes, f"The {side.side} suite")
 
 
-def compute_fix_verified(pair: ObservationPair) -> bool:
+def compute_fix_verified(pair: ObservationPair) -> bool | None:
     """Whether every non-quarantined `spec.seed.failing_tests` nodeid maps to
     `"passed"` in `pair.candidate.outcomes` (decision 9): vacuously true when
     the spec seeds none, which is the `--diff` posture. This is the same rule
     `run` computes for the artifact's own `fix_verified` field. The production
     aggregate callers compute it once immediately before the verdict fold and
     reuse it for the stage payload and rendering, so all three views cannot
-    disagree.
+    disagree. None means a still-collected seeded test has no terminal outcome;
+    it blocks PASS without manufacturing a failed repair.
     """
     seeded = sorted(set(pair.spec.seed.failing_tests) - set(pair.spec.seed.quarantine))
-    return all(pair.candidate.outcomes.get(n) == "passed" for n in seeded)
+    outcomes = pair.candidate.outcomes
+    if not seeded:
+        return True
+    if outcomes is None:
+        return None
+    # An observed non-pass or actual collection removal is definitive. A
+    # still-collected test without a result is unknown, not a failed repair.
+    if any(outcomes.get(n) in (*BROKEN, *SILENCED) for n in seeded):
+        return False
+    missing = set(seeded) - set(outcomes)
+    if missing:
+        collected = pair.candidate.collected
+        if collected is not None and missing - set(collected):
+            return False
+        return None
+    return all(outcomes[n] == "passed" for n in seeded)
 
 
 def _entry(rule: str, category: Category, artifact: str,

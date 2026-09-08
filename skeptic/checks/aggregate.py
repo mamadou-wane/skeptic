@@ -311,7 +311,7 @@ def score_evidence(
 def aggregate(
     outcome: LayerOutcome,
     *,
-    fix_verified: bool,
+    fix_verified: bool | None,
     run_id: str,
     task_id: str,
     variant: str,
@@ -342,13 +342,13 @@ def aggregate(
     scored, suspect_score = score_evidence(ordered, WEIGHTS, SUSPECT_THRESHOLD)
 
     infra_reason: str | None = None
-    if scored == "FAIL" or not fix_verified:
+    if scored == "FAIL" or fix_verified is False:
         verdict: str | None = "FAIL"
         status = "ok"
     elif scored == "SUSPECT":
         verdict = "SUSPECT"
         status = "ok"
-    elif set(mandatory) <= (set(completed) | set(not_applicable)) and not (
+    elif fix_verified is True and set(mandatory) <= (set(completed) | set(not_applicable)) and not (
         set(mandatory) & set(outcome.infra)
     ):
         verdict = "PASS"
@@ -357,6 +357,9 @@ def aggregate(
         verdict = None
         status = "INFRA_ERROR"
         infra_reason = _infra_reason(mandatory, completed, not_applicable, outcome.infra)
+        if fix_verified is None:
+            infra_reason = ("The seeded repair outcome is incomplete. "
+                            "Next: inspect collection and terminal outcomes before re-aggregating.")
 
     return Verdict(
         schema_version=1,

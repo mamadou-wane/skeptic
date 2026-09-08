@@ -24,11 +24,13 @@ def capture(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "apply_candidate", lambda *a, **k: None)
     monkeypatch.setattr(runtime, "ensure_repo_image", lambda *args: SimpleNamespace(
         image_id="sha256:fixed", tag="mutable:tag"))
+    patch = tmp_path / "input.diff"
+    patch.write_text("diff --git a/mod.py b/mod.py\n--- a/mod.py\n+++ b/mod.py\n@@ -1 +1 @@\n-1\n+2\n")
     spec = make_task_spec(quarantine=["tests/test_x.py::test_fix"])
     spec = spec.model_copy(update={"environment": spec.environment.model_copy(
         update={"test_dirs": [], "config_files": [], "golden_dirs": []})})
 
-    def run(code=0, junit=GOOD):
+    def run(code=0, junit=GOOD, collected=("tests/test_x.py::test_fix",)):
         def transport(container, script, timeout_s, quarantine, env=None, deadline=None):
             assert container.image == "sha256:fixed"
             assert container.workspace.is_dir()
@@ -37,9 +39,10 @@ def capture(tmp_path, monkeypatch):
                 (quarantine / "junit.xml").symlink_to(junit)
             elif junit is not None:
                 (quarantine / "junit.xml").write_bytes(junit)
-            return ExecResult(code, "output", "diagnostic", 1)
+            manifest = "\n".join(collected) + "\n\n1 test collected in 0.01s\n"
+            return ExecResult(0 if "--collect-only" in script else code, manifest, "diagnostic", 1)
         monkeypatch.setattr(runtime.RunContainer, "run_capture", transport)
-        return runtime.run_candidate_suite(spec, Path("repo"), Path("patch"), tmp_path / "run")
+        return runtime.run_candidate_suite(spec, Path("repo"), patch, tmp_path / "run")
     return run, tmp_path
 
 
@@ -107,3 +110,9 @@ def test_trusted_admission_owns_its_runner(tmp_path):
     with pytest.raises(TypeError):
         check_trusted_task(make_task_spec(), tmp_path, tmp_path, tmp_path,
                            runner_factory=lambda _: None)
+
+
+def test_candidate_acceptance_cannot_hide_a_collected_result(capture):
+    run, _ = capture
+    with pytest.raises(SkepticInfraError, match="terminal outcome"):
+        run(collected=("tests/test_x.py::test_fix", "tests/test_x.py::test_other"))

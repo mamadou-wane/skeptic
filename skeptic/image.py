@@ -208,37 +208,38 @@ def ensure_repo_image(spec: TaskSpec, pristine_dir: Path, workdir: Path) -> Imag
                 f"reproducibility. Next: run `docker image inspect {tag}` "
                 f"by hand."
             )
-    # A fresh build always reads its freeze back, so a tag that moved (a new
-    # pin, a template edit) refreshes constraints.txt instead of leaving the
-    # previous image's closure on disk under the new tag.
-    if built or not constraints_path.is_file():
-        cat = _docker(["run", "--rm", "--network", "none", tag,
-                       "cat", "/opt/constraints.txt"], timeout_s=120)
-        if cat.returncode != 0:
-            raise SkepticInfraError(
-                f"could not read /opt/constraints.txt from {tag} "
-                f"(exit {cat.returncode}): {cat.stderr[-500:]}\n"
-                f"Skeptic commits the frozen dependency closure as the "
-                f"reproducibility lock. Next: rebuild the image "
-                f"(`docker rmi {tag}`, then re-run)."
-            )
-        if pinned is not None and cat.stdout != pinned:
-            pin_path = spec.environment.constraints_file
-            drift = sorted(set(cat.stdout.splitlines()) ^ set(pinned.splitlines()))
-            raise SkepticInfraError(
-                f"the closure {tag} resolved differs from the committed pin "
-                f"{pin_path}: {', '.join(drift[:8])}"
-                f"{', ...' if len(drift) > 8 else ''}.\n"
-                f"Skeptic pins task installs so a fresh machine measures what "
-                f"the corpus measured, and a pin the resolver did not honor "
-                f"is not a pin, and the same build drifts the same way every "
-                f"time. Next: if the closure should move, write this image's "
-                f"freeze over the pin (`docker run --rm {tag} cat "
-                f"/opt/constraints.txt > {pin_path}`) and record the move in "
-                f"DECISIONS.md; otherwise fix the install lines the pin does "
-                f"not cover."
-            )
-        workdir.mkdir(parents=True, exist_ok=True)
-        constraints_path.write_text(cat.stdout)
-    return ImageRef(tag=tag, image_id=inspect.stdout.strip(),
+    image_id = inspect.stdout.strip()
+    if not image_id:
+        raise SkepticInfraError("Docker returned no execution image identity. "
+                                "Next: inspect the image before retrying.")
+    # Validate the resolved image itself even when a host freeze already exists.
+    cat = _docker(["run", "--rm", "--network", "none", image_id,
+                   "cat", "/opt/constraints.txt"], timeout_s=120)
+    if cat.returncode != 0:
+        raise SkepticInfraError(
+            f"could not read /opt/constraints.txt from {tag} "
+            f"(exit {cat.returncode}): {cat.stderr[-500:]}\n"
+            f"Skeptic commits the frozen dependency closure as the "
+            f"reproducibility lock. Next: rebuild the image "
+            f"(`docker rmi {tag}`, then re-run)."
+        )
+    if pinned is not None and cat.stdout != pinned:
+        pin_path = spec.environment.constraints_file
+        drift = sorted(set(cat.stdout.splitlines()) ^ set(pinned.splitlines()))
+        raise SkepticInfraError(
+            f"the closure {tag} resolved differs from the committed pin "
+            f"{pin_path}: {', '.join(drift[:8])}"
+            f"{', ...' if len(drift) > 8 else ''}.\n"
+            f"Skeptic pins task installs so a fresh machine measures what "
+            f"the corpus measured, and a pin the resolver did not honor "
+            f"is not a pin, and the same build drifts the same way every "
+            f"time. Next: if the closure should move, write this image's "
+            f"freeze over the pin (`docker run --rm {tag} cat "
+            f"/opt/constraints.txt > {pin_path}`) and record the move in "
+            f"DECISIONS.md; otherwise fix the install lines the pin does "
+            f"not cover."
+        )
+    workdir.mkdir(parents=True, exist_ok=True)
+    constraints_path.write_text(cat.stdout)
+    return ImageRef(tag=tag, image_id=image_id,
                     constraints_path=constraints_path)

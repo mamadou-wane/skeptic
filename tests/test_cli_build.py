@@ -125,16 +125,11 @@ def test_two_attempts_are_two_cache_entries():
     assert a != b
 
 
-def test_attempt_one_keeps_the_pre_attempt_key():
-    """Attempt 1 must hash exactly as it did before the salt existed.
-
-    Every cached BUILD in a live workdir was written under the old key. If
-    attempt 1 changes shape, the whole existing cache misses and the base
-    arm silently pays to re-run work it already has.
-    """
+def test_attempt_one_retires_legacy_key_and_matches_the_default():
     spec = make_task_spec()
-    assert _build_cache_key(spec, "claude-opus-5", "sha256:abc", "seed",
-                            attempt=1) == PRE_SALT_KEY_FOR_SPEC
+    key = _build_cache_key(spec, "claude-opus-5", "sha256:abc", "seed", attempt=1)
+    assert key != PRE_SALT_KEY_FOR_SPEC
+    assert key == _build_cache_key(spec, "claude-opus-5", "sha256:abc", "seed")
 
 
 def test_attempt_salts_the_trace_run_id_too():

@@ -57,7 +57,7 @@ from skeptic.artifacts import (
     read_artifact_text,
     validate_artifact_path,
 )
-from skeptic.candidate import CandidateReport, snapshot
+from skeptic.candidate import CandidateReport, snapshot, tree_inventory
 from skeptic.checks.observations import (
     AdvCandidate,
     AdvDivergence,
@@ -75,7 +75,7 @@ from skeptic.checks.observations import (
     parse_collect_manifest,
 )
 from skeptic.errors import SkepticInfraError
-from skeptic.image import ensure_repo_image
+from skeptic.image import ImageRef, ensure_repo_image
 from skeptic.mutation import FULL_SUITE, Mutant
 from skeptic.sandbox import INSTALL_FAILURE_EXIT, ExecResult, HostDeadline, RunContainer
 from skeptic.seedcheck import parse_junit, parse_junit_bytes
@@ -140,7 +140,7 @@ PROBE_SCRUB: tuple[str, ...] = ("PYTEST_CURRENT_TEST", "CI")
 # verifier_revision with no re-collection, while a collector behavior change
 # needs this bumped by hand to invalidate a baseline cached under the old
 # behavior. Precedent: `skeptic.builder.GREEN_RULE_VERSION`.
-COLLECTOR_VERSION = "4"
+COLLECTOR_VERSION = "5"
 
 # `-q`, `-qq`, `-v`, `-vv`: pytest counts these, so they compose.
 _VERBOSITY = re.compile(r"^-[qv]+$")
@@ -791,33 +791,11 @@ def read_variant(spec: TaskSpec, tree: Path, artifacts: Path, side: Side,
     )
 
 
-def _baseline_key(spec: TaskSpec, changed_files: Sequence[str]) -> str:
-    """The `OBSERVE_BASELINE` cache key: every input that shapes the
-    baseline's observation, `_build_cache_key`-style.
-
-    `changed_files` is in the key because both sides' coverage report is
-    scoped to the candidate's changed files (`observe_variant`'s docstring):
-    two candidates against the same seed with different footprints need two
-    baseline observations, even though the baseline tree itself is identical
-    either way. The gap that leaves: a baseline observed for one candidate's
-    changed-files scope is never reused for a different candidate against the
-    same seed, even when everything but the coverage report would be
-    identical, because scoping the whole observation on `changed_files`
-    trades that reuse for a key that can never serve a stale coverage report.
-    `COLLECTOR_VERSION` is the module docstring's constant: bumped by hand
-    when this function's caller's behavior changes underneath it.
-    """
-    seed_sha = ("none" if spec.seed.bug_patch is None
-                else hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest())
-    return config_hash({
-        "stage": "OBSERVE_BASELINE",
-        "task": spec.task_id,
-        "commit": spec.repo.commit,
-        "seed": seed_sha,
-        "environment": spec.environment.model_dump(exclude_none=True),
-        "changed_files": sorted(changed_files),
-        "collector_version": COLLECTOR_VERSION,
-    })
+def _baseline_key(spec: TaskSpec, changed_files: Sequence[str], *, image_id: str) -> str:
+    from skeptic.run_inputs import execution_identity
+    return config_hash({**execution_identity(spec, image_id), "stage": "OBSERVE_BASELINE",
+                        "task": spec.task_id, "changed_files": sorted(changed_files),
+                        "collector_version": COLLECTOR_VERSION})
 
 
 def _apply_seed(spec: TaskSpec, tree: Path) -> None:
@@ -859,21 +837,37 @@ def _observe_baseline(spec: TaskSpec, repo_dir: Path, image_tag: str,
         _apply_seed(spec, tree)
         return observe_variant(spec, image_tag, tree, artifacts, "baseline", changed_files)
 
-    entry = baseline_cache / _baseline_key(spec, changed_files)
+    entry = baseline_cache / _baseline_key(spec, changed_files, image_id=image_tag)
     tree, artifacts, marker = entry / "tree", entry / "artifacts", entry / "observed.ok"
-    if marker.is_file():
+    from skeptic.orchestrator import CACHE_CONTRACT, artifact_digest, publish_cache_record
+    try:
+        recorded = json.loads(marker.read_text())
+        valid = (recorded.get("contract") == CACHE_CONTRACT
+                 and recorded.get("tree") == config_hash(tree_inventory(tree)))
+        digests = recorded["artifacts"]
+        current_names = {p.relative_to(artifacts).as_posix()
+                         for p in artifacts.rglob("*") if p.is_file()}
+        valid = valid and bool(digests) and current_names == set(digests) and all(
+            artifact_digest(artifacts / name) == digest for name, digest in digests.items())
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        valid = False
+    if valid:
         return read_variant(spec, tree, artifacts, "baseline", changed_files)
     if tree.exists():
         shutil.rmtree(tree)
     materialize(repo_dir, spec.repo.commit, tree)
     _apply_seed(spec, tree)
     observed = observe_variant(spec, image_tag, tree, artifacts, "baseline", changed_files)
-    marker.write_text("")
+    record = {"contract": CACHE_CONTRACT, "tree": config_hash(tree_inventory(tree)),
+              "artifacts": {p.relative_to(artifacts).as_posix(): artifact_digest(p)
+                            for p in artifacts.rglob("*") if p.is_file()}}
+    publish_cache_record(marker, record)
     return observed
 
 
 def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
-                 workdir: Path, baseline_cache: Path | None = None) -> ObservationPair:
+                 workdir: Path, baseline_cache: Path | None = None,
+                 *, image: ImageRef | None = None) -> ObservationPair:
     """Materialize both trees, observe each once, and pair the results.
 
     Two canonical trees exist per pair. Every candidate-executing observation
@@ -897,18 +891,19 @@ def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
     # either judged tree exists. An export of the fixed source sitting next to
     # the trees under judgment is the thing the gitless seeded workspace exists
     # to prevent (`cli.py:219` does the same for BUILD).
-    pristine = workdir / "image-context"
-    if pristine.exists():
+    if image is None:
+        pristine = workdir / "image-context"
+        if pristine.exists():
+            shutil.rmtree(pristine)
+        materialize(repo_dir, spec.repo.commit, pristine)
+        image = ensure_repo_image(spec, pristine, workdir / "image")
         shutil.rmtree(pristine)
-    materialize(repo_dir, spec.repo.commit, pristine)
-    image = ensure_repo_image(spec, pristine, workdir / "image")
-    shutil.rmtree(pristine)
 
     # The candidate's changed files scope both reports. Task 13 reads the
     # candidate's, M4's per-mutant selection reads the candidate's, and the
     # baseline is measured against the same paths so the two are comparable.
     changed = tuple(candidate.changed_files)
-    baseline = _observe_baseline(spec, repo_dir, image.tag, changed, workdir, baseline_cache)
+    baseline = _observe_baseline(spec, repo_dir, image.image_id, changed, workdir, baseline_cache)
 
     candidate_tree = workdir / "candidate"
     if candidate_tree.exists():
@@ -918,7 +913,7 @@ def collect_pair(spec: TaskSpec, repo_dir: Path, candidate: CandidateReport,
     apply_candidate(candidate_tree, candidate.diff_path)
 
     artifacts = workdir / "artifacts"
-    observed_candidate = observe_variant(spec, image.tag, candidate_tree,
+    observed_candidate = observe_variant(spec, image.image_id, candidate_tree,
                                          artifacts / "candidate", "candidate", changed)
     return ObservationPair(
         spec=spec, baseline=baseline, candidate=observed_candidate,

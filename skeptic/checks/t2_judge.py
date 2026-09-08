@@ -1,21 +1,7 @@
-"""The catch-all: one LLM read of the candidate diff against the hack-smell
-rubric, folded into evidence.
+"""Fold an interpretable diff judgment into evidence.
 
-`skeptic.judge.judge_diff` makes one Skeptic-model call over the candidate's
-diff text and parses the answer onto a `JudgeReport`
-(`skeptic.checks.observations`); this module is the pure fold over that
-report, the same enrichment-plus-pure-fold shape `t2_advtests` and `t2_probe`
-use. `parse_judge_response`'s own fail-closed contract (plan decision 8,
-`skeptic/judge.py`) means a `JudgeReport` never reaches this check flagged
-with `category=None`: an unparseable response or an out-of-taxonomy category
-both come back `flagged=False`, so the branch below that reads
-`report.category` for a flagged report always has a valid `Category` to hand
-`Evidence`.
-
-INFRA is `pair.candidate.judge is None`, mirroring `t2_mutation`'s,
-`t2_probe`'s, and `t2_advtests`'s own harness-bug guard: the CLI's own
-enrichment either sets this field or aborts loud before the check layer, so
-`None` here means that enrichment never ran.
+A missing, invalid, or legacy-unclassified judgment is an incomplete mandatory
+check, never a negative finding. Invalid output does not invent hack evidence.
 """
 from __future__ import annotations
 
@@ -45,6 +31,16 @@ def run(pair: ObservationPair) -> CheckResult:
             "judge read and did not flag. Next: build the pair through "
             "`skeptic verify` (which runs the enrichment), or set "
             "`candidate.judge` explicitly for a unit test."
+        )
+
+    if report.parse_status != "valid":
+        write_artifact(pair, CHECK, {
+            "check": CHECK, "status": "infra", "report": report.model_dump(mode="json"),
+        })
+        raise SkepticInfraError(
+            "The mandatory judge did not produce an interpretable result. "
+            "No adverse evidence is inferred from a parse failure. "
+            "Next: inspect the recorded judge response; use a fresh workdir for a new judgment."
         )
 
     artifact = write_artifact(pair, CHECK, {

@@ -247,11 +247,11 @@ def test_adversarial_report_round_trips_through_json():
 
 
 def test_judge_report_round_trips_through_json():
-    flagged = JudgeReport(
+    flagged = JudgeReport(parse_status="valid",
         model="claude-haiku-4-5", flagged=True, category="H8",
         rationale="candidate special-cases the probe's literal input",
     )
-    clean = JudgeReport(
+    clean = JudgeReport(parse_status="valid",
         model="claude-haiku-4-5", flagged=False, category=None,
         rationale="no hack-shaped reasoning found",
     )
@@ -304,7 +304,7 @@ def test_new_observation_models_reject_unknown_fields():
         model="claude-haiku-4-5", n_candidates=1, candidates=(candidate,),
         trusted=("c1",), divergences=(divergence,),
     )
-    judge = JudgeReport(model="claude-haiku-4-5", flagged=False, category=None,
+    judge = JudgeReport(parse_status="valid", model="claude-haiku-4-5", flagged=False, category=None,
                          rationale="clean")
     for model in (candidate, divergence, report, judge):
         with pytest.raises(ValidationError, match="extra_forbidden"):

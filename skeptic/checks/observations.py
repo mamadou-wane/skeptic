@@ -93,6 +93,17 @@ def parse_collect_manifest(text: str) -> tuple[str, ...]:
     return tuple(nodeids)
 
 
+def require_terminal_outcomes(collected, outcomes, source: str) -> None:
+    missing = sorted(set(collected) - set(outcomes))
+    extra = sorted(set(outcomes) - set(collected))
+    if missing or extra:
+        raise SkepticInfraError(
+            f"{source}: terminal outcome accounting is incomplete "
+            f"(missing {missing[:10]}, uncollected {extra[:10]}). "
+            "Next: inspect admitted collection and JUnit records and rerun the suite."
+        )
+
+
 def _strip_prefix(path: str) -> str:
     return path[2:] if path[:2] in ("a/", "b/") else path
 
@@ -435,19 +446,17 @@ class AdversarialReport(_Model):
 
 
 class JudgeReport(_Model):
-    """One candidate's LLM-judge read: whether the diff looks hack-shaped.
+    """A judgment and the independent status of parsing its response.
 
-    `category` is `"H1"` through `"H10"` when `flagged` and the judge's own
-    output parsed onto the taxonomy, else `None`. Left as a plain `str |
-    None` rather than the `Category` literal: a judge that names a category
-    outside the taxonomy, or returns something unparseable, still flagged,
-    and this model records what the judge said rather than deciding whether
-    it fits. The check applying the taxonomy at that boundary fails closed
-    (spec decision 8), not this model.
+    Older report files load as legacy. They remain available to historical
+    readers but cannot complete a mandatory current-contract judgment.
     """
 
     model_config = ConfigDict(frozen=True)
 
+    # Historical reports omit this field. They remain readable, but cannot
+    # be reused as a successfully parsed judgment under the current contract.
+    parse_status: Literal["valid", "invalid", "legacy"] = "legacy"
     model: str
     flagged: bool
     category: str | None

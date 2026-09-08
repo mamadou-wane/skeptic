@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import subprocess
 import tarfile
 import tempfile
@@ -94,7 +93,8 @@ def _git_apply(
     # mode, and silently *skips* the patch (rc 0, no file change): a no-op seed.
     # Cap the repo search at the workspace's parent so apply runs in plain-file
     # mode regardless of what encloses the workspace.
-    apply_env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(workspace.resolve().parent)}
+    from skeptic.candidate import patch_git_env
+    apply_env = {**patch_git_env(), "GIT_CEILING_DIRECTORIES": str(workspace.resolve().parent)}
     for args in (["apply", "--check", patch_abs], ["apply", patch_abs]):
         proc = subprocess.run(
             ["git", *args], cwd=workspace, env=apply_env,
@@ -139,8 +139,11 @@ def apply_candidate(tree: Path, diff: Path, *, authored: bool = False) -> None:
     that lane's likeliest first-run error. `apply_audited_diff` below splits
     the same way for the same reason (PR 3).
     """
+    from skeptic.candidate import validate_execution_tree, validate_submitted_patch
+    validate_submitted_patch(diff)
     failed = _git_apply(tree, diff)
     if failed is None:
+        validate_execution_tree(tree)
         return
     args, proc = failed
     advice = (
@@ -170,8 +173,11 @@ def apply_audited_diff(tree: Path, diff: Path, repo: str, commit: str) -> None:
     failure here means it was taken against a commit other than the one
     `--base` names, which is the mode's most likely first-run error.
     """
+    from skeptic.candidate import validate_execution_tree, validate_submitted_patch
+    validate_submitted_patch(diff)
     failed = _git_apply(tree, diff)
     if failed is None:
+        validate_execution_tree(tree)
         return
     args, proc = failed
     raise SkepticInfraError(

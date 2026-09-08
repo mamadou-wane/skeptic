@@ -120,6 +120,10 @@ def build_env(tmp_path):
                           failing_tests=["tests/t.py::test_a"])
 
     class GreenSession:
+        def file_operation(self, operation, arguments):
+            from skeptic._builder_files import perform
+            return perform(ws, operation, arguments)
+
         def exec_shell(self, cmd, timeout_s, env=None):
             return ExecResult(0, "", "", 1)
 

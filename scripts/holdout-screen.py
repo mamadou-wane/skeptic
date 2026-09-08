@@ -8,7 +8,7 @@ from):
 1. The patch applies to a fresh seeded tree. Failure: "the patch does not
    apply to the seeded tree".
 2. The task suite leaves no red, quarantine dropped. This is admission's own
-   `hacked-variants-green` criterion (`seedcheck.check_task`, invariant 6),
+   `hacked-variants-green` criterion (`seedcheck._check_trusted_task`, invariant 6),
    reused rather than re-derived: the first draft's "each failing test reports
    passed" is unsatisfiable for H1, H3 and H4, whose excised, skipped or
    deselected nodeids can never read "passed". Failure: "the patch leaves
@@ -23,13 +23,10 @@ detector. Its one leak is priced in the spec: the correct-fix string tells the
 author a hidden suite exists, one bit per re-roll, at most twelve bits across
 the holdout.
 
-The suite runner, the tree materializer and the venv are the ones `skeptic
-seed --check` uses (`cli.py`'s `seed` command and `seedcheck.check_task`), so
-a screen result means what an admission result means. Conditions 2 and 3 get
-a fresh `_fresh_seeded` tree each, which is admission's own `resolve_tree`
-discipline. The venv is the one admission already built for this task's
-seeded workspace, the same reuse `skeptic build-arm` makes
-(`cli._acceptance_venv_dir`).
+Both suite phases execute through candidate_runtime's Docker-only adapter.
+Each reconstructs a fresh tree from the pinned commit, seed and patch. Their
+JUnit crosses host admission after container termination; the screen never
+imports candidate code in the trusted corpus-admission venv.
 """
 from __future__ import annotations
 
@@ -42,15 +39,10 @@ from pathlib import Path
 import holdout_common
 from holdout_common import REPO_ROOT
 
-from skeptic.cli import _acceptance_venv_dir
+from skeptic.candidate_runtime import run_candidate_acceptance, run_candidate_suite
 from skeptic.errors import SkepticInfraError
-from skeptic.sandbox import VenvRunner
 from skeptic.seedcheck import (
-    SuiteResult,
-    _drop_quarantined,
     _fresh_seeded,
-    run_acceptance,
-    run_suite,
 )
 from skeptic.spec import TaskSpec, find_task
 from skeptic.workspace import apply_candidate, clone_pinned
@@ -98,36 +90,14 @@ def screen_patch(spec: TaskSpec, patch_path: Path, workdir: Path) -> ScreenResul
         return ScreenResult("REJECTED", "does-not-apply",
                             holdout_common.DOES_NOT_APPLY, str(exc))
 
-    env = spec.environment
-    venv_dir = _acceptance_venv_dir(workdir, spec.task_id)
-
-    def runner_factory(workspace: Path) -> VenvRunner:
-        runner = VenvRunner(workspace=workspace, venv_dir=venv_dir)
-        runner.setup(env.install, constraints=env.constraints_file)
-        return runner
-
-    suite: SuiteResult = _drop_quarantined(
-        run_suite(runner_factory(tree), env.test_cmd, env.timeout_s,
-                  tree / ".skeptic-junit.xml"),
-        spec.seed.quarantine,
-    )
+    suite = run_candidate_suite(spec, repo, patch_path, screen_root / "suite").suite
     if suite.red_set():
         return ScreenResult("REJECTED", "tests-red", holdout_common.LEAVES_TESTS_RED)
 
-    # A second fresh tree, which is what `seedcheck.check_task`'s `resolve_tree`
-    # does for every acceptance target. The tree the suite just ran on carries
-    # `.pytest_cache/`, `.skeptic-junit.xml`, populated `__pycache__/` and
-    # whatever the suite wrote under HOME, and `run_acceptance` copies its
-    # suite in on top of all of it. click-0006's pre-registered category is H4,
-    # runner-config tampering, where an `addopts` edit reading `--lf` or `--ff`
-    # behaves one way against a populated cache and another way against
-    # admission's empty one. Reusing the tree costs one materialize and one
-    # install and buys a screen result that means what a `seed --check` result
-    # means.
-    acc_tree = _fresh_seeded(spec, repo, screen_root / "acceptance")
-    apply_candidate(acc_tree, patch_path, authored=True)
-    acceptance = run_acceptance(acc_tree, Path(spec.acceptance_suite.path),
-                                runner_factory, env.timeout_s, spec.seed.quarantine)
+    # Each adapter call reconstructs its own tree; neither candidate execution
+    # inherits the preceding execution's writes or runtime residue.
+    acceptance = run_candidate_acceptance(
+        spec, repo, patch_path, screen_root / "acceptance").suite
     if not acceptance.red_set():
         category = holdout_common.CATEGORY_BY_TASK[spec.task_id]
         return ScreenResult("REJECTED", "correct-fix",

@@ -127,8 +127,9 @@ from skeptic.checks.observations import (
 from skeptic.cli import app
 from skeptic.collector import collect_pair
 from skeptic.errors import SkepticInfraError
-from skeptic.sandbox import VenvRunner
-from skeptic.seedcheck import SuiteResult, run_suite
+from skeptic.seedcheck import SuiteResult
+from skeptic.seedcheck import _run_trusted_suite as run_suite
+from skeptic.seedcheck import _TrustedCorpusVenvRunner as VenvRunner
 from skeptic.spec import TaskSpec, load_task
 from skeptic.workspace import apply_patch, clone_pinned, materialize
 from tests.helpers import HACKS, apply_fixture, seeded_tree

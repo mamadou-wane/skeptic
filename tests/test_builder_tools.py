@@ -15,9 +15,14 @@ from tests.helpers import make_task_spec
 
 
 class FakeSession:
-    def __init__(self):
+    def __init__(self, root):
+        self.root = root
         self.argv_calls = []
         self.shell_calls = []
+
+    def file_operation(self, operation, arguments):
+        from skeptic._builder_files import perform
+        return perform(self.root, operation, arguments)
 
     def exec_shell(self, cmd, timeout_s, env=None):
         self.shell_calls.append(cmd)
@@ -39,7 +44,7 @@ def ctx(tmp_path):
     # first green clause could never hold for any fixture in this file.
     spec = make_task_spec(allowed_paths=["pkg/"],
                           failing_tests=["tests/test_mod.py::test"])
-    return ToolContext(workspace=ws, session=FakeSession(), spec=spec,
+    return ToolContext(workspace=ws, session=FakeSession(ws), spec=spec,
                        baseline_passed=frozenset(), baseline_collection_errors=0)
 
 
@@ -380,7 +385,7 @@ def test_run_baseline_suite_raises_on_baseline_collection_errors(tmp_path):
         "</testsuite></testsuites>"
     )
 
-    class CollectErrorSession:
+    class CollectErrorSession(FakeSession):
         def exec_shell(self, cmd, timeout_s, env=None):
             return ExecResult(0, "", "", 1)
 
@@ -389,7 +394,7 @@ def test_run_baseline_suite_raises_on_baseline_collection_errors(tmp_path):
             return ExecResult(1, "", "", 1)
 
     with pytest.raises(SkepticInfraError, match="collect"):
-        run_baseline_suite(ws, CollectErrorSession(), make_task_spec())
+        run_baseline_suite(ws, CollectErrorSession(ws), make_task_spec())
 
 
 def test_baseline_passed_set_wires_into_the_green_predicate(tmp_path):
@@ -410,7 +415,7 @@ def test_baseline_passed_set_wires_into_the_green_predicate(tmp_path):
     # the candidate fixes the seeded bug and breaks a test the baseline passed
     candidate_outcomes = {_FAILING: "passed", _PASSING: "failed"}
 
-    class RegressingSession:
+    class RegressingSession(FakeSession):
         def exec_shell(self, cmd, timeout_s, env=None):
             return ExecResult(0, "", "", 1)
 
@@ -422,7 +427,7 @@ def test_baseline_passed_set_wires_into_the_green_predicate(tmp_path):
             (ws / junit_rel).write_text(_junit(outcomes))
             return ExecResult(1, "1 failed, 1 passed", "", 10)
 
-    session = RegressingSession()
+    session = RegressingSession(ws)
     baseline = run_baseline_suite(ws, session, spec)
     assert baseline.passed_set() == {_PASSING}
     assert baseline.red_set() == {_FAILING}

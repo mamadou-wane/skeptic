@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,7 +8,7 @@ from typing import Protocol
 
 from skeptic.errors import SkepticInfraError
 from skeptic.sandbox import ExecResult
-from skeptic.seedcheck import SuiteResult, parse_junit
+from skeptic.seedcheck import SuiteResult, parse_junit_bytes
 from skeptic.spec import TaskSpec
 
 # Tripwire, with the mount as the real boundary: network is off and tests
@@ -21,11 +22,11 @@ _JUNIT_REL = ".skeptic-junit-build.xml"
 # unlink the baseline report. Both names match candidate.EXCLUDE_GLOBS's
 # ".skeptic-junit*", so neither reaches the candidate diff.
 _JUNIT_BASELINE_REL = ".skeptic-junit-baseline.xml"
-_MAX_READ_BYTES = 100_000
 _TOOL_TIMEOUT_S = 120
 
 
 class SessionContainerLike(Protocol):
+    def file_operation(self, operation: str, arguments: dict) -> dict: ...
     def exec_shell(self, cmd: str, timeout_s: int,
                    env: dict | None = None) -> ExecResult: ...
     def exec_argv(self, argv: list[str], timeout_s: int,
@@ -34,7 +35,7 @@ class SessionContainerLike(Protocol):
 
 @dataclass(frozen=True)
 class ToolContext:
-    workspace: Path
+    workspace: Path  # Host identity only; live file access goes through session.
     session: SessionContainerLike
     spec: TaskSpec
     # The in-container baseline the candidate is compared against. No
@@ -132,22 +133,6 @@ def _refuse(text: str) -> ToolOutcome:
     return ToolOutcome(text=text, refused=True)
 
 
-def _safe_rel(ctx: ToolContext, raw: str) -> Path | None:
-    """Resolve a Builder-supplied path inside the workspace, or None."""
-    candidate = (ctx.workspace / raw).resolve()
-    root = ctx.workspace.resolve()
-    if candidate == root or root in candidate.parents:
-        return candidate
-    return None
-
-
-def _in_allowed(ctx: ToolContext, rel: str) -> bool:
-    return any(
-        rel == p.rstrip("/") or rel.startswith(p.rstrip("/") + "/")
-        for p in ctx.spec.builder_input.allowed_paths
-    )
-
-
 def dispatch_tool(ctx: ToolContext, name: str, args: dict) -> ToolOutcome:
     handler = _HANDLERS.get(name)
     if handler is None:
@@ -176,74 +161,43 @@ def dispatch_tool(ctx: ToolContext, name: str, args: dict) -> ToolOutcome:
 
 
 def _list_files(ctx: ToolContext, args: dict) -> ToolOutcome:
-    target = _safe_rel(ctx, str(args.get("path", "")))
-    if target is None or not target.is_dir():
-        return _refuse("path must name a directory inside the workspace.")
-    lines = []
-    for p in sorted(target.rglob("*")):
-        rel = p.relative_to(ctx.workspace)
-        if any(part in EXCLUDED_PARTS or part.endswith(".egg-info")
-               for part in rel.parts):
-            continue
-        if p.is_file():
-            lines.append(str(rel))
-    shown = lines[:2000]
-    text = "\n".join(shown) or "(empty)"
-    if len(lines) > len(shown):
-        text += "\n[truncated]"
-    return ToolOutcome(text=text)
-
-
-EXCLUDED_PARTS = {".sv", ".pytest_cache", "__pycache__"}
+    return ToolOutcome(**ctx.session.file_operation("list_files", args))
 
 
 def _read_file(ctx: ToolContext, args: dict) -> ToolOutcome:
-    target = _safe_rel(ctx, str(args["path"]))
-    if target is None or not target.is_file():
-        return _refuse(f"{args['path']!r} is not a file inside the workspace.")
-    # Bound the read itself (not just the returned text): a Builder can
-    # create an arbitrarily large file via the allowlisted `python` in
-    # run_cmd, and this call runs host-side, outside any container limit.
-    # Read one character past the cap so truncation reflects what was
-    # actually decoded, not the file's byte size (multi-byte UTF-8 makes
-    # those differ: st_size counts bytes, .read(n) counts characters).
-    with target.open(errors="replace") as fh:
-        data = fh.read(_MAX_READ_BYTES + 1)
-    if len(data) > _MAX_READ_BYTES:
-        data = data[:_MAX_READ_BYTES] + "\n[truncated]"
-    return ToolOutcome(text=data)
+    return ToolOutcome(**ctx.session.file_operation("read_file", args))
 
 
 def _edit_file(ctx: ToolContext, args: dict) -> ToolOutcome:
-    raw = str(args["path"])
-    target = _safe_rel(ctx, raw)
-    if target is None:
-        return _refuse(f"{raw!r} escapes the workspace.")
-    rel = str(target.relative_to(ctx.workspace.resolve()))
-    if not _in_allowed(ctx, rel):
-        return _refuse(
-            f"{rel!r} is outside allowed_paths "
-            f"{ctx.spec.builder_input.allowed_paths}; edits are restricted to "
-            f"those paths. Tests and configs are read-only by design."
+    return ToolOutcome(**ctx.session.file_operation(
+        "edit_file", {**args, "allowed_paths": ctx.spec.builder_input.allowed_paths}))
+
+
+def _report(session: SessionContainerLike, relative_path: str) -> SuiteResult:
+    result = session.file_operation("read_report", {"path": relative_path})
+    if result["refused"]:
+        raise SkepticInfraError(
+            f"Cannot read Builder JUnit: {result['text']} "
+            "Next: inspect the session test output and retry."
         )
-    old, new = str(args["old_str"]), str(args["new_str"])
-    if old == "":
-        if target.exists():
-            return _refuse(f"{rel!r} already exists; pass the exact old_str to edit it.")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(new)
-        return ToolOutcome(text=f"created {rel}")
-    if not target.is_file():
-        return _refuse(f"{rel!r} does not exist; create it with an empty old_str.")
-    content = target.read_text()
-    count = content.count(old)
-    if count != 1:
-        return _refuse(
-            f"old_str occurs {count} times in {rel}; it must occur exactly "
-            f"once. Add surrounding context to make it unique."
+    try:
+        return parse_junit_bytes(base64.b64decode(result["text"], validate=True), relative_path)
+    except SkepticInfraError:
+        raise
+    except Exception as exc:
+        raise SkepticInfraError(
+            f"Malformed Builder JUnit ({type(exc).__name__}). "
+            "Next: inspect the session test output and retry."
+        ) from exc
+
+
+def _remove_report(session: SessionContainerLike, relative_path: str) -> None:
+    result = session.file_operation("remove_report", {"path": relative_path})
+    if result["refused"]:
+        raise SkepticInfraError(
+            f"Cannot reset Builder JUnit: {result['text']} "
+            "Next: inspect the session container and retry."
         )
-    target.write_text(content.replace(old, new, 1))
-    return ToolOutcome(text=f"edited {rel}")
 
 
 # Builder-supplied, so it goes through exec_argv (no shell) as one argv
@@ -287,7 +241,7 @@ def run_baseline_suite(workspace: Path, session: SessionContainerLike,
     (click-0001's 24 `less` failures, row 73) show up here and in every
     candidate run, so they cancel.
 
-    This duplicates a little of `seedcheck.run_suite`'s exit-code taxonomy on
+    This duplicates a little of `seedcheck._run_trusted_suite`'s exit-code taxonomy on
     purpose: `run_suite` takes a runner with an `exec` method that
     `SessionContainer` does not have, and routing the baseline through
     `exec_shell` would give it shell tokenization while the candidate gets
@@ -295,8 +249,7 @@ def run_baseline_suite(workspace: Path, session: SessionContainerLike,
     non-green outcome instead: there is no Builder to hand a tool result to
     at baseline time.
     """
-    junit_host = workspace / _JUNIT_BASELINE_REL
-    junit_host.unlink(missing_ok=True)
+    _remove_report(session, _JUNIT_BASELINE_REL)
     argv = _suite_argv(spec, _JUNIT_BASELINE_REL)
     result = session.exec_argv(argv, timeout_s=spec.environment.timeout_s)
     if result.exit_code == -1:
@@ -319,7 +272,7 @@ def run_baseline_suite(workspace: Path, session: SessionContainerLike,
         )
     # parse_junit raises with its own what/why/next on a missing report and on
     # a report it cannot map to nodeids; both are infra failures here.
-    suite = parse_junit(junit_host)
+    suite = _report(session, _JUNIT_BASELINE_REL)
     if suite.collection_errors:
         raise SkepticInfraError(
             f"The baseline suite hit {suite.collection_errors} collection "
@@ -364,16 +317,15 @@ def _run_tests(ctx: ToolContext, args: dict) -> ToolOutcome:
                 f"a full nodeid (tests/test_x.py::test_name). No spaces, no "
                 f"shell metacharacters, no -k expressions."
             )
-    junit_host = ctx.workspace / _JUNIT_REL
-    junit_host.unlink(missing_ok=True)
+    _remove_report(ctx.session, _JUNIT_REL)
     argv = _suite_argv(ctx.spec, _JUNIT_REL, selector)
     result = ctx.session.exec_argv(argv, timeout_s=ctx.spec.environment.timeout_s)
     tail = (result.stdout[-3000:] + "\n" + result.stderr[-1000:]).strip()
-    if result.exit_code not in (0, 1) or not junit_host.is_file():
+    if result.exit_code not in (0, 1):
         return ToolOutcome(
             text=f"test run did not complete (exit {result.exit_code}):\n{tail}")
     try:
-        suite = parse_junit(junit_host)
+        suite = _report(ctx.session, _JUNIT_REL)
     except SkepticInfraError as exc:
         # parse_junit raises on a junit report it cannot trust (an
         # unmappable classname or a duplicate reconstructed nodeid), which a

@@ -451,7 +451,7 @@ def _guard_exit(spec: TaskSpec, side: Side, step: str, exit_code: int,
     `(0, 1)` is a run. `5` on the candidate is an observation: total collection
     shrinkage is the maximal H1, and a check that dies on its own worst case is
     not a check. `5` on the baseline is broken substrate. Everything else, on
-    either side, is infra. `seedcheck.run_suite` raises on 5 from both sides
+    either side, is infra. `seedcheck._run_trusted_suite` raises on 5 from both sides
     and keeps doing so: admission asks whether the repo is sound, VERIFY asks
     what the candidate did.
     """

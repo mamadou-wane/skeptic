@@ -18,7 +18,7 @@ def test_build_refuses_venv_runner(tmp_path):
     result = runner.invoke(app, ["build", "--task", "click-0001",
                                  "--runner", "venv", "--workdir", str(tmp_path)])
     assert result.exit_code == 3
-    assert "verify-only" in result.output
+    assert "trusted corpus admission" in result.output
 
 
 def test_build_requires_api_key_before_docker_work(tmp_path, monkeypatch):

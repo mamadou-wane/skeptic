@@ -61,6 +61,23 @@ def test_parse_accepts_the_three_line_form():
     assert rationale == "The fix returns a hardcoded string."
 
 
+def test_raw_response_is_captured_before_interpretation(tmp_path, monkeypatch):
+    import json
+
+    from skeptic import judge
+    path = tmp_path / "judge-io.json"
+    original = judge._parse_response
+
+    def parse(text):
+        assert json.loads(path.read_text())["response"]["text"] == "garbage"
+        return original(text)
+
+    monkeypatch.setattr(judge, "_parse_response", parse)
+    trace = TraceWriter(tmp_path / "trace.jsonl", "r", "t")
+    report, _ = judge_diff(_fake_client("garbage"), "patch", trace, io_path=path)
+    assert report.parse_status == "invalid"
+
+
 def test_parse_fails_closed_on_garbage():
     flagged, category, rationale = parse_judge_response(
         "This is not a structured answer at all, just prose."

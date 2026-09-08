@@ -1152,7 +1152,7 @@ def test_apply_candidate_error_names_the_verify_context(tmp_path):
     (tree / "mod.py").write_text("def add(a, b):\n    return a + b\n")
     good = tmp_path / "good.diff"
     good.write_text(
-        "--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n"
+        "diff --git a/mod.py b/mod.py\n--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,2 @@\n def add(a, b):\n"
         "-    return a + b\n+    return a + b + 1\n"
     )
     apply_candidate(tree, good)
@@ -1160,7 +1160,7 @@ def test_apply_candidate_error_names_the_verify_context(tmp_path):
 
     bad = tmp_path / "bad.diff"
     bad.write_text(
-        "--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,2 @@\n-def NOT_THERE():\n+def x():\n     pass\n"
+        "diff --git a/mod.py b/mod.py\n--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,2 @@\n-def NOT_THERE():\n+def x():\n     pass\n"
     )
     with pytest.raises(SkepticInfraError) as exc:
         apply_candidate(tree, bad)
@@ -1181,7 +1181,7 @@ def test_apply_candidate_authored_blames_the_patch_not_the_harness(tmp_path):
     (tree / "mod.py").write_text("def add(a, b):\n    return a + b\n")
     bad = tmp_path / "holdout.diff"
     bad.write_text(
-        "--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,2 @@\n-def NOT_THERE():\n+def x():\n     pass\n"
+        "diff --git a/mod.py b/mod.py\n--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,2 @@\n-def NOT_THERE():\n+def x():\n     pass\n"
     )
 
     with pytest.raises(SkepticInfraError) as exc:
@@ -1207,6 +1207,18 @@ def test_collect_pair_reuses_a_keyed_baseline(tmp_path, monkeypatch):
                           baseline_cache=baseline_cache)
     assert len(calls) == 9          # only the candidate's three phases ran
     assert second.baseline.outcomes == first.baseline.outcomes
+
+
+def test_baseline_cache_does_not_reuse_modified_observation(tmp_path, monkeypatch):
+    spec, repo, candidate = _minirepo(tmp_path)
+    _stub_image(monkeypatch)
+    calls = fake_unit(monkeypatch, collected=(NODE_A,), outcomes={NODE_A: "passed"})
+    cache = tmp_path / "baseline-cache"
+    first = collect_pair(spec, repo, candidate, tmp_path / "first", baseline_cache=cache)
+    (first.baseline.artifacts / "junit.xml").write_text(_junit({NODE_A: "failed"}))
+    second = collect_pair(spec, repo, candidate, tmp_path / "second", baseline_cache=cache)
+    assert second.baseline.outcomes == {NODE_A: "passed"}
+    assert len(calls) == 12
     assert second.baseline.tree == first.baseline.tree
 
 
@@ -1232,14 +1244,14 @@ def test_baseline_key_retires_release_and_unsafe_interim_collector_versions(
     changed_files = ["minirepo.py"]
 
     final_version = collector.COLLECTOR_VERSION
-    final_key = collector._baseline_key(spec, changed_files)
+    final_key = collector._baseline_key(spec, changed_files, image_id="sha256:test-image")
     prior_keys = set()
-    for prior_version in ("1", "2", "3"):
+    for prior_version in ("1", "2", "3", "4"):
         monkeypatch.setattr(collector, "COLLECTOR_VERSION", prior_version)
-        prior_keys.add(collector._baseline_key(spec, changed_files))
+        prior_keys.add(collector._baseline_key(spec, changed_files, image_id="sha256:test-image"))
 
     assert final_key not in prior_keys
-    assert final_version == "4"
+    assert final_version == "5"
 
 
 # The adversarial-test acceptance ladder (Task 6).

@@ -11,10 +11,11 @@ from skeptic import cli
 from skeptic.candidate import CandidateReport
 from skeptic.checks.aggregate import LayerOutcome
 from skeptic.checks.evidence import MANDATORY_CHECKS, CheckResult
-from skeptic.cli import _verify_cache_key, app
+from skeptic.cli import app
 from skeptic.errors import SkepticInfraError
 from skeptic.orchestrator import StageCache
 from skeptic.sandbox import DockerDiagnosis
+from tests.helpers import verify_cache_key as _verify_cache_key
 
 _DIAG_OK = DockerDiagnosis("ok", "")
 _DIAG_DOWN = DockerDiagnosis("unreachable", "test")
@@ -23,6 +24,23 @@ from skeptic.trace import read_trace
 from tests.helpers import make_observed_pair, make_pure_pair, make_task_spec
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _unit_image(monkeypatch, request):
+    if "docker" in request.keywords:
+        return
+    from types import SimpleNamespace
+    monkeypatch.setattr("skeptic.image.ensure_repo_image", lambda *args: SimpleNamespace(
+        image_id="sha256:test-image", tag="test-image"))
+
+
+def _fake_extracted_report(baseline, workspace, out_diff, allowed_paths):
+    out_diff.parent.mkdir(parents=True, exist_ok=True)
+    out_diff.write_text("diff --git a/src/click/termui.py b/src/click/termui.py\n"
+                        "--- a/src/click/termui.py\n+++ b/src/click/termui.py\n"
+                        "@@ -1 +1 @@\n-old\n+new\n")
+    return CandidateReport(out_diff, ["src/click/termui.py"], [], False)
 
 
 def _fake_pair(spec):
@@ -80,11 +98,9 @@ def _fake_heavy_stages(monkeypatch, pair, calls):
     monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
     monkeypatch.setattr(
         candidate, "extract_candidate",
-        lambda baseline, workspace, out_diff, allowed_paths: CandidateReport(
-            diff_path=out_diff, changed_files=["src/click/termui.py"],
-            out_of_scope=[], is_empty=False))
+        _fake_extracted_report)
 
-    def fake_collect_pair(spec, repo_dir, report, workdir, baseline_cache=None):
+    def fake_collect_pair(spec, repo_dir, report, workdir, baseline_cache=None, **kwargs):
         calls.append(1)
         return pair
 
@@ -178,12 +194,10 @@ def _fake_heavy_stages_dead_enrichment(monkeypatch, pair, enrichment_error: Exce
     monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
     monkeypatch.setattr(
         candidate, "extract_candidate",
-        lambda baseline, workspace, out_diff, allowed_paths: CandidateReport(
-            diff_path=out_diff, changed_files=["src/click/termui.py"],
-            out_of_scope=[], is_empty=False))
+        _fake_extracted_report)
     monkeypatch.setattr(
         collector, "collect_pair",
-        lambda spec, repo_dir, report, workdir, baseline_cache=None: pair)
+        lambda spec, repo_dir, report, workdir, baseline_cache=None, **kwargs: pair)
     monkeypatch.setattr(collector, "observe_probe", lambda *a, **k: ProbeReport(calls=()))
 
     def _boom(_pair):
@@ -269,12 +283,10 @@ def _fake_heavy_stages_dead_probe(monkeypatch, pair, enrichment_error: Exception
     monkeypatch.setattr(candidate, "snapshot", lambda src, dest: None)
     monkeypatch.setattr(
         candidate, "extract_candidate",
-        lambda baseline, workspace, out_diff, allowed_paths: CandidateReport(
-            diff_path=out_diff, changed_files=["src/click/termui.py"],
-            out_of_scope=[], is_empty=False))
+        _fake_extracted_report)
     monkeypatch.setattr(
         collector, "collect_pair",
-        lambda spec, repo_dir, report, workdir, baseline_cache=None: pair)
+        lambda spec, repo_dir, report, workdir, baseline_cache=None, **kwargs: pair)
     monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
 
     def _boom(*args, **kwargs):
@@ -478,6 +490,9 @@ def test_verify_exit_codes_follow_the_verdict(
     monkeypatch.setattr(cli, "_docker_diagnosis", lambda: _DIAG_OK)
     workdir = tmp_path.resolve()
     spec = find_task("click-0001", Path("tasks"))
+    _fake_heavy_stages(monkeypatch, _fake_pair(spec), [])
+    monkeypatch.setattr("skeptic.collector.collect_pair", lambda *a, **k:
+                        pytest.fail("cache hit unexpectedly executed the collector"))
     variant_spec = spec.evaluation.variants[0]
     cache_key = _verify_cache_key(spec, variant_spec, "deterministic")
     verify_dir = workdir / spec.task_id / "verify" / variant_spec.id
@@ -879,7 +894,7 @@ def _fake_heavy_stages_real_registry(monkeypatch, pair):
         lambda baseline, workspace, out_diff, allowed_paths: pair.candidate_diff)
     monkeypatch.setattr(
         collector, "collect_pair",
-        lambda spec, repo_dir, report, workdir, baseline_cache=None: pair)
+        lambda spec, repo_dir, report, workdir, baseline_cache=None, **kwargs: pair)
     monkeypatch.setattr(mutation, "generate_mutants", lambda pair: ())
     monkeypatch.setattr(collector, "observe_probe", lambda *a, **k: ProbeReport(calls=()))
 
@@ -910,7 +925,7 @@ def test_verify_candidate_diff_drives_the_real_path_and_stamps_candidate_identit
 
     diff_path = tmp_path / "build" / "attempt-3" / "candidate.diff"
     diff_path.parent.mkdir(parents=True)
-    diff_bytes = b"--- a/x\n+++ b/x\n"
+    diff_bytes = b"diff --git a/x b/x\n--- a/x\n+++ b/x\n"
     diff_path.write_bytes(diff_bytes)
     sha8 = hashlib.sha256(diff_bytes).hexdigest()[:8]
 
@@ -971,7 +986,7 @@ def test_verify_candidate_diff_cache_replays_same_bytes_and_misses_on_different_
         lambda *a, **k: (calls.append(1), faked_collect_pair(*a, **k))[1])
 
     diff_path = tmp_path / "attempt.diff"
-    first_bytes = b"--- a/x\n+++ b/x\n"
+    first_bytes = b"diff --git a/x b/x\n--- a/x\n+++ b/x\n"
     diff_path.write_bytes(first_bytes)
     first_sha8 = hashlib.sha256(first_bytes).hexdigest()[:8]
     workdir = (tmp_path / "workdir").resolve()
@@ -996,7 +1011,7 @@ def test_verify_candidate_diff_cache_replays_same_bytes_and_misses_on_different_
     events, _ = read_trace(first_dir / "trace.jsonl")
     assert "stage_cached" in [e["event"] for e in events]
 
-    second_bytes = b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n"
+    second_bytes = b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n"
     diff_path.write_bytes(second_bytes)
     second_sha8 = hashlib.sha256(second_bytes).hexdigest()[:8]
     assert second_sha8 != first_sha8
@@ -1029,7 +1044,7 @@ def _fake_advtests_and_judge(monkeypatch):
     advtests_report = AdversarialReport(
         model="fake-model", n_candidates=1, candidates=(advtests_candidate,),
         trusted=("c1",), divergences=())
-    judge_report = JudgeReport(model="fake-model", flagged=False, category=None,
+    judge_report = JudgeReport(parse_status="valid", model="fake-model", flagged=False, category=None,
                                rationale="clean")
     judge_io = {"request": {"model": "fake-model", "max_tokens": 2000},
                "response": {"text": "flag: no\nrationale: clean",
@@ -1043,7 +1058,7 @@ def _fake_advtests_and_judge(monkeypatch):
         cli, "observe_advtests",
         lambda spec, image_tag, repo_dir, pair, artifacts, candidates, model, regression_probes=False: advtests_report)
     monkeypatch.setattr(
-        cli, "judge_diff", lambda client, diff_text, trace: (judge_report, judge_io))
+        cli, "judge_diff", lambda client, diff_text, trace, **kwargs: (judge_report, judge_io))
     monkeypatch.setattr(anthropic, "Anthropic", lambda: object())
     return advtests_report, judge_report, judge_io, testgen_io
 
@@ -1350,9 +1365,9 @@ def test_judge_reads_a_bad_byte_in_the_candidate_diff_through_read_source(
 
     seen_diff_text = []
 
-    def fake_judge_diff(client, diff_text, trace):
+    def fake_judge_diff(client, diff_text, trace, **kwargs):
         seen_diff_text.append(diff_text)
-        return (JudgeReport(model="fake-model", flagged=False, category=None,
+        return (JudgeReport(parse_status="valid", model="fake-model", flagged=False, category=None,
                             rationale="clean"),
                 {"request": {}, "response": {}})
 
@@ -1490,8 +1505,8 @@ def test_verify_cache_key_candidate_diff_is_bytes_not_path(tmp_path):
     attempt_2 = tmp_path / "attempt-2" / "candidate.diff"
     attempt_1.parent.mkdir(parents=True)
     attempt_2.parent.mkdir(parents=True)
-    attempt_1.write_bytes(b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
-    attempt_2.write_bytes(b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+3\n")
+    attempt_1.write_bytes(b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
+    attempt_2.write_bytes(b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+3\n")
 
     key_1 = _verify_cache_key(spec, None, "deterministic", candidate_diff=attempt_1)
     key_2 = _verify_cache_key(spec, None, "deterministic", candidate_diff=attempt_2)
@@ -1700,7 +1715,7 @@ def test_verify_cache_key_with_no_seed_patch(tmp_path):
     seedless = spec.model_copy(
         update={"seed": spec.seed.model_copy(update={"bug_patch": None})})
     diff = tmp_path / "audit.diff"
-    diff.write_bytes(b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
+    diff.write_bytes(b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
 
     key = _verify_cache_key(seedless, None, "deterministic",
                             candidate_diff=diff, identity="diff:abcd1234")
@@ -1852,7 +1867,7 @@ def test_verify_variant_patch_drives_the_real_path_and_stamps_the_registry_id(
 
     patch = tmp_path / "holdout" / "click-0001-h5.diff"
     patch.parent.mkdir(parents=True)
-    patch.write_bytes(b"--- a/x\n+++ b/x\n")
+    patch.write_bytes(b"diff --git a/x b/x\n--- a/x\n+++ b/x\n")
 
     workdir = (tmp_path / "workdir").resolve()
     result = runner.invoke(app, ["verify", "--task", "click-0001",
@@ -1883,7 +1898,7 @@ def test_verify_cache_key_variant_patch_is_the_id_plus_the_patch_bytes(tmp_path)
     collides with the bare `--candidate-diff` key for the same file."""
     spec = make_task_spec()
     patch = tmp_path / "h5.diff"
-    patch.write_bytes(b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
+    patch.write_bytes(b"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n")
 
     key_h5 = _verify_cache_key(spec, None, "deterministic",
                                candidate_diff=patch, identity="h5-holdout")

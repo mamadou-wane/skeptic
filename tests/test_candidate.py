@@ -187,14 +187,12 @@ def test_extract_candidate_defeats_gitattributes_diff_suppression(tmp_path):
     (ws / "pkg" / "mod.py").write_text("x = 2\n")
     (ws / ".gitattributes").write_text("*.py -diff\n")
 
-    report = extract_candidate(tmp_path / "base", ws, tmp_path / "candidate.diff",
-                               allowed_paths=["pkg/"])
+    import pytest
 
-    assert report.changed_files == [".gitattributes", "pkg/mod.py"]
-    assert report.out_of_scope == [".gitattributes"]
-    text = report.diff_path.read_text()
-    assert "GIT binary patch" not in text
-    assert "-x = 1" in text and "+x = 2" in text
+    from skeptic.errors import SkepticInfraError
+    with pytest.raises(SkepticInfraError, match="diff-control"):
+        extract_candidate(tmp_path / "base", ws, tmp_path / "candidate.diff", ["pkg/"])
+    assert not (tmp_path / "candidate.diff").exists()
 
 
 def test_extract_candidate_handles_dangling_symlink(tmp_path):

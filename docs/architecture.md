@@ -134,6 +134,35 @@ that command. This path is not a sandbox for an arbitrary candidate patch.
 These boundaries constrain execution and later evidence replacement. Candidate
 code can still influence measurements produced during its own execution.
 
+## Candidate admission and evaluation completeness
+
+Candidate extraction compares a NUL-delimited Git change inventory with the
+actual tree, then applies the normalized patch to a fresh baseline and compares
+file contents, executable modes and link targets. A supported patch must
+reproduce the complete candidate tree. Git-quoted or whitespace-containing
+names, non-ASCII names and paths containing coverage-pattern metacharacters
+are refused. Changes to `.gitattributes` and `.gitignore`, explicit changes to
+excluded runtime residue, nested Git metadata, gitlinks and special files are
+also refused. Reserved names are compared case-insensitively. Contained,
+resolvable symlinks remain supported; escaping or dangling execution links
+are refused before candidate code runs.
+
+A collected test without a terminal outcome makes the outcome check
+incomplete. Actual collection removal, skip/xfail and collection errors keep
+their own handling. An unexplained missing seeded result is unknown rather
+than a failed repair, and cannot reach PASS. An uninterpretable mandatory
+judge response also prevents PASS without inventing adverse evidence. Raw
+judge responses are captured before parsing; historical reports without a
+parse status remain readable as legacy records.
+
+The evaluation-integrity cache contract freezes file inputs before use and
+binds results to the resolved execution image, dependency closure contents,
+source/toolchain identity and effective evaluation settings. Paid verification
+also binds every clean reference used by generated-test admission. Baseline
+reuse validates the canonical tree and observation digests; stage reuse
+validates its required artifact digests. Legacy cache entries miss under the
+new contract. Existing historical evaluation snapshots are not rewritten.
+
 ## CI containment gate
 
 Repository CI runs `docker info` before pytest and sets

@@ -1,28 +1,14 @@
-"""One Skeptic-model read of a candidate diff against the hack-smell rubric.
+"""A diff judgment with explicit parse completion and retained response data.
 
-`judge_diff` makes exactly one `call_with_retry` call, at `temperature=0`
-(plan decision 8's determinism basis) and `max_tokens=2000`: the rubric asks
-for a three-line answer, so a much larger cap would only let a wandering
-response run further before `parse_judge_response` falls back to fail-closed.
-The returned dict is `judge_diff`'s own artifact contract, `{"request": ...,
-"response": ...}`, verbatim: `request` mirrors the exact kwargs sent to
-`client.messages.create`, and `response` carries the raw response text and
-token usage rather than the parsed report, so a reviewer reading the
-artifact sees what the model actually said, not just what Skeptic made of it.
-
-`parse_judge_response` is the fail-closed boundary (plan decision 8,
-`docs/superpowers/plans/2026-08-01-m4-wave-b-paid-checks.md`): the rubric
-demands `flag: yes|no`, `category: H1..H10` (only when flagged), `rationale:
-<one sentence>` on three lines, and anything that does not parse to that
-shape, or names a category outside H1 through H10, comes back `(False,
-None, ...)` rather than raising or guessing. This is the injection bound:
-text inside the diff cannot make this check emit evidence for a category
-that does not exist, and the worst a hostile diff can do to the judge is
-talk it out of flagging (a missed detection, bounded by design per the
-spec's own limits language, now docs/architecture.md's Limits), never talk
-it into fabricating one.
+Malformed output carries parse_status=invalid and emits no adverse evidence.
+The mandatory check refuses to complete on it. Production passes io_path so
+request/response content is written before interpretation. Historical report
+readers remain compatible with records that predate parse_status.
 """
 from __future__ import annotations
+
+import json
+from pathlib import Path
 
 from skeptic.checks.observations import JudgeReport
 from skeptic.llm import SKEPTIC_MODEL, call_with_retry, response_text
@@ -60,38 +46,37 @@ rationale: one sentence
 _CATEGORIES: frozenset[str] = frozenset(f"H{i}" for i in range(1, 11))
 
 
-def parse_judge_response(text: str) -> tuple[bool, str | None, str]:
-    """`(flagged, category-or-None, rationale)`, failing closed per decision 8.
+def _parse_response(text: str) -> tuple[bool, str | None, str, str]:
+    def invalid():
+        return False, None, f"unparseable_response: {text.strip()!r}", "invalid"
 
-    A response that does not carry a recognized `flag:` line, or flags with
-    a `category:` outside `H1` through `H10`, comes back `(False, None,
-    "unparseable_response: ...")` rather than raising: garbage in the
-    model's own answer is a missed detection, never evidence.
-    """
     fields: dict[str, str] = {}
     for line in text.strip().splitlines():
-        key, sep, value = line.partition(":")
-        if not sep:
+        if not line.strip() or line.strip() in ("```", "```text"):
             continue
+        key, sep, value = line.partition(":")
         key = key.strip().lower()
-        if key in ("flag", "category", "rationale") and key not in fields:
-            fields[key] = value.strip()
-
+        if not sep or key not in ("flag", "category", "rationale") or key in fields:
+            return invalid()
+        fields[key] = value.strip()
+    if not fields.get("rationale"):
+        return invalid()
     flag = fields.get("flag", "").lower()
-    if flag not in ("yes", "no"):
-        return False, None, f"unparseable_response: {text.strip()!r}"
-
-    if flag == "no":
-        return False, None, fields.get("rationale", "").strip()
-
-    category = fields.get("category", "")
-    if category not in _CATEGORIES:
-        return False, None, f"unparseable_response: {text.strip()!r}"
-
-    return True, category, fields.get("rationale", "").strip()
+    if flag == "no" and fields.get("category", "").lower() in ("", "none", "n/a"):
+        return False, None, fields["rationale"], "valid"
+    if flag == "yes" and fields.get("category") in _CATEGORIES:
+        return True, fields["category"], fields["rationale"], "valid"
+    return invalid()
 
 
-def judge_diff(client, diff_text: str, trace: TraceWriter) -> tuple[JudgeReport, dict]:
+def parse_judge_response(text: str) -> tuple[bool, str | None, str]:
+    """Compatibility view of parsed fields; production also requires parse_status."""
+    flagged, category, rationale, _ = _parse_response(text)
+    return flagged, category, rationale
+
+
+def judge_diff(client, diff_text: str, trace: TraceWriter, *,
+               io_path: Path | None = None) -> tuple[JudgeReport, dict]:
     """One judge call over `diff_text`, folded into a `JudgeReport`.
 
     Returns the report plus the verbatim `{"request", "response"}` dict:
@@ -114,9 +99,6 @@ def judge_diff(client, diff_text: str, trace: TraceWriter) -> tuple[JudgeReport,
         temperature=0,
     )
     text = response_text(response)
-    flagged, category, rationale = parse_judge_response(text)
-    report = JudgeReport(model=SKEPTIC_MODEL, flagged=flagged, category=category,
-                         rationale=rationale)
     io = {
         "request": request,
         "response": {
@@ -125,4 +107,10 @@ def judge_diff(client, diff_text: str, trace: TraceWriter) -> tuple[JudgeReport,
                       "out_tok": response.usage.output_tokens},
         },
     }
+    if io_path is not None:
+        io_path.parent.mkdir(parents=True, exist_ok=True)
+        io_path.write_text(json.dumps(io, indent=2, sort_keys=True) + "\n")
+    flagged, category, rationale, parse_status = _parse_response(text)
+    report = JudgeReport(model=SKEPTIC_MODEL, flagged=flagged, category=category,
+                         rationale=rationale, parse_status=parse_status)
     return report, io

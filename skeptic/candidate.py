@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
+import os
+import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from skeptic.errors import SkepticInfraError
 
@@ -14,18 +18,15 @@ from skeptic.errors import SkepticInfraError
 EXCLUDE_NAMES = frozenset({".sv", ".pytest_cache", "__pycache__"})
 EXCLUDE_GLOBS = ("*.pyc", "*.egg-info", ".skeptic-junit*")
 
-# git diff --no-index honors an in-tree .gitattributes: a Builder can write
-# one line ("*.py -diff") and every changed .py file renders as an opaque
-# `GIT binary patch` instead of a readable hunk. -c core.attributesFile
-# points at the *global* attributes file and does nothing for one committed
-# in a tree (verified empirically 2026-07-26), so the diff is taken from
-# copies with these files removed instead. They must not go invisible: see
-# _control_file_changes below.
+# Unchanged control files are omitted only from temporary diff views. Any
+# candidate change to one is refused before extraction; it is never dropped
+# from an admitted patch. The original baseline retains unchanged controls.
 DIFF_CONTROL_NAMES = frozenset({".gitattributes", ".gitignore"})
 
 
 def _ignored(name: str) -> bool:
-    return name in EXCLUDE_NAMES or any(fnmatch.fnmatch(name, g) for g in EXCLUDE_GLOBS)
+    return name.casefold() in EXCLUDE_NAMES or any(
+        fnmatch.fnmatch(name.casefold(), g) for g in EXCLUDE_GLOBS)
 
 
 def snapshot(workspace: Path, dest: Path) -> None:
@@ -37,57 +38,120 @@ def snapshot(workspace: Path, dest: Path) -> None:
 
 
 def _diff_safe_copy(src: Path, dest: Path) -> None:
-    """Copy `src` to `dest`, dropping runtime residue and diff-control files.
-
-    Used only for the tree that gets handed to `git diff --no-index`: a
-    .gitattributes or .gitignore anywhere in that tree can change how the
-    diff renders (or, with a nonstandard core.excludesFile, what git
-    considers). Neither file is part of the candidate under judgment, and
-    their own changes are reported separately (_control_file_changes).
-
-    symlinks=True on both this copy and snapshot()'s: shutil.copytree
-    defaults to symlinks=False, which dereferences every symlink it copies.
-    A dangling symlink then raises shutil.Error, a directory symlink loop
-    raises after recursing, and a symlink pointing outside the workspace
-    copies the target's content in instead of the link itself (2026-07-26
-    review findings 1 and 2). git diff --no-index records a symlink as a
-    mode-120000 entry showing the link target, never the target's content,
-    which is the behavior this restores. Both calls need it: if only one
-    preserved symlinks, a symlink present in the pristine tree would be
-    dereferenced on one side and not the other, producing a phantom hunk.
-    """
+    """Neutralize in-tree diff controls without dereferencing links."""
     shutil.copytree(
         src, dest, symlinks=True,
         ignore=lambda _dir, names: [
-            n for n in names if _ignored(n) or n in DIFF_CONTROL_NAMES
+            n for n in names if _ignored(n) or n.casefold() in DIFF_CONTROL_NAMES
         ],
     )
 
 
-def _control_file_changes(baseline: Path, workspace: Path) -> list[str]:
-    """Return diff-control files (.gitattributes/.gitignore) that the
-    Builder added, removed, or edited, at any depth in the tree.
+def patch_git_env() -> dict[str, str]:
+    """Patch transport does not inherit repository selection or diff drivers."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG_PARAMETERS", "GIT_ATTR_SOURCE"}
+           and not k.startswith("GIT_CONFIG_")}
+    env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    return env
 
-    These are stripped out of the copy that gets diffed (_diff_safe_copy),
-    so they need a direct byte comparison against the real baseline and
-    workspace to stay visible instead of disappearing from the report.
-    """
-    found: set[str] = set()
-    for root in (baseline, workspace):
-        for p in root.rglob("*"):
-            rel = p.relative_to(root)
-            if p.is_file() and p.name in DIFF_CONTROL_NAMES and not any(
-                _ignored(part) for part in rel.parts
-            ):
-                found.add(str(rel))
-    changed = []
-    for rel in sorted(found):
-        b_path, w_path = baseline / rel, workspace / rel
-        b_bytes = b_path.read_bytes() if b_path.is_file() else None
-        w_bytes = w_path.read_bytes() if w_path.is_file() else None
-        if b_bytes != w_bytes:
-            changed.append(rel)
-    return changed
+
+def _refuse(detail: str) -> None:
+    raise SkepticInfraError(
+        f"Candidate change is unsupported: {detail}. "
+        "Next: submit a complete patch using supported repository-relative files."
+    )
+
+
+def _supported_path(name: str, *, submitted: bool = False) -> None:
+    if (not name or name.startswith("/") or PureWindowsPath(name).drive
+            or any(part.casefold() in ("", ".", "..", ".git") for part in name.split("/"))
+            or not re.fullmatch(r"[A-Za-z0-9_./+@=-]+", name)):
+        _refuse(f"path {name!r} cannot be represented by the diff and coverage readers")
+    if submitted and any(_ignored(part) for part in name.split("/")):
+        _refuse(f"explicit patch touches excluded runtime path {name!r}")
+    if submitted and Path(name).name.casefold() in DIFF_CONTROL_NAMES:
+        _refuse(f"diff-control file {name!r} changed")
+
+
+def validate_submitted_patch(diff: Path) -> None:
+    """Refuse unsupported input before git applies it or runtime filters hide it."""
+    try:
+        data = diff.read_bytes()
+    except OSError as exc:
+        raise SkepticInfraError(f"Cannot read candidate patch {diff}: {exc}. "
+                                "Next: supply a readable patch file.") from exc
+    headers = 0
+    in_hunk = False
+    for line in data.split(b"\n"):
+        if line.startswith(b"diff --git "):
+            headers += 1
+            in_hunk = False
+            parts = line[11:].split(b" ")
+            if len(parts) != 2:
+                _refuse("quoted or whitespace-containing Git filename")
+            for raw in parts:
+                if raw[:2] not in (b"a/", b"b/"):
+                    _refuse("quoted or unrecognized Git filename")
+                try:
+                    name = raw[2:].decode("ascii")
+                except UnicodeDecodeError:
+                    _refuse("non-ASCII Git filename")
+                _supported_path(name, submitted=True)
+        elif line.startswith(b"@@ "):
+            in_hunk = True
+        elif (not in_hunk and line.startswith((b"index ", b"old mode ", b"new mode ",
+                                              b"new file mode ", b"deleted file mode "))
+              and line.endswith(b" 160000")):
+            _refuse("gitlinks/submodules have no supported execution contract")
+    if not headers:
+        _refuse("patch dialect has no Git file headers")
+
+
+def tree_inventory(root: Path, *, ignore_runtime: bool = True) -> dict[str, tuple[str, str]]:
+    """Git-relevant content and modes, read without following symlinks."""
+    entries: dict[str, tuple[str, str]] = {}
+
+    def walk(directory: Path) -> None:
+        for entry in sorted(os.scandir(directory), key=lambda e: e.name):
+            if ignore_runtime and _ignored(entry.name):
+                continue
+            path = Path(entry.path)
+            name = path.relative_to(root).as_posix()
+            if entry.name.casefold() == ".git":
+                _refuse(f"nested repository metadata at {name!r}")
+            mode = entry.stat(follow_symlinks=False).st_mode
+            if stat.S_ISLNK(mode):
+                entries[name] = ("120000", hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest())
+            elif stat.S_ISDIR(mode):
+                walk(path)
+            elif stat.S_ISREG(mode):
+                digest = hashlib.sha256()
+                with path.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(65536), b""):
+                        digest.update(chunk)
+                entries[name] = ("100755" if mode & stat.S_IXUSR else "100644", digest.hexdigest())
+            else:
+                _refuse(f"special file at {name!r}")
+    walk(root)
+    return entries
+
+
+def validate_execution_tree(tree: Path) -> None:
+    """Canonical readers must not follow a candidate link into host authority."""
+    root = tree.resolve(strict=True)
+    for name, (mode, _) in tree_inventory(root, ignore_runtime=False).items():
+        if mode != "120000":
+            continue
+        try:
+            target = (root / name).resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise SkepticInfraError(
+                f"Candidate symlink {name!r} is dangling or unresolvable. "
+                "Next: use contained, resolvable links before evaluation.") from exc
+        if target == root or root not in target.parents:
+            _refuse(f"symlink {name!r} escapes the execution tree")
 
 
 @dataclass(frozen=True)
@@ -98,111 +162,73 @@ class CandidateReport:
     is_empty: bool
 
 
-def _diff_lines(stdout: str) -> list[str]:
-    """`git diff` output split on LF alone, keeping any CR as line content.
-
-    `str.splitlines()` also terminates on a lone CR (and on several Unicode
-    separators), so a CRLF file's lines come back with the CR silently
-    removed. The CR belongs to the line git diffed, and a patch that drops it
-    no longer applies to the file it was taken from.
-    """
-    lines = stdout.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()  # a trailing LF is a terminator, not an empty last line
-    return lines
-
-
 def extract_candidate(
     baseline: Path, workspace: Path, out_diff: Path, allowed_paths: list[str]
 ) -> CandidateReport:
-    # Diffed from copies with .gitattributes/.gitignore removed (see
-    # _diff_safe_copy): a Builder-planted .gitattributes with `*.py -diff`
-    # would otherwise make git render every changed .py file as an opaque
-    # `GIT binary patch` instead of a readable hunk.
+    """Produce a complete supported patch and verify it by independent tree comparison."""
+    before, after = tree_inventory(baseline), tree_inventory(workspace)
+    changed = sorted(name for name in before.keys() | after.keys()
+                     if before.get(name) != after.get(name))
+    for name in changed:
+        _supported_path(name, submitted=True)
     with tempfile.TemporaryDirectory(prefix="skeptic-candidate-") as tmp:
-        clean_baseline = Path(tmp) / "baseline"
-        clean_workspace = Path(tmp) / "workspace"
-        _diff_safe_copy(baseline, clean_baseline)
-        _diff_safe_copy(workspace, clean_workspace)
-        # Bytes, not text=True: universal-newline decoding rewrites a CRLF
-        # file's CRLF to LF, and the CR is part of the line content git diff
-        # renders, so the patch stops matching the tree it came from. See
-        # `_diff_lines` for the other half of the same bug.
-        proc = subprocess.run(
-            ["git", "diff", "--no-index", "--binary", "--no-renames", "--",
-             str(clean_baseline), str(clean_workspace)],
-            capture_output=True, check=False,
-        )
-        stdout = proc.stdout.decode("utf-8", "surrogateescape")
-        stderr = proc.stderr.decode("utf-8", "surrogateescape")
-        # git diff --no-index exits 0 on identical trees, 1 on differences
-        if proc.returncode not in (0, 1):
-            raise SkepticInfraError(
-                f"git diff --no-index failed (exit {proc.returncode}): "
-                f"{stderr[-800:]}\n"
-                f"Skeptic extracts the candidate as a diff of the workspace "
-                f"against its pre-BUILD snapshot. Next: check both directories "
-                f"exist and re-run."
-            )
-        # Rewrite absolute tree prefixes to workspace-relative paths, dropping
-        # excluded entries (git --no-index has no exclude flag of its own).
-        # git strips the leading slash from absolute paths in the headers.
-        # For robustness, detect which root the b-side carries and slice the
-        # correct prefix: compare against str(clean_workspace)[1:] + "/" and
-        # str(clean_baseline)[1:] + "/" to handle deletions where the b-side
-        # uses the baseline path, additions where it uses workspace, and
-        # renames (now delete + add via --no-renames) where paths vary by
-        # file.
-        lines_out: list[str] = []
-        changed: list[str] = []
-        keep = True
+        root = Path(tmp)
+        _diff_safe_copy(baseline, root / "baseline")
+        _diff_safe_copy(workspace, root / "workspace")
+        command = ["git", "-c", "core.quotePath=true", "diff", "--no-index", "--no-renames",
+                   "--no-ext-diff", "--no-textconv"]
 
-        workspace_prefix = str(clean_workspace)[1:] + "/"
-        baseline_prefix = str(clean_baseline)[1:] + "/"
+        def diff(args):
+            result = subprocess.run(command + args + ["--", "baseline", "workspace"],
+                                    cwd=root, env=patch_git_env(), capture_output=True, check=False)
+            if result.returncode not in (0, 1):
+                raise SkepticInfraError(
+                    f"git diff failed: {result.stderr.decode(errors='replace')[-800:]}. "
+                    "Next: inspect the candidate and baseline trees.")
+            return result.stdout
 
-        for line in _diff_lines(stdout):
-            if line.startswith("diff --git "):
-                rel = ""
-                if " b/" in line:
-                    b_part = line.split(" b/", 1)[1]
-                    if b_part.startswith(workspace_prefix):
-                        rel = b_part[len(workspace_prefix):]
-                    elif b_part.startswith(baseline_prefix):
-                        rel = b_part[len(baseline_prefix):]
-                keep = bool(rel) and not any(_ignored(p) for p in Path(rel).parts)
-                if keep:
-                    changed.append(rel)
-            if keep:
-                # Rewrite all combinations of prefixes to relative paths so no
-                # absolute path survives in any header line.
-                rewritten = (
-                    line.replace(f"a{clean_baseline}/", "a/")
-                        .replace(f"a{clean_workspace}/", "a/")
-                        .replace(f"b{clean_baseline}/", "b/")
-                        .replace(f"b{clean_workspace}/", "b/")
-                        .replace(f"a/{baseline_prefix}", "a/")
-                        .replace(f"a/{workspace_prefix}", "a/")
-                        .replace(f"b/{baseline_prefix}", "b/")
-                        .replace(f"b/{workspace_prefix}", "b/")
-                )
-                lines_out.append(rewritten)
-    # Diff-control files are stripped from the copies above (so they can
-    # never corrupt the diff of other files), which also strips them from
-    # `changed`. Fold their own changes back in by direct comparison so a
-    # Builder-planted or edited .gitattributes/.gitignore is still reported,
-    # never silently invisible (2026-07-26 review finding 5).
-    changed = sorted(set(changed) | set(_control_file_changes(baseline, workspace)))
-    text = "\n".join(lines_out) + ("\n" if lines_out else "")
+        # NUL-delimited inventory is independent of textual header rewriting.
+        records = diff(["--raw", "-z"]).split(b"\0")
+        raw_paths: set[str] = set()
+        for index in range(0, len(records) - 1, 2):
+            header, raw = records[index:index + 2]
+            if not header.startswith(b":") or header.split()[-1] not in (b"M", b"A", b"D", b"T"):
+                _refuse("unexpected raw Git change record")
+            name = raw.decode("ascii").split("/", 1)[1]
+            raw_paths.add(name)
+        if raw_paths != set(changed):
+            _refuse("Git change inventory disagrees with the candidate tree")
+
+        normalized: list[bytes] = []
+        headers: set[str] = set()
+        in_hunk = False
+        for line in diff(["--binary"]).split(b"\n"):
+            if line.startswith(b"diff --git "):
+                in_hunk = False
+                parts = line[11:].split(b" ")
+                if len(parts) != 2:
+                    _refuse("unexpected Git file header")
+                headers.add(parts[1].decode("ascii").split("/", 2)[2])
+            if line.startswith(b"@@ "):
+                in_hunk = True
+            if not in_hunk and line.startswith((b"diff --git ", b"--- ", b"+++ ")):
+                for side in (b"a", b"b"):
+                    for source in (b"baseline", b"workspace"):
+                        line = line.replace(side + b"/" + source + b"/", side + b"/")
+            normalized.append(line)
+        if headers != raw_paths:
+            _refuse("normalized patch omits a changed path")
+        data = b"\n".join(normalized)
+        if changed:
+            from skeptic.workspace import _git_apply
+            replay = root / "replayed"
+            snapshot(baseline, replay)
+            temporary_patch = root / "candidate.diff"
+            temporary_patch.write_bytes(data)
+            if _git_apply(replay, temporary_patch) is not None or tree_inventory(replay) != after:
+                _refuse("normalized patch does not reproduce the complete candidate tree")
     out_diff.parent.mkdir(parents=True, exist_ok=True)
-    # newline="" so the CRs carried above reach the file as written, rather
-    # than the platform's line ending being substituted for every "\n".
-    out_diff.write_text(text, newline="")
-    out_of_scope = [
-        f for f in changed
-        if not any(f == p.rstrip("/") or f.startswith(p.rstrip("/") + "/")
-                   for p in allowed_paths)
-    ]
-    return CandidateReport(
-        diff_path=out_diff, changed_files=changed,
-        out_of_scope=sorted(out_of_scope), is_empty=not changed,
-    )
+    out_diff.write_bytes(data)
+    out_of_scope = [f for f in changed if not any(
+        f == p.rstrip("/") or f.startswith(p.rstrip("/") + "/") for p in allowed_paths)]
+    return CandidateReport(out_diff, changed, sorted(out_of_scope), not changed)

@@ -541,3 +541,15 @@ def run_on_a_tty(source: str, argv: list[str] | None = None,
     proc.wait()
     os.close(reader)
     return b"".join(chunks).decode(errors="replace")
+
+
+def verify_cache_key(*args, **kwargs):
+    from skeptic.cli import _verify_cache_key
+    kwargs.setdefault("image_id", "sha256:test-image")
+    return _verify_cache_key(*args, **kwargs)
+
+
+def baseline_cache_key(*args, **kwargs):
+    from skeptic.collector import _baseline_key
+    kwargs.setdefault("image_id", "sha256:test-image")
+    return _baseline_key(*args, **kwargs)

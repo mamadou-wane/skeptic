@@ -156,6 +156,20 @@ def _image_id(spec: TaskSpec, workdir: Path) -> str:
             return image_id
         return None
 
+    # Current VERIFY runs record the image actually executed. Do not replace
+    # that evidence with an unrelated BUILD result or a later tag resolution.
+    observed = set()
+    for path in (workdir / spec.task_id / "verify").glob("*/execution.json"):
+        record = json.loads(path.read_text())
+        if record.get("image_tag") == current_tag and record.get("repo") == spec.repo.model_dump():
+            observed.add(record["image_id"])
+    if len(observed) > 1:
+        raise SkepticInfraError(
+            f"{spec.task_id} executed under multiple image identities. "
+            "Next: report the individual runs separately instead of claiming one task image.")
+    if observed:
+        return observed.pop()
+
     build_dir = workdir / spec.task_id / "build"
     if (image_id := recorded(build_dir / "result.json")) is not None:
         return image_id

@@ -228,42 +228,17 @@ def _baseline_payload(
 
 def _build_cache_key(spec: TaskSpec, model: str, image_id: str, seed_hash: str,
                      attempt: int = 1) -> str:
-    """BUILD stage cache key.
-
-    Every input that shapes the Builder's run, or the first message it reads
-    (problem_statement, allowed_paths, test_cmd), belongs here: a resumed
-    run against an edited spec must get a different key, not silently
-    replay the cached candidate for the old spec (2026-07-26 review finding
-    1). image_id and repo.commit vary independently: the final image holds
-    only the frozen dependency closure and no source, so a commit bump that
-    doesn't touch environment.install can leave image_id unchanged.
-    """
+    """Bind a BUILD result to its execution inputs and green predicate."""
     from skeptic.builder import GREEN_RULE_VERSION, prompt_version
+    from skeptic.run_inputs import execution_identity
     from skeptic.trace import config_hash
 
-    payload = {
-        "stage": "BUILD", "task": spec.task_id, "seed": seed_hash,
-        "model": model, "prompt": prompt_version(),
-        "green_rule": GREEN_RULE_VERSION,
-        "image": image_id,
-        "commit": spec.repo.commit,
-        "constraints": spec.constraints.model_dump(),
-        "builder_input": spec.builder_input.model_dump(),
-        # exclude_none: `environment.constraints` landed in M7 (row 231), and
-        # this key is the one stage key not salted by verifier_revision, so
-        # an undeclared pin must hash exactly as the field's absence did or
-        # every cached BUILD in a live workdir misses and is paid again.
-        "environment": spec.environment.model_dump(exclude_none=True),
-    }
-    if attempt != 1:
-        # Attempt 1 hashes exactly as it did before attempts existed, so
-        # every BUILD already cached in a live workdir still hits. Later
-        # attempts differ only by this key, which is the point: the base
-        # arm's second attempt (and any pressure arm) must not replay
-        # attempt 1. Budgets already live in the key above, so arms that
-        # differ only by budget separate on their own.
-        payload["attempt"] = attempt
-    return config_hash(payload)
+    return config_hash({
+        **execution_identity(spec, image_id), "stage": "BUILD", "task": spec.task_id,
+        "seed_request": seed_hash, "model": model, "prompt": prompt_version(),
+        "green_rule": GREEN_RULE_VERSION, "constraints": spec.constraints.model_dump(),
+        "builder_input": spec.builder_input.model_dump(), "attempt": attempt,
+    })
 
 
 def _build_dir(workdir: Path, task_id: str, attempt: int) -> Path:
@@ -475,6 +450,9 @@ def build(
         repo = clone_pinned(spec.repo.url, spec.repo.commit,
                             workdir / spec.task_id / "repo-cache")
 
+        from skeptic.run_inputs import freeze_inputs
+        spec, _ = freeze_inputs(spec, build_dir, variants=False)
+
         # image first: its context is the pristine export, deleted right after
         pristine = build_dir / "image-context"
         if pristine.exists():
@@ -503,7 +481,7 @@ def build(
         def do_build() -> dict:
             import anthropic
             client = anthropic.Anthropic()
-            with SessionContainer(image.tag, seeded, ro_subpaths=ro) as session:
+            with SessionContainer(image.image_id, seeded, ro_subpaths=ro) as session:
                 # The baseline runs after the overlay install and before the
                 # Builder's first tool call (row 74). Position here is the
                 # only thing enforcing the second half.
@@ -531,6 +509,7 @@ def build(
                 baseline_tree, seeded, build_dir / "candidate.diff",
                 allowed_paths=spec.builder_input.allowed_paths)
             return {
+                "_cache_artifacts": [str(report.diff_path)],
                 "stop_reason": result.stop_reason, "iterations": result.iterations,
                 "in_tokens": result.in_tokens, "out_tokens": result.out_tokens,
                 "usd": round(result.usd, 4), "green": result.green,
@@ -570,7 +549,8 @@ def build(
                             outcome.get("baseline_total"),
                             outcome.get("baseline_collection_errors")),
                             "cached": True})
-        (build_dir / "result.json").write_text(json.dumps(outcome, indent=2) + "\n")
+        public_outcome = {k: v for k, v in outcome.items() if not k.startswith("_cache_")}
+        (build_dir / "result.json").write_text(json.dumps(public_outcome, indent=2) + "\n")
         typer.echo(f"stop: {outcome['stop_reason']} · iterations: "
                    f"{outcome['iterations']} · green: "
                    f"{outcome.get('green')} · cost: ${outcome['usd']:.2f} + "
@@ -907,90 +887,20 @@ def build_arm(
 
 def _verify_cache_key(
     spec: TaskSpec, variant: VariantSpec | None, profile: str,
-    *, candidate_diff: Path | None = None, identity: str | None = None,
+    *, image_id: str, candidate_diff: Path | None = None, identity: str | None = None,
 ) -> str:
-    """VERIFY stage cache key.
-
-    Every input that shapes an observation or a check belongs here: the
-    variant patch bytes (so a byte-identical patch under a different path
-    collides, and one edited byte does not), the whole seed sub-spec
-    (`spec.seed.model_dump()`, with `bug_patch` swapped for its sha256 so the
-    same bytes-not-path rule applies there too) since `t1_outcomes` reads
-    `failing_tests`/`quarantine` directly for `fix_verified` and every
-    flip/regression rule and `t1_collect` reads `quarantine` as well,
-    `repo.commit` and `environment` (which together determine the image tag,
-    so the key needs no `image_id` of its own), `builder_input`
-    (`allowed_paths` shapes `t1_scope`), `verification` (check configs,
-    budgets, seeds), `verifier_revision()`, and `profile`: the paid profile
-    runs two more checks over the same pair (wave B, task 9), so a cached
-    deterministic verdict must never serve a `--profile paid` request, and
-    vice versa. `profile` has no default (review round 1, finding 2): every
-    caller has to say which lane it means, on purpose, because a default
-    that silently answered `"deterministic"` is exactly the shape that lets
-    a future caller forget to pass the live profile and mis-key a paid run
-    into the deterministic bucket without ever raising.
-
-    `variant` and `candidate_diff` are mutually exclusive, the same as
-    `verify`'s own `--variant`/`--candidate-diff` options: exactly one caller
-    supplies the id/patch pair, the other supplies the diff path whose bytes
-    stand in for it. A candidate-diff run has no corpus variant id, so its
-    `variant` ingredient is `candidate:<diff stem>@<sha8>` (matching the
-    `identity` `verify` stamps into the verdict and the trace; review finding
-    2 added the `@<sha8>` suffix, the diff's own sha256 truncated to 8 hex
-    digits, since build-arm writes `candidate.diff` for every attempt and the
-    stem alone would give every attempt of a task the same `variant`
-    ingredient) and its `variant_patch` ingredient is the diff's own full
-    sha256 rather than a yaml variant's patch sha256: two different diffs
-    land two cache entries, and the same diff bytes replay, task 2b's whole
-    point (the diff, not its path, is what the key needs to change on, same
-    as the variant patch case above). The cache key's own uniqueness never
-    depended on the `@<sha8>` suffix (`variant_patch` already carries the
-    full hash), so this addition changes no cached entry's identity, only
-    what a reader sees in the `variant` field of the hashed payload.
-
-    `verify --diff` rides the same candidate-diff ingredients, since the
-    audited patch is a diff whose bytes stand in for a variant, and passes
-    `identity` so the `variant` slot reads `diff:<sha8>`: the file a caller
-    points `--diff` at has no meaningful stem to name a lane with. Its spec
-    seeds nothing, so the `seed` slot carries the literal "none" instead of
-    a patch file's sha256, which is what keeps a seeded run and a seedless
-    one at the same task id in separate entries.
-
-    `verify --variant-patch <id>:<path>` rides them too, and passes its own
-    `identity` so the `variant` slot reads the registry id rather than a
-    stem-derived one. A holdout patch is a diff over the seeded tree, exactly
-    what `--candidate-diff` applies, so keying on its bytes is already right;
-    only the name a reader sees differs.
-
-    This is the VERIFY half of the two-key design (plan decision 5); the other
-    half is `skeptic.collector.collect_pair`'s `baseline_cache`, keyed on
-    `COLLECTOR_VERSION`. The two age differently on purpose: a detector edit
-    moves `verifier_revision()` and re-verdicts every cached pair with no
-    re-collection, while a collector behavior change never touches this key
-    and needs `COLLECTOR_VERSION` bumped by hand to invalidate a baseline
-    cached under the old behavior.
-    """
-    from skeptic.orchestrator import verifier_revision
+    """The complete current-contract VERIFY identity; image resolution precedes lookup."""
+    from skeptic.run_inputs import clean_reference_identity, execution_identity, file_hash
     from skeptic.trace import config_hash
 
-    if variant is not None:
-        variant_id = variant.id
-        variant_patch = hashlib.sha256(Path(variant.patch).read_bytes()).hexdigest()
-    else:
-        variant_patch = hashlib.sha256(Path(candidate_diff).read_bytes()).hexdigest()
-        variant_id = identity or f"candidate:{candidate_diff.stem}@{variant_patch[:8]}"
-    seed_patch = ("none" if spec.seed.bug_patch is None
-                  else hashlib.sha256(Path(spec.seed.bug_patch).read_bytes()).hexdigest())
+    patch = variant.patch if variant is not None else candidate_diff
+    variant_id = variant.id if variant is not None else (identity or "candidate")
     return config_hash({
-        "stage": "VERIFY", "task": spec.task_id, "variant": variant_id,
-        "variant_patch": variant_patch,
-        "seed": {**spec.seed.model_dump(), "bug_patch": seed_patch},
-        "commit": spec.repo.commit,
-        "environment": spec.environment.model_dump(exclude_none=True),
+        **execution_identity(spec, image_id), "stage": "VERIFY", "task": spec.task_id,
+        "variant": variant_id, "variant_patch": file_hash(patch), "profile": profile,
         "builder_input": spec.builder_input.model_dump(),
         "verification": spec.verification.model_dump(),
-        "verifier_revision": verifier_revision(),
-        "profile": profile,
+        "clean_references": clean_reference_identity(spec) if profile == "paid" else [],
     })
 
 
@@ -1076,7 +986,7 @@ def verify(
         resolve_base,
         synthesize_spec,
     )
-    from skeptic.image import repo_image_tag, tag_slug
+    from skeptic.image import tag_slug
     from skeptic.mutation import FULL_SUITE, generate_mutants, sample_mutants, select_tests
     from skeptic.orchestrator import StageCache, run_stage
     from skeptic.render import render_verdict
@@ -1181,6 +1091,7 @@ def verify(
 
         workdir = workdir.resolve()
         variant_spec: VariantSpec | None = None
+        submitted_bytes: bytes | None = None
         if diff is not None:
             # Everything a corpus yaml would have carried is synthesized
             # from the repo itself, and all of it happens ahead of the
@@ -1189,7 +1100,8 @@ def verify(
             # directory costs a second here rather than an image build.
             assert_working_clone(repo)
             base_sha = resolve_base(repo, base)
-            diff_sha = hashlib.sha256(read_diff(diff)).hexdigest()
+            submitted_bytes = read_diff(diff)
+            diff_sha = hashlib.sha256(submitted_bytes).hexdigest()
             repo_path = repo.resolve()
             # The diff lane has no task id to hang a directory off, so its
             # runs live under `workdir/diff/` and share one baseline cache
@@ -1284,7 +1196,7 @@ def verify(
                     )
                     raise typer.Exit(EXIT_INFRA)
                 try:
-                    candidate_diff.read_bytes()  # a probe: the bytes are hashed later
+                    submitted_bytes = candidate_diff.read_bytes()
                 except OSError as exc:
                     typer.echo(
                         f"Could not read patch at {candidate_diff}: {exc}. "
@@ -1308,6 +1220,7 @@ def verify(
                     raise typer.Exit(EXIT_INFRA)
                 try:
                     diff_bytes = candidate_diff.read_bytes()
+                    submitted_bytes = diff_bytes
                 except OSError as exc:
                     typer.echo(
                         f"Could not read candidate diff at {candidate_diff}: {exc}. "
@@ -1415,56 +1328,76 @@ def verify(
         # full sha256 through `variant_patch`, so this changes what a reader
         # sees in the hashed payload, never which runs collide.
         named_identity = diff is not None or variant_patch is not None
-        cache_key = _verify_cache_key(spec, variant_spec, profile,
+        from skeptic.candidate import validate_submitted_patch
+        from skeptic.image import ensure_repo_image
+        from skeptic.run_inputs import capture_bytes, freeze_inputs
+        selected_id = variant_spec.id if variant_spec is not None else None
+        spec, input_root = freeze_inputs(spec, verify_dir)
+        if selected_id is not None:
+            variant_spec = next(v for v in spec.evaluation.variants if v.id == selected_id)
+        else:
+            if submitted_bytes is None:
+                raise SkepticInfraError("No candidate bytes were captured. "
+                                        "Next: supply a readable candidate patch.")
+            candidate_diff = capture_bytes(submitted_bytes, input_root, "submitted.diff")
+            if diff is not None:
+                diff = candidate_diff
+        validate_submitted_patch(Path(variant_spec.patch) if variant_spec else candidate_diff)
+        # The diff lane reads the caller's own clone directly. Its base
+        # commit may sit on no branch at all (a PR head, a detached
+        # HEAD), and `clone_pinned`'s recovery fetch only updates
+        # refs/heads/*, so a second audit at such a commit would be
+        # refused by a message about fixing repo.commit in a task spec
+        # that does not exist. Every read of this path is `git archive
+        # <commit>` (`materialize`), which ignores the working tree and
+        # writes nothing, and `assert_no_git` still guards the export.
+        repo_dir = (Path(spec.repo.url) if diff is not None
+                    else clone_pinned(spec.repo.url, spec.repo.commit,
+                                      task_root / "repo-cache"))
+        seeded = verify_dir / "seeded"
+        variant_tree = verify_dir / "variant-tree"
+        for stale in (seeded, variant_tree):
+            if stale.exists():
+                shutil.rmtree(stale)
+        materialize(repo_dir, spec.repo.commit, seeded)
+        # A --diff spec seeds nothing: `seeded` here is the pristine
+        # tree at the audited base commit, which is the baseline the
+        # candidate is compared against.
+        if spec.seed.bug_patch is not None:
+            apply_patch(seeded, Path(spec.seed.bug_patch))
+        snapshot(seeded, variant_tree)
+        if variant_spec is not None:
+            apply_patch(variant_tree, Path(variant_spec.patch))
+        elif diff is not None:
+            # The audited patch is the caller's own, so a failure here is
+            # a patch taken against another commit, never a harness bug:
+            # `apply_candidate`'s advice is wrong for this lane.
+            apply_audited_diff(variant_tree, diff, spec.repo.url, spec.repo.commit)
+        else:
+            # A --variant-patch run's patch is hand-authored (M6's blind
+            # holdout), not extracted from a workspace this harness built,
+            # so its apply-failure advice points at the patch rather than
+            # at a harness bug.
+            apply_candidate(variant_tree, candidate_diff,
+                            authored=variant_patch is not None)
+
+        report = extract_candidate(
+            seeded, variant_tree, verify_dir / "candidate.diff",
+            allowed_paths=spec.builder_input.allowed_paths)
+        image_context = verify_dir / "image-context"
+        if image_context.exists():
+            shutil.rmtree(image_context)
+        materialize(repo_dir, spec.repo.commit, image_context)
+        image = ensure_repo_image(spec, image_context, verify_dir / "image")
+        shutil.rmtree(image_context)
+        cache_key = _verify_cache_key(spec, variant_spec, profile, image_id=image.image_id,
                                       candidate_diff=candidate_diff,
                                       identity=identity if named_identity else None)
 
         def do_verify() -> dict:
-            # The diff lane reads the caller's own clone directly. Its base
-            # commit may sit on no branch at all (a PR head, a detached
-            # HEAD), and `clone_pinned`'s recovery fetch only updates
-            # refs/heads/*, so a second audit at such a commit would be
-            # refused by a message about fixing repo.commit in a task spec
-            # that does not exist. Every read of this path is `git archive
-            # <commit>` (`materialize`), which ignores the working tree and
-            # writes nothing, and `assert_no_git` still guards the export.
-            repo_dir = (Path(spec.repo.url) if diff is not None
-                        else clone_pinned(spec.repo.url, spec.repo.commit,
-                                          task_root / "repo-cache"))
-            seeded = verify_dir / "seeded"
-            variant_tree = verify_dir / "variant-tree"
-            for stale in (seeded, variant_tree):
-                if stale.exists():
-                    shutil.rmtree(stale)
-            materialize(repo_dir, spec.repo.commit, seeded)
-            # A --diff spec seeds nothing: `seeded` here is the pristine
-            # tree at the audited base commit, which is the baseline the
-            # candidate is compared against.
-            if spec.seed.bug_patch is not None:
-                apply_patch(seeded, Path(spec.seed.bug_patch))
-            snapshot(seeded, variant_tree)
-            if variant_spec is not None:
-                apply_patch(variant_tree, Path(variant_spec.patch))
-            elif diff is not None:
-                # The audited patch is the caller's own, so a failure here is
-                # a patch taken against another commit, never a harness bug:
-                # `apply_candidate`'s advice is wrong for this lane.
-                apply_audited_diff(variant_tree, diff, spec.repo.url, spec.repo.commit)
-            else:
-                # A --variant-patch run's patch is hand-authored (M6's blind
-                # holdout), not extracted from a workspace this harness built,
-                # so its apply-failure advice points at the patch rather than
-                # at a harness bug.
-                apply_candidate(variant_tree, candidate_diff,
-                                authored=variant_patch is not None)
-
-            report = extract_candidate(
-                seeded, variant_tree, verify_dir / "candidate.diff",
-                allowed_paths=spec.builder_input.allowed_paths)
-
             pair = collect_pair(
                 spec, repo_dir, report, verify_dir / "collect",
-                baseline_cache=task_root / "baseline-cache")
+                baseline_cache=task_root / "baseline-cache", image=image)
 
             # Mutation enrichment: generate -> sample -> select per mutant ->
             # execute, then fold the report onto the candidate side. Isolated
@@ -1494,7 +1427,7 @@ def verify(
                             mutant.path, mutant.line)
                 mutation_started = time.monotonic()
                 mutation_report = observe_mutation(
-                    spec, repo_image_tag(spec), pair.candidate.tree,
+                    spec, image.image_id, pair.candidate.tree,
                     pair.artifacts_dir / "mutation", sampled, selections)
                 for record in mutation_report.records:
                     trace.event(
@@ -1530,7 +1463,7 @@ def verify(
             try:
                 probe_started = time.monotonic()
                 probe_report = observe_probe(
-                    spec, repo_image_tag(spec), pair.candidate.tree,
+                    spec, image.image_id, pair.candidate.tree,
                     pair.artifacts_dir / "probe")
                 trace.event(
                     stage="VERIFY", actor="checks.t2_probe", event="probe_batch",
@@ -1631,7 +1564,7 @@ def verify(
                         json.dumps(testgen_io, indent=2, sort_keys=True) + "\n")
                     advtests_started = time.monotonic()
                     advtests_report = observe_advtests(
-                        spec, repo_image_tag(spec), repo_dir, pair,
+                        spec, image.image_id, repo_dir, pair,
                         pair.artifacts_dir / "advtests", candidates,
                         model=SKEPTIC_MODEL, regression_probes=bool(guards))
                     trace.event(
@@ -1657,7 +1590,9 @@ def verify(
 
                         client = anthropic.Anthropic()
                     diff_text = read_source(pair.candidate_diff.diff_path)
-                    judge_report, judge_io = judge_diff(client, diff_text, trace)
+                    judge_report, judge_io = judge_diff(
+                        client, diff_text, trace,
+                        io_path=pair.artifacts_dir / "t2_judge_io.json")
                     # Persisted before the fold: judge_diff's own docstring
                     # states the returned io dict (verbatim request and
                     # response) as its artifact contract, and JudgeReport
@@ -1686,8 +1621,18 @@ def verify(
                 run_id=trace.run_id, task_id=spec.task_id,
                 variant=identity, isolation="docker-run",
                 profile=profile)
+            roots = [pair.baseline.artifacts, pair.candidate.artifacts]
+            roots += [pair.artifacts_dir / name for name in ("mutation", "probe", "advtests")]
+            required = {str(p) for root in roots if root.is_dir() for p in root.rglob("*")
+                        if p.is_file() and not p.is_symlink()}
+            required.update(str(p) for p in pair.artifacts_dir.glob("*.json")
+                            if p.name != "verdict.json")
+            required.add(str(report.diff_path))
             return {
                 **verdict.model_dump(),
+                "_cache_artifacts": sorted(required),
+                "_execution": {"image_id": image.image_id, "image_tag": image.tag,
+                               "input_identity": cache_key, "repo": spec.repo.model_dump()},
                 "fix_verified": fix_verified,
                 "artifacts_dir": str(pair.artifacts_dir),
             }
@@ -1702,12 +1647,16 @@ def verify(
         # outside the cache, as scratch space). This is build's
         # unconditional result.json write, generalized to VERIFY's shape.
         verdict_payload = {k: v for k, v in outcome.items()
-                           if k not in ("fix_verified", "artifacts_dir")}
+                           if k not in ("fix_verified", "artifacts_dir", "_execution")
+                           and not k.startswith("_cache_")}
         verdict = Verdict.model_validate(verdict_payload)
         artifacts_dir = Path(outcome["artifacts_dir"])
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         (artifacts_dir / "verdict.json").write_text(
             json.dumps(verdict_payload, indent=2, sort_keys=True) + "\n")
+        if "_execution" in outcome:
+            (verify_dir / "execution.json").write_text(
+                json.dumps(outcome["_execution"], sort_keys=True, indent=2) + "\n")
         render_verdict(verdict, fix_verified=outcome["fix_verified"],
                        cached=cache_hit)
         raise typer.Exit(exit_code(verdict))

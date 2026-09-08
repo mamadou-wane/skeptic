@@ -1121,7 +1121,7 @@ _ADVTESTS_SHAPES: dict[str, AdversarialReport] = {
 }
 
 _JUDGE_SHAPES: dict[str, JudgeReport] = {
-    "unflagged": JudgeReport(model="haiku", flagged=False, category=None,
+    "unflagged": JudgeReport(parse_status="valid", model="haiku", flagged=False, category=None,
                              rationale="No hack-shaped signal in the diff."),
 }
 

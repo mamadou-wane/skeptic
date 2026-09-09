@@ -93,50 +93,101 @@ def _is_na_stub(path: Path) -> bool:
     return isinstance(payload, dict) and payload.get("status") == "not_applicable"
 
 
-def snapshot_run(verify_dir: Path, dest: Path, exit_code: int = 0) -> dict:
-    dest.mkdir(parents=True, exist_ok=True)
-    artifacts = verify_dir / "collect" / "artifacts"
-    for name in SNAPSHOT_ARTIFACTS:
-        src = artifacts / name
-        if src.is_file() and not _is_na_stub(src):
-            shutil.copy2(src, dest / name)
-    trace = verify_dir / "trace.jsonl"
-    replayed = False
-    if trace.is_file():
-        shutil.copy2(trace, dest / "trace.jsonl")
-        events, _ = read_trace(trace)
-        replayed = any(e.get("event") == "stage_cached" for e in events)
-    prev = verify_dir / "trace.prev.jsonl"
-    if replayed and prev.is_file():
-        # a cache hit's fresh trace carries no llm_call/stage_end events;
-        # the originating run's live in the rotated file
-        shutil.copy2(prev, dest / "trace.prev.jsonl")
-    meta = {"exit_code": exit_code, "replayed": replayed,
-            "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
-    (dest / "meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
-    return meta
+def snapshot_run(verify_dir: Path, dest: Path, exit_code: int = 0, *,
+                 defer_evidence: bool = False) -> dict:
+    from skeptic.evidence_bundle import export_errors
+    with export_errors():
+        from skeptic.evidence_bundle import PLAN
+        plan_path = verify_dir / PLAN
+        plan = json.loads(plan_path.read_text()) if plan_path.is_file() else None
+        if plan is not None and (dest.exists() or dest.is_symlink()):
+            raise SkepticInfraError("Evidence snapshot already exists. Next: use a fresh export directory.")
+        dest.mkdir(parents=True, exist_ok=True)
+        trace = verify_dir / "trace.jsonl"
+        replayed = False
+        if trace.is_file():
+            shutil.copy2(trace, dest / "trace.jsonl")
+            events, _ = read_trace(trace)
+            replayed = any(e.get("event") == "stage_cached" for e in events)
+        meta = {"exit_code": exit_code, "replayed": replayed,
+                "ts": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if plan is not None:
+            meta["evidence_version"] = 1
+            meta["evidence_index_sha256"] = None
+        (dest / "meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+        artifacts = verify_dir / "collect/artifacts"
+        for name in SNAPSHOT_ARTIFACTS:
+            source = artifacts / name
+            if (plan is None or plan["status"] == "complete") and source.is_file() and not _is_na_stub(source):
+                shutil.copy2(source, dest/name)
+        prev = verify_dir / "trace.prev.jsonl"
+        if replayed and prev.is_file():
+            shutil.copy2(prev, dest / "trace.prev.jsonl")
+        if plan is not None and not defer_evidence:
+            finalize_snapshot(verify_dir, dest)
+            meta = json.loads((dest / "meta.json").read_text())
+        return meta
 
+def finalize_snapshot(run: Path, dest: Path, *, extra_plan: Path | None = None) -> None:
+    """Commit the evidence index after the arm classification, if any, exists."""
+    from skeptic.evidence_bundle import export_errors
+    with export_errors():
+        from skeptic.evidence_bundle import PLAN, export_bundle, source_plan
+        from skeptic.orchestrator import publish_cache_record
+        if not (run/PLAN).is_file():
+            return  # Existing legacy records remain readable, never upgraded by inference.
+        plan = json.loads((run/PLAN).read_text())
+        meta = json.loads((dest/'meta.json').read_text())
+        if meta['exit_code'] != 3 and plan['status'] != 'complete':
+            raise SkepticInfraError("Decision evidence is incomplete. Next: inspect the run before exporting it.")
+        if extra_plan is not None:
+            extra = json.loads(extra_plan.read_text())
+            plan = {**plan, 'files': {**plan['files'], **{
+                f'acceptance/{name}': entry for name,entry in extra['files'].items()}}}
+            if extra['status'] != 'complete':
+                plan['status'] = 'incomplete'
+        files = {}
+        for name in (*SNAPSHOT_ARTIFACTS, 'trace.jsonl', 'trace.prev.jsonl', 'classification.json', 'result.json', 'candidate.diff'):
+            if (dest/name).is_file():
+                files[name] = dest/name
+        if plan['status'] == 'complete':
+            for name in ('execution.json','result.json'):
+                if (run/name).is_file():
+                    files[name] = run/name
+        if (dest/'classification.json').is_file():
+            classification = json.loads((dest/'classification.json').read_text())['classification']
+            if classification == 'INFRA_ERROR':
+                meta['build_exit_code'] = meta['exit_code']
+                meta['exit_code'] = 3
+        if plan['status'] != 'complete' and meta['exit_code'] != 3:
+            raise SkepticInfraError("Classification evidence is incomplete. Next: inspect acceptance records before exporting.")
+        trace_path = dest / 'trace.jsonl'
+        if trace_path.is_file():
+            for event in read_trace(trace_path)[0]:
+                if event.get('event') == 'model_record':
+                    from skeptic.orchestrator import artifact_digest
+                    record_path = run / event['payload']['path']
+                    if artifact_digest(record_path) != event['payload']['sha256']:
+                        raise SkepticInfraError("Model evidence changed. Next: preserve the original records before exporting.")
+                    files[f'model/{record_path.name}'] = record_path
+        additions = source_plan(files)['files']
+        for name, entry in additions.items():
+            if name in plan['files'] and entry['sha256'] != plan['files'][name]['sha256']:
+                raise SkepticInfraError("Summary differs from the recorded decision evidence. Next: restore the original artifact before exporting.")
+        plan = {**plan, 'files': {**plan['files'], **additions},
+                'summaries': sorted(name for name in files if (dest/name).is_file()),
+                'metadata': {k:v for k,v in meta.items() if k != 'evidence_index_sha256'}}
+        export_bundle(plan, dest/'evidence')
+        meta['evidence_index_sha256'] = hashlib.sha256((dest/'evidence/index.json').read_bytes()).hexdigest()
+        publish_cache_record(dest/'meta.json', meta)
 
 def _image_id(spec: TaskSpec, workdir: Path) -> str:
-    """`workdir/<task>/build/result.json`'s `image_id` when a BUILD run left
-    one AND its recorded `image_tag` still matches this spec's computed tag;
-    else the highest-numbered `build/attempt-*/result.json`'s (task 15:
-    attempts above 1 build in their own directory, and any attempt's
-    image_id is an equally valid answer since the BUILD cache key's `image`
-    field carries no attempt of its own, so "highest-numbered" just picks
-    the most recently built one); else the digest the daemon resolves this
-    spec's computed tag to; else that tag: a task that was only ever seeded
-    and verified (never built) still gets a real, reproducible id.
+    """Prefer the matching image actually executed by current VERIFY records.
 
-    The daemon is asked because a tag alone is not a lock. `recorded` is right
-    to refuse a digest no `image_tag` vouches for, but every `result.json`
-    written before that key existed trips it, and the fallback then published
-    a mutable tag as the provenance of a frozen run. Resolving the tag names
-    the closure that actually ran, since the sweep drove that same tag on this
-    same daemon minutes earlier. It reads the daemon at manifest time rather
-    than at run time, so a rebuild of the tag mid-sweep would be recorded as
-    the new digest; that window is narrow and a bare tag is weaker in every
-    case."""
+    Legacy records fall back to a matching BUILD identity or live tag lookup.
+    That fallback is historical provenance, not proof of the image an older
+    execution used. Conflicting current execution identities are refused.
+    """
     current_tag = repo_image_tag(spec)
 
     def recorded(path: Path) -> str | None:
@@ -470,9 +521,14 @@ def load_rows(
         for variant_dir in sorted(p for p in task_dir.iterdir() if p.is_dir()):
             verdict_path = variant_dir / "verdict.json"
             meta_path = variant_dir / "meta.json"
+            if (variant_dir/"evidence").exists() and not meta_path.is_file():
+                raise SkepticInfraError("Partial evidence snapshot has no metadata. Next: export to a fresh directory.")
             if not verdict_path.is_file() and not meta_path.is_file():
                 continue  # not a snapshot
 
+            if meta_path.is_file():
+                from skeptic.evidence_bundle import validate_snapshot
+                validate_snapshot(variant_dir)
             verdict_data = json.loads(verdict_path.read_text()) if verdict_path.is_file() else {}
             verdict = verdict_data.get("verdict")
             suspect_score = verdict_data.get("suspect_score", 0.0)
@@ -508,7 +564,7 @@ def load_rows(
             meta = json.loads(meta_path.read_text()) if meta_path.is_file() else {}
             replayed = meta.get("replayed", False)
 
-            # An INFRA exit means the artifacts in this snapshot may belong to
+            # Legacy INFRA snapshots may contain artifacts that belong to
             # a previous run of the same pair (snapshot_run copies whatever
             # collect/artifacts/ holds, and nothing clears it between drives).
             # Drop every field sourced from a verdict-shaped snapshot file
@@ -522,7 +578,10 @@ def load_rows(
 
             prev_path = variant_dir / "trace.prev.jsonl"
             trace_path = variant_dir / "trace.jsonl"
-            if replayed and prev_path.is_file():
+            origin_path = variant_dir / "evidence/origin-trace.jsonl"
+            if replayed and origin_path.is_file():
+                events, _ = read_trace(origin_path)
+            elif replayed and prev_path.is_file():
                 events, _ = read_trace(prev_path)
             elif trace_path.is_file():
                 events, _ = read_trace(trace_path)
@@ -1143,6 +1202,9 @@ def load_arm_rows(arm_dir: Path) -> list[AttemptRow]:
         attempt_dirs = sorted(task_dir.glob("attempt-*"),
                               key=lambda p: int(p.name.removeprefix("attempt-")))
         for attempt_dir in attempt_dirs:
+            if (attempt_dir/'meta.json').is_file():
+                from skeptic.evidence_bundle import validate_snapshot
+                validate_snapshot(attempt_dir)
             path = attempt_dir / "classification.json"
             if not path.is_file():
                 continue

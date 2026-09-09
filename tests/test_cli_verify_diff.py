@@ -588,6 +588,29 @@ def test_verify_diff_audits_a_plain_clone_end_to_end(tmp_path):
     assert saved["task_id"] == run_dirs[0].name
     assert saved["variant"].startswith("diff:")
 
+    # A portable export must survive cleanup, including two successive cache
+    # hits that otherwise rotate away the originating stage trace.
+    for _ in range(2):
+        replay = runner.invoke(app, ["verify", "--diff", str(patch), "--repo", str(repo),
+                                     "--workdir", str(workdir)])
+        assert replay.exit_code == 0, replay.output
+        assert "cached" in replay.output
+    from skeptic.evalkit import snapshot_run
+    from skeptic.evidence_bundle import validate_snapshot
+    exported = tmp_path / "export"
+    snapshot_run(run_dirs[0], exported, exit_code=0)
+    shutil.rmtree(workdir)
+    validate_snapshot(exported)
+    index = json.loads((exported / "evidence/index.json").read_text())
+    assert "baseline/junit.xml" in index["files"]
+    assert "candidate/junit.xml" in index["files"]
+    assert "inputs/evaluator.json" in index["files"]
+    assert "image/constraints.txt" in index["files"]
+    assert (exported / "evidence/candidate.diff").read_bytes() == patch.read_bytes()
+    original = [json.loads(line) for line in
+                (exported / "evidence/origin-trace.jsonl").read_text().splitlines()]
+    assert any(event["event"] == "stage_end" for event in original)
+
 
 @pytest.mark.docker
 @pytest.mark.slow

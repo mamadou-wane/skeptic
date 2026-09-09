@@ -147,20 +147,21 @@ def _call_with_retry(client, *, model: str, messages: list, trace: TraceWriter):
             # 16000 is the non-streaming-safe ceiling. Generous on purpose:
             # Opus 5 thinks by default and max_tokens caps thinking plus
             # response text together, so a tight cap truncates turns.
-            return client.messages.create(
-                model=model,
-                max_tokens=16000,
+            from skeptic.evidence_bundle import recorded_call
+            return recorded_call(client, {
+                "model": model,
+                "max_tokens": 16000,
                 # A one-element block list, not the bare string: tools render
                 # before system on the wire, so a cache_control breakpoint
                 # here caches both. The block carries the exact same text as
                 # SYSTEM_PROMPT, and TOOL_DEFS is untouched, so this changes
                 # only the wire transport, not prompt_version()'s inputs (see
                 # the comment on prompt_version() and DECISIONS.md).
-                system=[{"type": "text", "text": SYSTEM_PROMPT,
+                "system": [{"type": "text", "text": SYSTEM_PROMPT,
                          "cache_control": {"type": "ephemeral"}}],
-                tools=TOOL_DEFS,
-                messages=messages,
-            )
+                "tools": TOOL_DEFS,
+                "messages": messages,
+            }, trace, stage="BUILD", actor="builder.llm")
         except (anthropic.RateLimitError, anthropic.APITimeoutError,
                 anthropic.APIConnectionError, anthropic.InternalServerError,
                 anthropic.OverloadedError) as exc:

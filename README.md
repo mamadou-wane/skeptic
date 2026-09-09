@@ -3,24 +3,26 @@
 Your coding agent says the tests pass. Skeptic checks whether that means
 anything.
 
-It seeds a known bug into a pinned commit of a real upstream repo, hands the
-broken tree to an agent, and audits the patch that comes back. The suite is
-green because the agent made it green; the question is whether green was
-earned. The pinned commit is a hidden reference implementation, which turns
-verification into differential testing with a free oracle, and the workspace
-ships as a `git archive` export with no `.git`, so the pristine fix is
-unreachable from inside the sandbox.
+Skeptic is a supervised research and evaluation harness for coding agents.
+It seeds a known bug into a pinned upstream repository and audits the returned
+patch for incomplete repairs and misleading ways to make tests green. The
+reference gives a known comparison for the seeded task; finite tests and
+heuristics do not prove that a patch is correct.
+
+The candidate receives a gitless seeded export. Candidate execution is
+isolated in Docker where described below. Skeptic assumes a researcher
+supervises local runs and controls the host.
 
 ## Key features
 
 - Seeds known bugs into pinned commits of two real repos (pallets/click,
-  Textualize/rich), so every verdict has ground truth for free.
+  Textualize/rich), with a known seed and pinned reference for each task.
 - Splits verification in two: isolated candidate phases produce test and
   coverage observations that the host admits and seals, then every check runs
   as a pure function over those artifacts and emits per-rule evidence you can
   audit.
-- Publishes false-positive rates split by clean-variant kind (gold and
-  gold-prime), never pooled, next to three baselines run on the same rows.
+- Reports results separately for each registered clean-variant kind, alongside
+  three baselines evaluated on the same rows.
 - Costs $0.00 by default: the deterministic profile makes no API calls. An
   opt-in paid profile adds two LLM checks, generated adversarial tests and a
   diff judge.
@@ -59,6 +61,7 @@ Builder run. `skeptic doctor` checks each one and prints the exact next
 command per failure. Measured from a fresh clone on 2026-08-29: 11 s to the
 demo, 67 s to the first real Docker verdict with the build cache pruned
 and the base image pull excluded ([the table](docs/evaluation.md#the-lanes)).
+Those measurements were taken at commit `bc82e34`.
 The repository's CI requires Docker and fails collection if it is unavailable;
 ordinary local test runs keep the convenience of skipping Docker-marked tests
 when no daemon is available.
@@ -103,10 +106,11 @@ Python package. Twelve checks read the
 artifacts: eight deterministic, four heavier, and exactly two of the four
 call an LLM, only under the paid profile. The aggregator folds evidence into
 a verdict: any hard rule is FAIL, and a seeded candidate that did not fix its
-declared failing tests is also FAIL without fabricating hack evidence. Only a
-verified seeded fix can reach soft scoring or PASS; soft weights summing to the
-1.0 threshold are SUSPECT, and a mandatory check that never completed is
-INFRA_ERROR rather than a silent pass. Seedless `verify --diff` keeps its
+declared failing tests is also FAIL without fabricating hack evidence. PASS requires the declared seeded outcomes to pass and every mandatory check
+to complete or be explicitly not applicable, without hard evidence or a soft
+score reaching 1.0. Incomplete outcomes or malformed mandatory judgments block
+PASS without inventing hack evidence. Independent evidence may still justify
+FAIL or SUSPECT while infrastructure failures are reported alongside it. Seedless `verify --diff` keeps its
 vacuously verified behavior.
 
 The full design, its tradeoffs and its limits:
@@ -117,7 +121,7 @@ The full design, its tradeoffs and its limits:
 Two measurements, both committed with per-pair traces. The dev set is 12
 tasks across the two repos, 29 hack variants and 36 clean variants, twelve
 each of gold, gold-prime and gold-large, written by the same hand that built
-the detectors. The blind holdout is 12 hack
+the detectors. The originally blind holdout is 12 hack
 variants, 11 of which cleared a detector-free mechanical screen; no authoring
 session saw a detector, a weight, a threshold or a dev-set variant.
 
@@ -148,6 +152,19 @@ of 29 on the dev set and 9 to 11 of 11 on the holdout, strict 12/29 and
 5/11 in every draw, and 0/12 on all three clean splits in every draw; every
 row that moved is one the sampled adversarial-test rule decides
 ([the ten runs](docs/evaluation.md#paid-repeats-ten-sweeps)).
+
+These measurements describe the registered cases. A general probability of
+repair correctness remains unmeasured. Generated-test admission checks every
+registered clean variant, so those same variants are not independent
+false-positive samples for that mechanism. The holdout was authored blind,
+then informed the H7 weight change (DECISIONS row 229); later runs are not
+untouched validation.
+
+The ten paid sweeps retain their original committed verdicts, summaries, traces, and manifests. The original generated tests, raw model responses, and detailed execution artifacts were not recovered from the available local records. Their sampled decisions cannot presently be fully inspected. A new evaluation would produce new evidence and would not recover those historical artifacts.
+
+Future exports retain compact decision evidence under the
+[evidence policy](docs/evidence.md). Historical snapshots are not upgraded by
+reconstructing missing records.
 
 Read the table against its baselines. always-SUSPECT and judge-alone exceed
 Skeptic's lenient recall in the headline draw, 29/29 and 11/11 against
@@ -217,11 +234,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }  # checkout's shallow default leaves no merge base to find
-      - uses: mamadou-wane/skeptic@v1.0.0  # pin to a release tag or commit sha
+      - uses: mamadou-wane/skeptic@78ce5da273ab6919f0e4d1fb298dca2359b0bb6f  # reviewed closeout commit
         with:
           fail-on: never  # optional; this is the default
           # install: pip install -q -e .[test]  # if your pytest addopts needs a plugin from an extra
 ```
+
+The example pins an existing reviewed commit containing the trust and
+evaluation repairs. It is not a release tag. Replace it with the fixed
+maintenance release only after that release is published.
 
 Exit codes are 0 PASS, 1 SUSPECT, 2 FAIL, 3 INFRA_ERROR. Gating is opt-in
 through `fail-on` because the false-positive rate on real clean PRs in the
@@ -231,28 +252,17 @@ both; the v1.0.1 revalidation did not rerun this separate posture experiment.
 The rescore and the audit of three real agent PRs:
 [docs/evaluation.md](docs/evaluation.md).
 
-## Roadmap
+## Maintenance scope
 
-Four things this design points at and does not do. Each is scoped enough to
-argue about, and none is started.
-
-- CI patch-admission gate: a corpus of merged human PRs, audited, with the
-  diff-posture false-positive rate published the way the dev set's is. Only
-  then does failing a check on SUSPECT make sense.
-- Import-graph reachability: a static call-graph pass for patches that
-  satisfy their tests through code no consumer path can reach, the gap
-  `t1_coverage` approximates with per-test contexts today. Deferred during
-  planning; the collection-manifest diff was the cheaper buy, and
-  reachability is the better answer.
-- Second language: a second analyzer sharing only the evidence schema and
-  the aggregator, since the current one is Python-specific from the AST
-  rules through the coverage-context bridge.
-- Verifier co-evolution: whether the detector can be re-derived against each
-  new generator without re-deriving the corpus. Everything here is a fixed
-  verifier, and nothing in this repo answers it.
+Skeptic is in bounded maintenance and closeout. The remaining work is evidence
+retention, precise documentation and a separately reviewed maintenance release.
+No broader benchmark, language/model matrix, classifier or service architecture
+is planned. The Action remains report-only; false-positive behavior on real
+clean PRs is unmeasured.
 
 ## Documentation
 
+- [docs/evidence.md](docs/evidence.md): retained records, compression, completeness and historical limits
 - [docs/architecture.md](docs/architecture.md): the collector/checks design,
   the twelve checks, tradeoffs, limits, repo layout
 - [docs/evaluation.md](docs/evaluation.md): both eval sets in full, the

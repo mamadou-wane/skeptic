@@ -131,15 +131,9 @@ _PROBE_BARE = "probe-bare"
 # the set is whatever pytest and its plugins happened to set for this run.
 PROBE_SCRUB: tuple[str, ...] = ("PYTEST_CURRENT_TEST", "CI")
 
-# Bumped by hand when observe_variant's or read_variant's behavior changes in
-# a way that makes an old baseline observation wrong to reuse: a new field
-# read off the artifacts, a changed script, a changed exit-code contract.
-# This is the baseline-observation half of the two-key design
-# (`skeptic.orchestrator.verifier_revision` is the VERIFY-verdict half): a
-# detector edit never touches this constant and re-verdicts through
-# verifier_revision with no re-collection, while a collector behavior change
-# needs this bumped by hand to invalidate a baseline cached under the old
-# behavior. Precedent: `skeptic.builder.GREEN_RULE_VERSION`.
+# Explicit collector contract recorded in manifests and baseline cache keys.
+# Current baseline and VERIFY keys also include the package source fingerprint,
+# so source edits retire both observations and verdicts under the old code.
 COLLECTOR_VERSION = "5"
 
 # `-q`, `-qq`, `-v`, `-vv`: pytest counts these, so they compose.

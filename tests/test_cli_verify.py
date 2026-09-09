@@ -27,12 +27,14 @@ runner = CliRunner()
 
 
 @pytest.fixture(autouse=True)
-def _unit_image(monkeypatch, request):
+def _unit_image(monkeypatch, request, tmp_path):
     if "docker" in request.keywords:
         return
     from types import SimpleNamespace
+    closure = tmp_path / "image-constraints.txt"
+    closure.write_text("pytest==8.0.0\n")
     monkeypatch.setattr("skeptic.image.ensure_repo_image", lambda *args: SimpleNamespace(
-        image_id="sha256:test-image", tag="test-image"))
+        image_id="sha256:test-image", tag="test-image", constraints_path=closure))
 
 
 def _fake_extracted_report(baseline, workspace, out_diff, allowed_paths):

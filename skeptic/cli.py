@@ -447,11 +447,13 @@ def build(
         # rerun safe on its own, with no sweep in the loop at all (DECISIONS,
         # this wave's trace-rotation row).
         evalkit.rotate_trace(build_dir)
+        from skeptic.evidence_bundle import begin_record, decision_plan, source_plan, write_plan
+        begin_record(build_dir)
         repo = clone_pinned(spec.repo.url, spec.repo.commit,
                             workdir / spec.task_id / "repo-cache")
 
         from skeptic.run_inputs import freeze_inputs
-        spec, _ = freeze_inputs(spec, build_dir, variants=False)
+        spec, input_root = freeze_inputs(spec, build_dir, variants=False)
 
         # image first: its context is the pristine export, deleted right after
         pristine = build_dir / "image-context"
@@ -486,7 +488,8 @@ def build(
                 # Builder's first tool call (row 74). Position here is the
                 # only thing enforcing the second half.
                 started = time.monotonic()
-                baseline_suite = run_baseline_suite(seeded, session, spec)
+                baseline_suite = run_baseline_suite(seeded, session, spec,
+                                                    evidence_dir=input_root / "builder-baseline")
                 baseline_ms = int((time.monotonic() - started) * 1000)
                 red = baseline_suite.red_set()
                 # the red set alone goes in the trace: click-0001 runs the
@@ -503,13 +506,17 @@ def build(
                 ctx = ToolContext(
                     workspace=seeded, session=session, spec=spec,
                     baseline_passed=frozenset(baseline_suite.passed_set()),
-                    baseline_collection_errors=baseline_suite.collection_errors)
+                    baseline_collection_errors=baseline_suite.collection_errors,
+                    evidence_dir=input_root / "builder-tests")
                 result = run_build(spec, ctx, trace, model=model, client=client)
             report = extract_candidate(
                 baseline_tree, seeded, build_dir / "candidate.diff",
                 allowed_paths=spec.builder_input.allowed_paths)
+            plan = decision_plan(build_dir, spec, input_root,
+                                 {"candidate.diff": report.diff_path, "image/constraints.txt": image.constraints_path}, trace)
             return {
-                "_cache_artifacts": [str(report.diff_path)],
+                "_evidence_plan": plan,
+                "_cache_artifacts": [entry["source"] for entry in plan["files"].values()],
                 "stop_reason": result.stop_reason, "iterations": result.iterations,
                 "in_tokens": result.in_tokens, "out_tokens": result.out_tokens,
                 "usd": round(result.usd, 4), "green": result.green,
@@ -549,8 +556,12 @@ def build(
                             outcome.get("baseline_total"),
                             outcome.get("baseline_collection_errors")),
                             "cached": True})
-        public_outcome = {k: v for k, v in outcome.items() if not k.startswith("_cache_")}
+        public_outcome = {k: v for k, v in outcome.items() if not k.startswith("_")}
         (build_dir / "result.json").write_text(json.dumps(public_outcome, indent=2) + "\n")
+        if "_evidence_plan" in outcome:
+            plan = outcome["_evidence_plan"]
+            write_plan(build_dir, {**plan, "files": {**plan["files"], **source_plan({
+                "result.json": build_dir / "result.json"})["files"]}})
         typer.echo(f"stop: {outcome['stop_reason']} · iterations: "
                    f"{outcome['iterations']} · green: "
                    f"{outcome.get('green')} · cost: ${outcome['usd']:.2f} + "
@@ -628,14 +639,15 @@ def _run_attempt_acceptance(
 ) -> SuiteResult:
     """Classify a candidate through fresh Docker execution and admitted JUnit."""
     from skeptic.candidate_runtime import run_candidate_acceptance
+    from skeptic.evidence_bundle import begin_record
     from skeptic.workspace import clone_pinned
-
+    task_root = workdir / spec.task_id
+    begin_record(task_root / "build-arm-classify" / f"attempt-{attempt}")
     if spec.acceptance_suite is None:
         raise SkepticInfraError(
             f"{spec.task_id} declares no acceptance_suite. "
             "Next: provide a frozen suite before classifying a candidate."
         )
-    task_root = workdir / spec.task_id
     repo = clone_pinned(spec.repo.url, spec.repo.commit, task_root / "repo-cache")
     observed = run_candidate_acceptance(
         spec, repo, _candidate_abs(result["candidate"], workdir),
@@ -775,6 +787,8 @@ def build_arm(
                 label = f"{spec.task_id}/attempt-{attempt}"
                 build_dir = _build_dir(workdir, spec.task_id, attempt)
                 evalkit.rotate_trace(build_dir)
+                from skeptic.evidence_bundle import begin_record
+                begin_record(build_dir)
                 try:
                     build(task=spec.task_id, model=model, tasks_dir=tasks_dir,
                           workdir=workdir, runner="docker", yes=True,
@@ -794,7 +808,7 @@ def build_arm(
                     )
 
                 attempt_dir = run_dir / spec.task_id / f"attempt-{attempt}"
-                meta = evalkit.snapshot_run(build_dir, attempt_dir, exit_code=code)
+                meta = evalkit.snapshot_run(build_dir, attempt_dir, exit_code=code, defer_evidence=True)
                 result_path = build_dir / "result.json"
 
                 if code == EXIT_INFRA or not result_path.is_file():
@@ -826,6 +840,7 @@ def build_arm(
                     rows.append(row)
                     (attempt_dir / "classification.json").write_text(
                         json.dumps(dataclasses.asdict(row), indent=2, sort_keys=True) + "\n")
+                    evalkit.finalize_snapshot(build_dir, attempt_dir)
                     continue
 
                 result = json.loads(result_path.read_text())
@@ -833,12 +848,17 @@ def build_arm(
                 _snapshot_candidate(result, workdir, attempt_dir)
 
                 acceptance = None
+                acceptance_plan = None
                 if result.get("green") and not result.get("is_empty"):
                     try:
                         acceptance = _run_attempt_acceptance(spec, result, workdir, attempt)
                     except Exception as exc:  # noqa: BLE001 - one bad attempt must not end the arm
                         typer.echo(f"  INFRA  {label}: {type(exc).__name__}: {exc}")
 
+                if result.get("green") and not result.get("is_empty"):
+                    candidate_plan = workdir / spec.task_id / "build-arm-classify" / f"attempt-{attempt}" / "evidence-plan.json"
+                    if candidate_plan.is_file():
+                        acceptance_plan = candidate_plan
                 classification = evalkit.classify_attempt(result, acceptance)
                 if classification == "INFRA_ERROR":
                     infra.append(label)
@@ -870,6 +890,8 @@ def build_arm(
                 rows.append(row)
                 (attempt_dir / "classification.json").write_text(
                     json.dumps(dataclasses.asdict(row), indent=2, sort_keys=True) + "\n")
+
+                evalkit.finalize_snapshot(build_dir, attempt_dir, extra_plan=acceptance_plan)
 
         table_path = run_dir / "arm.md"
         table_path.write_text(evalkit.render_arm_table(rows, header=manifest))
@@ -1316,6 +1338,14 @@ def verify(
         # pre-rotation: by the time this call runs from within a sweep, the
         # sweep has already rotated, so this finds nothing to rotate.
         evalkit.rotate_trace(verify_dir)
+        from skeptic.evidence_bundle import (
+            begin_record,
+            decision_plan,
+            source_plan,
+            tree_files,
+            write_plan,
+        )
+        begin_record(verify_dir)
         trace = TraceWriter(
             verify_dir / "trace.jsonl",
             run_id=f"verify-{config_hash({'task': spec.task_id, 'variant': identity})}",
@@ -1628,7 +1658,22 @@ def verify(
             required.update(str(p) for p in pair.artifacts_dir.glob("*.json")
                             if p.name != "verdict.json")
             required.add(str(report.diff_path))
+            files = {"candidate.diff": report.diff_path, "image/constraints.txt": image.constraints_path}
+            for label, root in [("baseline", pair.baseline.artifacts),
+                                ("candidate", pair.candidate.artifacts),
+                                *[(name, pair.artifacts_dir/name) for name in ("mutation", "probe", "advtests")]]:
+                files.update(tree_files(root, label))
+            files.update({f"checks/{p.name}": p for p in pair.artifacts_dir.glob("*.json")
+                          if p.name != "verdict.json"})
+            if pair.candidate.advtests is not None:
+                generated = input_root / "generated-tests"
+                generated.mkdir()
+                for candidate in pair.candidate.advtests.candidates:
+                    (generated / f"test_{candidate.candidate_id}.py").write_text(candidate.source)
+            plan = decision_plan(verify_dir, spec, input_root, files, trace)
+            required.update(entry["source"] for entry in plan["files"].values())
             return {
+                "_evidence_plan": plan,
                 **verdict.model_dump(),
                 "_cache_artifacts": sorted(required),
                 "_execution": {"image_id": image.image_id, "image_tag": image.tag,
@@ -1647,7 +1692,7 @@ def verify(
         # outside the cache, as scratch space). This is build's
         # unconditional result.json write, generalized to VERIFY's shape.
         verdict_payload = {k: v for k, v in outcome.items()
-                           if k not in ("fix_verified", "artifacts_dir", "_execution")
+                           if k not in ("fix_verified", "artifacts_dir", "_execution", "_evidence_plan")
                            and not k.startswith("_cache_")}
         verdict = Verdict.model_validate(verdict_payload)
         artifacts_dir = Path(outcome["artifacts_dir"])
@@ -1657,6 +1702,12 @@ def verify(
         if "_execution" in outcome:
             (verify_dir / "execution.json").write_text(
                 json.dumps(outcome["_execution"], sort_keys=True, indent=2) + "\n")
+        if "_evidence_plan" in outcome:
+            plan = outcome["_evidence_plan"]
+            summaries = {"verdict.json": artifacts_dir / "verdict.json"}
+            if "_execution" in outcome:
+                summaries["execution.json"] = verify_dir / "execution.json"
+            write_plan(verify_dir, {**plan, "files": {**plan["files"], **source_plan(summaries)["files"]}})
         render_verdict(verdict, fix_verified=outcome["fix_verified"],
                        cached=cache_hit)
         raise typer.Exit(exit_code(verdict))
@@ -1797,6 +1848,8 @@ def eval_command(
             verify_dir = (workdir / spec.task_id / "verify"
                           / _verify_path_identity(variant_id))
             evalkit.rotate_trace(verify_dir)
+            from skeptic.evidence_bundle import begin_record
+            begin_record(verify_dir)
             subject = ({"variant": variant_id, "variant_patch": None} if patch is None
                        else {"variant": None, "variant_patch": f"{variant_id}:{patch}"})
             surface = (f"--variant {variant_id}" if patch is None

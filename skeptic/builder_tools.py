@@ -43,6 +43,7 @@ class ToolContext:
     # import rather than read an empty frozenset as "nothing passed before".
     baseline_passed: frozenset[str]
     baseline_collection_errors: int
+    evidence_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -173,7 +174,8 @@ def _edit_file(ctx: ToolContext, args: dict) -> ToolOutcome:
         "edit_file", {**args, "allowed_paths": ctx.spec.builder_input.allowed_paths}))
 
 
-def _report(session: SessionContainerLike, relative_path: str) -> SuiteResult:
+def _report(session: SessionContainerLike, relative_path: str, *,
+            evidence_dir: Path | None = None) -> SuiteResult:
     result = session.file_operation("read_report", {"path": relative_path})
     if result["refused"]:
         raise SkepticInfraError(
@@ -181,7 +183,13 @@ def _report(session: SessionContainerLike, relative_path: str) -> SuiteResult:
             "Next: inspect the session test output and retry."
         )
     try:
-        return parse_junit_bytes(base64.b64decode(result["text"], validate=True), relative_path)
+        data = base64.b64decode(result["text"], validate=True)
+        if evidence_dir is not None:
+            import uuid
+
+            from skeptic.artifacts import STRUCTURED_MAX, publish_artifact_bytes
+            publish_artifact_bytes(evidence_dir, f"{uuid.uuid4().hex}.xml", data, STRUCTURED_MAX)
+        return parse_junit_bytes(data, relative_path)
     except SkepticInfraError:
         raise
     except Exception as exc:
@@ -189,6 +197,20 @@ def _report(session: SessionContainerLike, relative_path: str) -> SuiteResult:
             f"Malformed Builder JUnit ({type(exc).__name__}). "
             "Next: inspect the session test output and retry."
         ) from exc
+
+
+def _execution_record(root: Path | None, argv: list[str], result: ExecResult) -> Path | None:
+    if root is None:
+        return None
+    import json
+    import uuid
+
+    from skeptic.artifacts import STRUCTURED_MAX, publish_artifact_bytes
+    directory = root / uuid.uuid4().hex
+    data = {"argv": argv, "exit_code": result.exit_code,
+            "stdout": result.stdout, "stderr": result.stderr}
+    publish_artifact_bytes(directory, "execution.json", json.dumps(data).encode(), STRUCTURED_MAX)
+    return directory
 
 
 def _remove_report(session: SessionContainerLike, relative_path: str) -> None:
@@ -233,7 +255,7 @@ def _suite_argv(spec: TaskSpec, junit_rel: str, selector: str = "") -> list[str]
 
 
 def run_baseline_suite(workspace: Path, session: SessionContainerLike,
-                       spec: TaskSpec) -> SuiteResult:
+                       spec: TaskSpec, *, evidence_dir: Path | None = None) -> SuiteResult:
     """Run the suite once in the session container before the Builder starts.
 
     Green is differential (DECISIONS row 74), so BUILD needs to know what the
@@ -252,6 +274,7 @@ def run_baseline_suite(workspace: Path, session: SessionContainerLike,
     _remove_report(session, _JUNIT_BASELINE_REL)
     argv = _suite_argv(spec, _JUNIT_BASELINE_REL)
     result = session.exec_argv(argv, timeout_s=spec.environment.timeout_s)
+    evidence_dir = _execution_record(evidence_dir, argv, result)
     if result.exit_code == -1:
         raise SkepticInfraError(
             f"The baseline suite timed out after {spec.environment.timeout_s}s. "
@@ -272,7 +295,7 @@ def run_baseline_suite(workspace: Path, session: SessionContainerLike,
         )
     # parse_junit raises with its own what/why/next on a missing report and on
     # a report it cannot map to nodeids; both are infra failures here.
-    suite = _report(session, _JUNIT_BASELINE_REL)
+    suite = _report(session, _JUNIT_BASELINE_REL, evidence_dir=evidence_dir)
     if suite.collection_errors:
         raise SkepticInfraError(
             f"The baseline suite hit {suite.collection_errors} collection "
@@ -320,12 +343,13 @@ def _run_tests(ctx: ToolContext, args: dict) -> ToolOutcome:
     _remove_report(ctx.session, _JUNIT_REL)
     argv = _suite_argv(ctx.spec, _JUNIT_REL, selector)
     result = ctx.session.exec_argv(argv, timeout_s=ctx.spec.environment.timeout_s)
+    evidence_dir = _execution_record(ctx.evidence_dir, argv, result)
     tail = (result.stdout[-3000:] + "\n" + result.stderr[-1000:]).strip()
     if result.exit_code not in (0, 1):
         return ToolOutcome(
             text=f"test run did not complete (exit {result.exit_code}):\n{tail}")
     try:
-        suite = _report(ctx.session, _JUNIT_REL)
+        suite = _report(ctx.session, _JUNIT_REL, evidence_dir=evidence_dir)
     except SkepticInfraError as exc:
         # parse_junit raises on a junit report it cannot trust (an
         # unmappable classname or a duplicate reconstructed nodeid), which a

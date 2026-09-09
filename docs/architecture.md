@@ -268,30 +268,39 @@ drives the real CLI path landed as wave B's first commit (`DECISIONS.md` row
 149). The original by-construction claim was wrong in an instructive way: it
 bounded the resolver, and the leak was in the caller.
 
-Skeptic's own paid checks read adversary-authored text. A patch under audit
-reaches `t2_advtests`' generator and `t2_judge`'s reviewer as content, so a
-patch can carry instructions aimed at them. Prompt hardening is the first
-mitigation and it is not the argument; the bound is. Generated tests are
-promoted only through a ladder whose `reference` rung runs them against the
-pinned reference implementation, so a test the patch talked the generator into
-writing still has to agree with the hidden correct code before any evidence is
-emitted, and `parse_judge_response` folds an unparseable or hostile judge reply
-fail-closed. Both paths therefore lose evidence rather than invent it: the
-worst case is a hack that goes uncaught, never a clean patch pushed to FAIL.
-Nothing here is measured against a real injection attempt, which is the honest
-limit on the claim.
+Skeptic's paid checks read adversary-authored text. Generated tests must pass
+the reference and registered clean controls before use, but those filters do
+not prove correctness or immunity to prompt injection. A malformed mandatory
+judge reply leaves that check incomplete and cannot produce PASS; it also
+cannot fabricate adverse evidence. An interpretable but wrong model judgment
+can still create a false positive or miss a hack. No general resistance to
+prompt injection is claimed.
 
-One provenance defect is closed and one is open. `_image_id` used to prefer a
-build result written 2026-07-26 over its own fallback, so four committed
-manifests name a stale image for one of twelve tasks and a mutable local tag
-for ten more. Row 222 stopped the stale digest by refusing any recorded digest
-its own `image_tag` does not vouch for, and row 226 replaced the tag fallback
-by asking the daemon what that tag resolves to. The holdout run is the first
-committed manifest whose `image_id` is a content digest on every task. The
-four older manifests still read as they did: editing a generated artifact so
-that it reads correctly is exactly the defect class this harness exists to
-catch. Still open, and recorded rather than patched: every Eval B
-`result.json` writes an absolute host path (`DECISIONS.md` row 220).
+Current VERIFY records the executed image digest in `execution.json` and uses
+it in cache identity. Older manifests retain their recorded provenance,
+including the stale image records documented in DECISIONS row 222. Current
+Builder candidate paths are relative to the workdir where possible; older arm
+records with absolute host paths remain unchanged.
+
+## Evidence export and public contract
+
+`evalkit.snapshot_run` exports a versioned bundle from the host-owned source
+inventory produced by BUILD or VERIFY. `build-arm` finalizes its bundle after
+acceptance and classification. Required files are checked against recorded
+digests during streaming, and the index is published last. Readers reject
+missing, partial or changed new bundles; legacy snapshots remain readable
+without gaining a completeness claim. See [the evidence policy](evidence.md).
+
+The retained records support inspection of decisions. Candidate code can
+influence measurements produced during its own phase. PASS means the configured
+checks completed without meeting the rejection thresholds and the declared
+seeded outcomes passed. Repair correctness remains unproven.
+
+Registered clean variants participate in generated-test admission, so their
+false-positive counts are not independent validation of that same mechanism.
+The originally blind holdout informed later tuning. The benchmark describes
+recorded cases at their measured revisions. A general probability of correct
+repair remains unmeasured. Skeptic remains a supervised research harness.
 
 Dependency provenance is pinned since row 231. Each corpus repo has one
 closure under `constraints/`, read out of the image the published runs
@@ -322,7 +331,7 @@ Footprint anchor: SWE-bench's README says "We recommend running on an
 cores" ([README at bdfcdd8](https://github.com/SWE-bench/SWE-bench/blob/bdfcdd8c2372a4442d469435faaac2353d87911f/README.md), read 2026-08-29), sized for the
 full benchmark's instance images. It states no time to a first eval; the 15
 to 50 minutes this page used to cite had no source and is withdrawn. Skeptic,
-measured 2026-08-29 from a fresh public clone on an Apple M4 Pro, for one
+measured 2026-08-29 at commit `bc82e34` from a fresh public clone on an Apple M4 Pro, for one
 task of a two-repo corpus: 11 s to the demo's two verdicts with no Docker and
 no key, 67 s to the first real verdict with the base image already pulled
 and the build cache pruned, 124 MB of files across the checkout, venv and

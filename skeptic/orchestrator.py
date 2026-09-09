@@ -111,7 +111,10 @@ def run_stage(
                     payload={"key": key})
         raise
     dur_ms = int((time.monotonic() - start) * 1000)
-    cache.put(key, result)
     trace.event(stage=stage, actor="orchestrator", event="stage_end",
                 payload={"key": key}, dur_ms=dur_ms)
+    if "_evidence_plan" in result:
+        from skeptic.evidence_bundle import finish_origin
+        finish_origin(result["_evidence_plan"], trace)
+    cache.put(key, result)
     return result

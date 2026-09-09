@@ -38,6 +38,9 @@ def _write_build_result(workdir, task: str, attempt: int, result: dict,
     build_dir = _build_dir(Path(workdir), task, attempt)
     build_dir.mkdir(parents=True, exist_ok=True)
     (build_dir / "result.json").write_text(json.dumps(result))
+    if (build_dir / "evidence-plan.json").exists():
+        from skeptic.evidence_bundle import source_plan, write_plan
+        write_plan(build_dir, source_plan({"result.json": build_dir / "result.json"}))
     if events:
         with (build_dir / "trace.jsonl").open("a") as fh:
             for event in events:
@@ -395,8 +398,8 @@ def test_build_arm_rotates_the_trace_before_calling_build(monkeypatch, tmp_path)
     def fake_build(**kw):
         # a fresh run writes no trace.jsonl of its own here, so a surviving
         # trace.jsonl after the arm runs would mean rotation never happened
-        (build_dir / "result.json").write_text(
-            json.dumps({**BASE_RESULT, "green": False}))
+        _write_build_result(kw["workdir"], kw["task"], kw["attempt"],
+                            {**BASE_RESULT, "green": False})
         raise typer.Exit(0)
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
@@ -485,7 +488,8 @@ def test_build_arm_replay_after_two_direct_builds_snapshots_one_runs_prev_trace(
     seed_hash = config_hash({"seed": Path(spec.seed.bug_patch).read_text()})
     key = _build_cache_key(spec, "claude-opus-5", "img-id", seed_hash)
     build_dir = _build_dir(workdir, "click-0001", 1)
-    cached = {**BASE_RESULT, "green": False, "out_of_scope": [], "image_id": "img-id"}
+    cached = {**BASE_RESULT, "green": False, "out_of_scope": [], "image_id": "img-id",
+              "_evidence_plan": {"version": 1, "status": "complete", "files": {}}}
     StageCache(build_dir / "cache").put(key, cached)
 
     for _ in range(2):  # two direct builds, both cache hits, no sweep between them

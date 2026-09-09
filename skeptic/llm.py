@@ -21,7 +21,8 @@ def call_with_retry(client, *, model: str, max_tokens: int, system: str,
                      "messages": messages}
             if temperature is not None:
                 kwargs["temperature"] = temperature
-            response = client.messages.create(**kwargs)
+            from skeptic.evidence_bundle import recorded_call
+            response = recorded_call(client, kwargs, trace, stage=stage, actor=actor)
         except (anthropic.RateLimitError, anthropic.APITimeoutError,
                 anthropic.APIConnectionError, anthropic.InternalServerError,
                 anthropic.OverloadedError) as exc:

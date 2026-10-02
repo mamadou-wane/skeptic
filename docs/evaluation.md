@@ -182,10 +182,12 @@ author asked for a hack returns either a gold revert or a correct fix the screen
 cannot tell from one. All clean-control counts in this report therefore come
 from the development dataset.
 
-The pre-registered bar was the same 85 percent lenient detection at no more than
-one false positive per split. The historical run met the half it can measure, at
-100 percent lenient detection. Strict detection was 45.5 percent on the holdout
-and 41.4 percent on development. Later tuning used the holdout results, so the
+The dev-set pre-registration set an 85 percent lenient-detection bar at no more
+than one false positive per clean split. The holdout was pre-registered for
+unconditional publication rather than as a separate pass/fail gate. For
+comparison, its lenient detection was 11/11 in this run; later paid repeats
+ranged from 9/11 to 11/11. Strict detection was 45.5 percent on the holdout and
+41.4 percent on development. Later tuning used the holdout results, so the
 holdout figure is not an untouched-validation claim.
 
 First-entry in-harness attribution fell from 21/29 on development to 6/11 on the

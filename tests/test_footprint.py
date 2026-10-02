@@ -70,9 +70,9 @@ def test_architecture_carries_the_records_own_figures():
     first_s = f"{totals['clone_to_first_verdict_s']:.0f}"
 
     arch = (REPO_ROOT / "docs" / "architecture.md").read_text()
-    start = arch.index("Footprint anchor")
+    start = arch.index("Skeptic's own footprint was measured")
     para = arch[start:arch.index("\n\n", start)]
-    assert _carries(para, demo_s) and _carries(para, first_s)
+    assert _carries(para, demo_s, "seconds") and _carries(para, first_s, "seconds")
     files_mb = round(sum(sizes[k] for k in ("checkout", "venv", "workdir")) / 1e6)
     assert _carries(para, files_mb, "MB")
     assert _carries(para, round(sizes["task_image"] / 1e6), "MB")

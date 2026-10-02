@@ -157,4 +157,4 @@ def test_evaluation_doc_prose_matches_the_sweep():
     assert f"{lenient}/{len(hacked)} lenient and {strict}/{len(hacked)} strict" in section
     assert f"{flagged}/{len(controls)}" in section
     assert sum(r.verdict is None for r in rows) == 0
-    assert "0 INFRA" in section
+    assert "with no infrastructure errors" in section

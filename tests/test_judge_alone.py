@@ -72,8 +72,8 @@ def test_evaldoc_carries_the_per_run_counts_and_no_doc_pools_them():
     for line in judge_alone.render(records).splitlines():
         if line.startswith("| ") and "---" not in line:
             assert line in section, f"judge-alone row drifted from the record: {line[:60]}"
-    assert f"scored {prior['2026-08-16']} of 12 on gold in the 2026-08-16 run" in section
-    assert f"{prior['2026-08-22']} of 12 in the 2026-08-22 collector-1 run" in section
+    assert (f"The judge flagged {prior['2026-08-16']}/12 gold patches on 2026-08-16 "
+            f"and {prior['2026-08-22']}/12 on 2026-08-22") in " ".join(section.split())
 
     readme = (REPO_ROOT / "README.md").read_text()
     # per-run counts, never a pooled denominator over the five draws

@@ -1,286 +1,335 @@
 # Architecture
 
-How VERIFY is built, what it trades away, and where it stops. The
-measurements behind every figure cited here are in
-[evaluation.md](evaluation.md).
+Skeptic separates candidate execution from the checks that evaluate its results.
+A collector runs candidate code in Docker and saves the outputs on the host.
+Checks inspect those outputs without executing candidate code themselves.
 
-VERIFY splits in two, which is the design decision everything else rests on. A
-collector materializes canonical seeded and candidate trees, runs isolated
-candidate-executing phases over disposable snapshots, and admits their declared
-outputs into host-owned sealed storage. Checks execute no candidate code; four
-deterministic checks also read the immutable canonical trees.
+This document describes the execution boundaries and verification rules. The
+[evaluation report](evaluation.md) records measurements at specific revisions;
+the [evidence policy](evidence.md) defines what an exported run retains.
+Skeptic assumes a researcher supervises runs on a host they control.
+
+## Verification flow
+
+The collector builds canonical seeded and candidate trees: unchanged source
+copies that remain under host control. Candidate code runs on disposable
+snapshots rather than those canonical trees. After an execution stops, the host
+validates its declared outputs and seals them against changes by later phases.
+
+Most checks read only the collected artifacts. Four checks also read the
+canonical trees: `t1_ast`, `t1_config`, `t1_patterns`, and `t1_coverage`.
+No check reads another check's result or reaches a candidate container.
 
 ```mermaid
 flowchart LR
-  seed["canonical seeded tree"] --> snap["disposable execution snapshot"]
-  cand["canonical candidate tree"] --> snap
-  snap --> exec["candidate phase<br/>network off · private output"]
-  exec --> q["fresh host quarantine<br/>after container stop"]
-  q --> admit["host admission<br/>no-follow · typed cap · no-replace"]
-  admit --> art["sealed phase artifacts<br/>collection · junit · coverage data"]
-  art --> report["non-candidate coverage report<br/>read-only clean snapshot + admitted data"]
-  report --> radmit["host admission"]
-  radmit --> rart["sealed coverage report"]
-  art --> t1["8 deterministic checks<br/>collect · outcomes · config · scope<br/>goldens · coverage · patterns · ast"]
-  seed -->|immutable read by 4 checks| t1
-  cand -->|immutable read by 4 checks| t1
+  seed["Canonical seeded tree"] --> snap["Disposable execution snapshot"]
+  cand["Canonical candidate tree"] --> snap
+  snap --> exec["Candidate execution<br/>network off; private output"]
+  exec --> q["Host quarantine<br/>after container stops"]
+  q --> admit["Validate paths, file types and sizes<br/>publish without replacement"]
+  admit --> art["Sealed phase artifacts"]
+  art --> report["Coverage reporting<br/>read-only clean snapshot and admitted data"]
+  report --> radmit["Host validation"]
+  radmit --> rart["Sealed coverage report"]
+  art --> t1["Eight T1 checks"]
+  seed -->|read by four checks| t1
+  cand -->|read by four checks| t1
   rart --> t1
-  art --> t2["4 heavy checks<br/>mutation · probe<br/>advtests · judge (paid)"]
-  t1 --> agg["aggregate.py<br/>hard or unverified fix, then soft weights"]
+  art --> t2["Mutation and consumer probe<br/>generated tests and judge in paid profile"]
+  t1 --> agg["Aggregate evidence and completion status"]
   t2 --> agg
-  agg --> v["PASS · SUSPECT · FAIL<br/>INFRA_ERROR if a mandatory check never completed"]
+  agg --> v["PASS, SUSPECT, FAIL or INFRA_ERROR"]
 ```
 
-Collection, suite/coverage measurement, every mutation calibration and mutant,
-both consumer-probe sides, and every adversarial candidate/tree rung receive
-separate executions. Collection and suite, each mutation execution, and both
-probe sides also receive separate disposable snapshots of the canonical tree;
-candidate writes therefore have only current-phase lifetime. No candidate
-container receives a writable host evidence mount. After it stops, Docker
-copies private output into a fresh quarantine that the container never saw.
+Sealing begins after a candidate execution stops and host admission succeeds.
+A later phase cannot modify, replace, redirect, or append to a sealed result.
+Sealing does not authenticate measurements produced during candidate execution:
+candidate code can still influence its own JUnit and coverage data.
 
-Admission walks the quarantine root and every source parent by directory file
-descriptor with `O_DIRECTORY` and `O_NOFOLLOW`, opens the final name no-follow,
-requires a regular file, and enforces its cap before allocation and while
-streaming. Destination parents use the same no-follow rule. Publication writes
-a create-exclusive same-directory temporary and atomically links it to an
-absent final name; it never replaces an existing sealed artifact. Only a truly
-missing optional file is absence. A symlink, FIFO, directory, device, escape,
-oversize file, failed Docker copy, or conflicting final name is INFRA.
+## Execution and artifact admission
 
-The caps are typed: 4 KiB controls, 8 MiB text/collection/selection, 16 MiB
-JUnit and ordinary structured data, 64 MiB coverage SQLite, and 1.5 GiB
-(1,610,612,736 bytes) for scoped `coverage.json`, based on a measured 1.063 GiB
-Click artifact. These limits bound files crossing admission; they are not
-transport or aggregate-output quotas, and they do not impose CPU, memory, disk,
-or process quotas.
+### Disposable executions
 
-Suite execution is the candidate-executing coverage-measurement phase. Its
-JUnit and `.coverage` outputs are admitted before a separate reporting phase
-starts. Reporting uses a source snapshot taken before candidate execution,
-mounts it read-only, mounts admitted measurement data read-only, skips editable
-installation, and runs Python safe-path/no-user-site mode. The report therefore
-does not execute candidate code, although the admitted `.coverage` input still
-came from the candidate-executing suite. Final `COLLECTOR_VERSION` is `"4"`;
-unreleased interim versions 2 and 3 are unsafe and must never be reused because
-each predates part of the consolidated canonical-tree, copy, install, or
-deadline boundary now enforced.
+Collection and suite measurement run separately. Each mutation calibration and
+mutant, both consumer-probe sides, and every adversarial candidate/tree rung
+also receive separate executions. Collection and suite runs, each mutation
+execution, and both probe sides use separate snapshots of the canonical tree.
+Writes to these snapshots do not persist into later phases.
 
-Deadline scope follows the observation authority. T1 has one side deadline
-across all phases, read-back, cleanup, and return. Mutation has one
-mutation-observation deadline across all calibrations and mutants, including
-capture and admission. The probe has one deadline shared across its pytest and
-bare captures. Adversarial checks have one deadline per tree/rung batch, sized
-to that batch's candidate set or survivors. Editable-install failure is
-derived from the host-observed reserved exit 125 instead of a candidate-writable
-marker. A phase that itself returns 125 after a successful install is
-conservatively INFRA.
+Candidate containers receive no writable host evidence mount. After a container
+stops, Docker copies its private output into a fresh host quarantine directory
+that the container never accessed.
 
-Protected `test_dirs`, `config_files`, and `golden_dirs` are checked when the
-spec loads and again at mount construction. Empty/root, POSIX or Windows
-absolute and UNC, literal `..`, dangling, and workspace-escaping paths are
-refused. Internal symlinks are accepted only when strict resolution remains
-beneath the intended workspace.
+### File validation and publication
 
-No check can reach a candidate container or execute candidate code. Most checks
-read admitted observations only; `t1_ast`, `t1_config`, `t1_patterns`, and
-`t1_coverage` also read the immutable canonical baseline and candidate trees.
-Disposable execution snapshots are therefore load-bearing: candidate writes
-die with a snapshot while the canonical trees remain host authority. Detector
-changes can still re-verdict cached pairs without re-collecting them.
+Artifact admission walks the quarantine root and source parents through directory
+file descriptors using `O_DIRECTORY` and `O_NOFOLLOW`. It opens the final name
+without following links, requires a regular file, and enforces the size limit
+before allocation and during streaming. Destination parents receive the same
+no-follow checks.
 
-Twelve checks exist. Ten run in the default profile and two only under the paid
-one. Eight read the deterministic observations (`t1_collect`, `t1_outcomes`,
-`t1_config`, `t1_scope`, `t1_goldens`, `t1_coverage`, `t1_patterns`, plus
-`t1_ast` as an attribution pass), and four are heavier (`t2_mutation`, a
-budgeted stratified mutant batch scored through the coverage-context bridge;
-`t2_probe`, one consumer entrypoint called in-pytest and bare; `t2_advtests`,
-an LLM-generated adversarial battery walked through a promotion ladder; and
-`t2_judge`, one diff review folded fail-closed). `checks/aggregate.py` folds
-every result into PASS, SUSPECT, or FAIL. Hard evidence or
-`fix_verified=False` is FAIL before soft scoring; a false seeded fix does not
-fabricate hack evidence and does not become INFRA. Seedless diff verification
-is vacuously fix-verified. INFRA_ERROR remains the result when a mandatory
-check never completes.
+Publication creates an exclusive temporary file in the destination directory,
+then atomically links it to an absent final name. It never replaces a sealed
+artifact. Only a genuinely missing optional file counts as absent. A symlink,
+FIFO, directory, device, escaping path, oversized file, failed Docker copy, or
+conflicting destination is an infrastructure failure.
 
-Infrastructure failures never degrade into evidence. A missing coverage file
-aborts as INFRA_ERROR rather than reading as 0 percent coverage, because a
-silent 0 percent would fail a correct patch and poison the false-positive rate.
+| Artifact type | Size limit |
+| --- | --- |
+| Control files | 4 KiB |
+| Text, collection and selection files | 8 MiB |
+| JUnit and ordinary structured data | 16 MiB |
+| Coverage SQLite database | 64 MiB |
+| Scoped `coverage.json` | 1.5 GiB (1,610,612,736 bytes) |
+
+The coverage JSON limit accommodates a measured 1.063 GiB Click artifact.
+These are per-file admission limits, not transport or aggregate-output quotas.
+They do not impose CPU, memory, disk, or process quotas.
+
+### Coverage measurement and reporting
+
+The candidate-executing suite produces JUnit and `.coverage` files. The host
+admits both before a separate reporting phase begins. Reporting uses a source
+snapshot taken before candidate execution and mounts it and the measurement
+data read-only. It skips editable installation and uses Python's safe-path and
+no-user-site startup modes.
+
+Reporting therefore executes no candidate code, although its measurement input
+still came from the candidate-executing suite. `COLLECTOR_VERSION` is `"4"`.
+Unreleased interim versions 2 and 3 predate parts of the consolidated isolation
+boundary and must not be reused.
+
+### Deadlines and protected paths
+
+| Operation | Deadline scope |
+| --- | --- |
+| T1 | One deadline per side, including every phase, read-back, cleanup and return |
+| Mutation | One observation deadline across calibrations and mutants, including capture and admission |
+| Consumer probe | One deadline shared by pytest and bare-process captures |
+| Adversarial tests | One deadline per tree/rung batch, sized to that batch's candidates or survivors |
+
+Editable-install failure is identified by the host-observed reserved exit code
+125, not a candidate-writable marker. A phase that returns 125 after a successful
+install is also treated as an infrastructure failure.
+
+Protected `test_dirs`, `config_files`, and `golden_dirs` are checked at spec load
+and mount construction. The checks reject empty or root paths, POSIX and Windows
+absolute paths, UNC paths, literal `..` components, dangling links, and paths
+that escape the workspace. Internal symlinks are allowed only when strict
+resolution stays beneath the intended workspace.
+
+## Checks and verdicts
+
+Twelve checks exist. The default profile runs ten without API calls;
+the paid profile adds `t2_advtests` and `t2_judge`.
+
+| Group | Checks |
+| --- | --- |
+| T1 | `t1_collect`, `t1_outcomes`, `t1_config`, `t1_scope`, `t1_goldens`, `t1_coverage`, `t1_patterns`, and the `t1_ast` attribution pass |
+| Default T2 | `t2_mutation`, which uses a budgeted stratified sample and coverage contexts; `t2_probe`, which compares a consumer entrypoint under pytest and in a bare process |
+| Paid T2 | `t2_advtests`, which validates LLM-generated tests through a promotion ladder; `t2_judge`, which reviews the diff |
+
+`checks/aggregate.py` combines evidence and completion status. Hard evidence or
+`fix_verified=False` produces `FAIL` before soft scoring. A known failure to fix
+the declared seeded outcomes is not automatically evidence of a hacking
+mechanism, and it is not an infrastructure failure.
+
+`PASS` requires the configured mandatory checks to complete or be explicitly
+not applicable, the declared seeded outcomes to pass, and the evidence to remain
+below the rejection thresholds. Missing outcomes and uninterpretable mandatory
+judgments block `PASS` without creating adverse evidence. An independent finding
+can still justify `FAIL` or `SUSPECT` while another check is incomplete;
+otherwise an incomplete mandatory check leaves `INFRA_ERROR`.
+
+Infrastructure failures are not measurements against a patch. For example,
+missing coverage data aborts as `INFRA_ERROR`; reading it as zero coverage would
+fail a correct patch. Seedless
+`verify --diff` has no declared seeded repair to establish; its internal
+fix-verification state does not prove that the PR fixes a bug.
+
+The separation between collection and checks also allows recorded observation
+pairs to be rescored without executing candidate code again. Rescoring retained
+evidence is distinct from reusing a current-contract execution cache.
 
 ## Builder tools and candidate acceptance
 
-BUILD keeps one session container alive for the agent's tool calls. File
-listing, reads, edits, and JUnit readback run through a fixed helper inside
-that container, using the image's interpreter with isolated Python startup.
-The host parses bounded returned bytes; it does not reopen a candidate-writable
-pathname after checking containment. Session removal must succeed before host
-snapshotting and candidate extraction may begin. An unconfirmed removal is
-an infrastructure failure, with the container identity retained for diagnosis.
+BUILD keeps one session container alive for the agent's tool calls. A fixed
+helper inside that container performs file operations and JUnit readback using
+the image's interpreter with isolated Python startup. The host parses bounded
+returned bytes rather than reopening a candidate-writable path after checking
+its containment.
 
-`candidate_runtime.py` runs `build-arm` acceptance and both holdout-screen
-suite phases through the existing Docker capture and artifact-admission
-boundary. Each invocation reconstructs a fresh tree from the pinned commit,
-seed and candidate patch. Acceptance inputs are protected read-only, candidate
-installation runs inside the container, and admitted JUnit plus execution
-diagnostics outlive the disposable tree. The API accepts no host runner or
-runner factory and has no reduced-isolation fallback.
+Session removal must succeed before host snapshotting and candidate extraction.
+If removal cannot be confirmed, the run records an infrastructure failure and
+retains the container identity for diagnosis.
+
+`candidate_runtime.py` runs `build-arm` acceptance and both holdout-screen suite
+phases through Docker capture and artifact admission. Each invocation rebuilds
+a fresh tree from the pinned commit, seed, and candidate patch. Acceptance inputs
+are read-only, installation runs inside the container, and admitted JUnit and
+execution diagnostics remain after the tree is removed. These candidate APIs
+accept no host runner or runner factory and offer no reduced-isolation fallback.
 
 `seed --check` is a separate, owner-trusted corpus-authoring operation.
-`seedcheck.check_trusted_task` constructs its private host venv runner
-internally and evaluates only the material registered in the selected task
-spec. The task spec and its authoring patches must be trusted before using
-that command. This path is not a sandbox for an arbitrary candidate patch.
-
-These boundaries constrain execution and later evidence replacement. Candidate
-code can still influence measurements produced during its own execution.
+`seedcheck.check_trusted_task` constructs its private host venv runner and checks
+only material registered in the selected task spec. Trust that spec and its
+authoring patches before running the command; it does not sandbox arbitrary
+candidate patches.
 
 ## Candidate admission and evaluation completeness
 
-Candidate extraction compares a NUL-delimited Git change inventory with the
-actual tree, then applies the normalized patch to a fresh baseline and compares
-file contents, executable modes and link targets. A supported patch must
-reproduce the complete candidate tree. Git-quoted or whitespace-containing
-names, non-ASCII names and paths containing coverage-pattern metacharacters
-are refused. Changes to `.gitattributes` and `.gitignore`, explicit changes to
-excluded runtime residue, nested Git metadata, gitlinks and special files are
-also refused. Reserved names are compared case-insensitively. Contained,
-resolvable symlinks remain supported; escaping or dangling execution links
-are refused before candidate code runs.
+### Patch admission
 
-A collected test without a terminal outcome makes the outcome check
-incomplete. Actual collection removal, skip/xfail and collection errors keep
-their own handling. An unexplained missing seeded result is unknown rather
-than a failed repair, and cannot reach PASS. An uninterpretable mandatory
-judge response also prevents PASS without inventing adverse evidence. Raw
-judge responses are captured before parsing; historical reports without a
-parse status remain readable as legacy records.
+Extraction compares a NUL-delimited Git change inventory with the actual tree.
+It then applies the normalized patch to a fresh baseline and compares file
+contents, executable modes, and link targets. A supported patch must reproduce
+the complete candidate tree.
 
-The evaluation-integrity cache contract freezes file inputs before use and
-binds results to the resolved execution image, dependency closure contents,
-source/toolchain identity and effective evaluation settings. Paid verification
-also binds every clean reference used by generated-test admission. Baseline
-reuse validates the canonical tree and observation digests; stage reuse
-validates its required artifact digests. Legacy cache entries miss under the
-new contract. Existing historical evaluation snapshots are not rewritten.
+Unsupported forms are refused explicitly: Git-quoted or whitespace-containing
+names, non-ASCII names, coverage-pattern metacharacters in paths, changes to
+`.gitattributes` or `.gitignore`, explicit changes to excluded runtime residue,
+nested Git metadata, gitlinks, and special files. Reserved names are compared
+case-insensitively. Contained, resolvable symlinks remain supported; escaping or
+dangling execution links are refused before candidate code runs.
+
+### Incomplete observations
+
+A collected test without a terminal outcome makes the outcome check incomplete.
+Collection removal, skip/xfail, and collection errors retain their own handling.
+An unexplained missing seeded result is unknown, not a measured failed repair.
+
+An uninterpretable mandatory judge response also leaves the check incomplete.
+Raw responses are captured before parsing. Historical reports without a parse
+status remain readable as legacy records.
+
+### Cache identity and dependency provenance
+
+The cache contract freezes file inputs before use and binds results to the
+resolved execution image, dependency closure, source and toolchain identities,
+and effective evaluation settings. Paid verification also includes every clean
+reference used to admit generated tests. Baseline reuse validates canonical-tree
+and observation digests; stage reuse validates required artifact digests. Legacy
+cache entries miss under this contract. Historical evaluation snapshots are not
+rewritten.
+
+Each corpus repository has a frozen dependency closure under `constraints/`,
+recorded from the image used by the published runs and named by every task
+(DECISIONS row 231). Docker image builds resolve under `PIP_CONSTRAINT`; the
+trusted venv path exports the same variable for each install. The image's freeze
+is checked byte for byte and the venv's as a subset. An undeclared version is an
+infrastructure failure. Tasks without a declared closure, including synthesized
+diff tasks, retain their existing build behavior and image tag.
+
+VERIFY records the executed image digest in `execution.json` and uses it in cache
+identity. Older manifests retain their original provenance, including the stale
+image records documented in DECISIONS row 222. Current Builder candidate paths
+are relative to the workdir where possible; older absolute paths remain in the
+historical records.
 
 ## CI containment gate
 
 Repository CI runs `docker info` before pytest and sets
-`SKEPTIC_REQUIRE_DOCKER=1` on the full suite. If Docker is unavailable, pytest
-raises before Docker tests can be converted into skips. Local runs without
-that exact environment value preserve the prior convenience behavior and may
-skip Docker-marked tests when the daemon is unavailable.
+`SKEPTIC_REQUIRE_DOCKER=1` for the full suite. Without Docker, pytest raises
+before Docker tests can become skips. Local runs without that exact environment
+value may skip Docker-marked tests when the daemon is unavailable.
 
 ## Tradeoffs
 
-Weights and a threshold, with no classifier anywhere. Eight soft rules sum
-against a threshold of 1.0. That is auditable and it is crude: task 17 ran a
-pre-registered 13-candidate coordinate search over the weights and every
-candidate was verdict-equivalent, so the shipped table survived by tie-break
-rather than by winning. `judge_flag` at 0.25 changes no verdict anywhere in the
-dev set. One weight has moved since that search: `pattern_introduced`, 0.4 to
-0.75, after three independent measurements put H7 at 0.65 against a 1.0
-threshold. Crude cuts both ways, and this is the direction it cuts well: the
-fix was one number, its effect on every split was computable from committed
-evidence before anything was re-run, and a classifier would have offered no
-such handle.
+### Fixed scoring rules
 
-Every bug here was seeded, and every task is therefore a bug someone chose.
-That is what makes the oracle free and the distribution artificial. A real
-issue backlog has a different shape.
+Eight soft rules sum against a threshold of 1.0; Skeptic uses no classifier.
+The original pre-registered 13-candidate weight search produced equivalent
+verdicts, so a tie-break retained the existing table. At that stage,
+`judge_flag` at 0.25 changed no development verdict.
 
-Two repos. click and rich are both pure-Python CLI-adjacent libraries with fast
-suites. Nothing here says anything about a compiled dependency, a service, or a
-slow integration suite.
+Later, `pattern_introduced` moved from 0.4 to 0.75 after development, holdout, and
+pressure-arm measurements exposed H7 scores of 0.65 below the threshold. The
+change could be evaluated by rescoring committed evidence. The later
+[evaluation analysis](evaluation.md#rescoring-the-committed-evidence) reports
+which rules became decisive after that change; the earlier weight search does
+not describe the later scoring state.
 
-Six of the ten hack categories are prevented, not detected, and the two numbers
-are different animals. In the corpus posture the sandbox shadows tests,
-configs and golden directories read-only, so H1, H2, H3, H4, H9 and H10 cannot
-be written at all: the harness refuses the edit and logs the refusal. Only
-H5 through H8 have to be caught by reading a patch. `verify --diff` has no such
-mount, because it audits a patch someone already wrote, so every row there is
-detection and the prevented six become the detector's problem for the first
-time. That posture split is why a dev-set number and a diff-lane number are not
-comparable, and why the Action ships report-only.
+### Prevention and detection
 
-Thirty mutants per verify, seeded at 1337. Mutation is the dominant cost in the
-whole harness (per-mutant timeout is 3x baseline, capped at 60 s), so the budget
-is a wall-clock decision rather than a statistical one, and a bigger batch buys
-kill-rate resolution the verdict never reads: the rule fires on survivors in
-the tested region, not on a rate. What the budget costs is visible in the
-deterministic lane, where H5 falls to 2 of 6 and H6 to 0 of 6 once the paid
-checks are gone and mutation is carrying the category alone.
+In the corpus configuration, read-only mounts and edit restrictions prevent
+H1–H4, H9, and H10. H5–H8 require detection from observations of the candidate.
+`verify --diff` has no such mounts because it audits a patch someone already
+wrote, so every category there is detection and the six prevented ones become
+the detectors' problem. That is why corpus results and PR-diff results are not
+comparable, and why the Action is report-only by default (`fail-on: never`).
 
-The integrity boundary adds tree copies and container starts. The focused
-adversarial selection measured 48.71 s before candidate/tree isolation and
-99.68 s after it, including the complete two-candidate overwrite regression.
-The corrected-head Docker-required full suite measured 1203 passed, 1 paid-live
-skip in 1266.16 s (21:06). No copy-on-write optimization or broader resource
-quota was added in this hotfix.
+### Execution cost
 
-Model routing is two tiers and one of them is free. Eight T1 checks read
-observations and call nothing; only `t2_advtests` and `t2_judge` reach the API,
-both on the cheap tier, and the paid profile is opt-in per command. That is why
-the default profile costs $0.00 and why the Action needs no key. The price is
-in the deterministic-lane rescore ([evaluation.md](evaluation.md)): 17/29
-lenient without the paid checks against 29/29 with them. Routing the judge to
-a frontier model was never tested and is not claimed; the measured baseline
-says a single Haiku call over diff text already matches the harness on recall.
+Mutation uses 30 mutants per verification with seed 1337. Each mutant's timeout
+is three times its selected-test baseline, capped at 60 seconds. Mutation is the
+dominant runtime cost, and the sampling budget is a wall-clock choice rather
+than a statistical guarantee. In the recorded deterministic rescore, H5 falls
+to 2/6 and H6 to 0/6 without the paid checks, where mutation carries those
+categories alone.
+
+Isolation adds tree copies and container starts. The focused adversarial
+selection measured 48.71 seconds before candidate/tree isolation and 99.68 seconds
+afterward, including the complete two-candidate overwrite regression. The
+corrected-head Docker-required suite recorded 1203 passed and one paid-live skip
+in 1266.16 seconds (21:06). These are historical hotfix measurements, not runtime
+promises. The hotfix added no copy-on-write optimization or broader resource
+quotas.
+
+Only generated tests and the diff judge call an API, both through the configured
+cheap model tier. The default profile makes no API calls. In the historical
+collector-1 rescore, it flags 17/29 development hacks (lenient) versus 29/29 with
+paid checks. A single Haiku diff-judge call also matched that historical lenient
+recall. Routing the judge to a frontier model was not tested and is not claimed.
 
 ## Limits
 
-Sealing begins after a candidate execution stops and host admission succeeds.
-Candidate-controlled pytest code can still influence the JUnit and `.coverage`
-files produced during that same executing phase. The guarantee is temporal: a
-later phase, mutant, probe side, or candidate cannot modify, replace, redirect,
-or append to the earlier sealed result. It is not an end-to-end authenticity
-claim for current-phase measurement.
+### Corpus coverage
 
-Everything measured here is within taxonomy. The ten hack categories were
-authored before the detectors and the detectors were built against them.
-Novel-category discovery is unmeasured. The blind holdout narrows that gap
-without closing it: its author never saw a detector, but it worked from the
-same taxonomy spec, so 11/11 is generalization across authors rather than
-across categories.
+The corpus consists of deliberately seeded bugs in two pure-Python,
+CLI-adjacent libraries with fast suites. A known reference supports comparison
+on each task, but the selected tasks do not represent an ordinary issue backlog.
+Compiled dependencies, services, and slow integration suites are outside these
+measurements.
 
-Attribution numbers carry a labelling artifact. Six of the eight top-1 misses
-are check-precedence: `t1_scope` or `t1_coverage` outranks the check that named
-the mechanism, so the first evidence row reads `scope` or `coverage`. The other
-two read H6 off `advtest_divergence`, which labels every row it emits H6 by an
-explicit earlier decision. All eight were detected. The gap between in-harness
-top-1 21/29 and anywhere 29/29 is entirely this. Both figures are in-harness, where a BUILD runs ahead
-of the checks; the `verify --diff` posture removes `t1_scope` from contention.
-The holdout's wider gap, top-1 6/11 against anywhere 11/11, is the same
-artifact on unseen hacks.
+Everything measured here is within the taxonomy; novel-category discovery is
+unmeasured. The taxonomy existed before the detectors, and the detectors were
+developed against it. The holdout author did not see the detectors but used the same
+taxonomy. Its historical 11/11 result measures transfer across authors, not
+novel-category discovery. Later tuning used holdout results, and the
+[paid repeats](evaluation.md#paid-repeats-ten-sweeps) report subsequent variation.
 
-Adversarial-test yield was thin against real repos before this corpus: three of
-four early real-task runs generated zero trusted candidates, which left H5 and
-H6 detection unmeasured outside the minirepo fixtures. The dev set is what
-finally measured it, and both categories now land SUSPECT on all twelve
-instances.
+### Attribution
 
-One holdout leak was found and fixed. The paid profile built its testgen
-sources dict from every changed file with no `src_dirs` filter, so
-test-touching diffs sent repository test content to the generator in 2 of 8
-early runs. Both produced zero trusted candidates and no evidence, so no
-published number moved, and the fix plus an end-to-end regression test that
-drives the real CLI path landed as wave B's first commit (`DECISIONS.md` row
-149). The original by-construction claim was wrong in an instructive way: it
-bounded the resolver, and the leak was in the caller.
+Historical in-harness attribution was 21/29 for the first evidence entry and
+29/29 anywhere in the evidence. Six of the eight first-entry misses came from
+`scope` or `coverage` taking precedence over the mechanism-specific entry. The
+other two came from `advtest_divergence` labeling every emitted row H6.
+All eight were detected; the gap between first-entry and anywhere attribution
+is a labeling artifact. The historical holdout figures, 6/11 first-entry and
+11/11 anywhere, show the same artifact on unseen hacks.
+All figures describe the in-harness configuration; `verify --diff` removes
+`t1_scope` from contention.
 
-Skeptic's paid checks read adversary-authored text. Generated tests must pass
-the reference and registered clean controls before use, but those filters do
-not prove correctness or immunity to prompt injection. A malformed mandatory
-judge reply leaves that check incomplete and cannot produce PASS; it also
-cannot fabricate adverse evidence. An interpretable but wrong model judgment
-can still create a false positive or miss a hack. No general resistance to
-prompt injection is claimed.
+### Generated tests and model judgments
 
-Current VERIFY records the executed image digest in `execution.json` and uses
-it in cache identity. Older manifests retain their recorded provenance,
-including the stale image records documented in DECISIONS row 222. Current
-Builder candidate paths are relative to the workdir where possible; older arm
-records with absolute host paths remain unchanged.
+Three of four early real-task runs produced no trusted generated tests, leaving
+H5/H6 detection unmeasured outside the small fixtures at that stage. A later
+development run flagged all twelve H5/H6 instances, but subsequent paid repeats
+showed variable generated-test yield. The recorded results should not be read as
+a guarantee for those categories.
+
+An early test-generation input leak sent repository test content to the generator
+in two of eight runs because the caller included every changed file without a
+`src_dirs` filter. Both runs produced zero trusted tests and no evidence, so no
+published result changed. The fix and a real-CLI regression are recorded in
+DECISIONS row 149. The earlier by-construction claim was wrong: it bounded the
+resolver, and the leak was in the caller.
+
+Paid checks read adversary-authored text. Generated tests must pass the reference
+and registered clean controls before use, but that screening proves neither
+correctness nor resistance to prompt injection. An interpretable but wrong model
+judgment can still produce a false positive or miss a hack. Skeptic claims no
+general prompt-injection resistance.
 
 ## Evidence export and public contract
 
@@ -288,74 +337,59 @@ records with absolute host paths remain unchanged.
 inventory produced by BUILD or VERIFY. `build-arm` finalizes its bundle after
 acceptance and classification. Required files are checked against recorded
 digests during streaming, and the index is published last. Readers reject
-missing, partial or changed new bundles; legacy snapshots remain readable
-without gaining a completeness claim. See [the evidence policy](evidence.md).
+missing, partial, or changed new bundles. Legacy snapshots remain readable
+without acquiring a completeness guarantee.
 
-The retained records support inspection of decisions. Candidate code can
-influence measurements produced during its own phase. PASS means the configured
-checks completed without meeting the rejection thresholds and the declared
-seeded outcomes passed. Repair correctness remains unproven.
-
-Registered clean variants participate in generated-test admission, so their
-false-positive counts are not independent validation of that same mechanism.
-The originally blind holdout informed later tuning. The benchmark describes
-recorded cases at their measured revisions. A general probability of correct
-repair remains unmeasured. Skeptic remains a supervised research harness.
-
-Dependency provenance is pinned since row 231. Each corpus repo has one
-closure under `constraints/`, read out of the image the published runs
-measured, and every task names it. The image build copies it into the build
-context and resolves the whole stage under `PIP_CONSTRAINT`; the venv lane
-exports the same variable to each install line. Both lanes read the result
-back, the image's freeze byte for byte and the venv's as a subset, and a
-version the pin does not name is an infra error rather than a measurement
-under a closure nobody chose. A task that declares no closure, the diff
-lane's shape, builds as before and keeps its image tag.
+A `PASS` verdict reports the outcome of configured checks, not proof of repair
+correctness. Registered clean variants participate in generated-test admission,
+so their false-positive counts are not independent validation of that mechanism.
+The originally blind holdout informed tuning. The benchmark describes recorded
+cases at their measured revisions; a general probability of correct repair
+remains unmeasured. See the [evidence policy](evidence.md) for the full export
+contract and the missing artifacts in historical paid runs.
 
 ## Related work
 
 The premise, that verifying agent output is now harder than producing it, is
-not ours. *The Verification Horizon* (arXiv:2606.26300) argues no fixed
-verifier survives improving generators. *Are "Solved Issues" Really Solved
-Correctly?* (arXiv:2503.15223) and *STING* (arXiv:2604.01518) show benchmark
-suites are pervasively under-constraining. *SWE-Mutation* (arXiv:2605.22175)
-and *SpecBench* (arXiv:2605.21384) cover mutation-based adequacy and
-hacking-behavior taxonomies.
+not Skeptic's. The project cites *The Verification Horizon* (arXiv:2606.26300)
+on limits of fixed verifiers; *Are "Solved Issues" Really Solved
+Correctly?* (arXiv:2503.15223) and *STING* (arXiv:2604.01518) on inadequate
+benchmark tests; and *SWE-Mutation*
+(arXiv:2605.22175) and *SpecBench* (arXiv:2605.21384) on mutation-based evaluation
+and hacking-behavior taxonomies.
 
-Skeptic's contribution is narrower than any of them: a reproducible harness
-that seeds the bug itself, so the oracle is free, and publishes a per-rule
-evidence trail with its false-positive rate split by clean-variant kind.
+Skeptic's contribution is narrower than any of them: it evaluates seeded
+repairs and records per-rule evidence with separate clean-control groups. Its small corpus is not directly comparable in scope to
+SWE-bench's full benchmark. The [SWE-bench README at bdfcdd8](https://github.com/SWE-bench/SWE-bench/blob/bdfcdd8c2372a4442d469435faaac2353d87911f/README.md),
+read on 2026-08-29, recommends an x86_64 machine with at least 120 GB of free
+storage, 16 GB of RAM, and eight CPU cores. It gives no time to a first evaluation. The earlier 15–50-minute
+claim in this document was unsupported and remains withdrawn.
 
-Footprint anchor: SWE-bench's README says "We recommend running on an
-`x86_64` machine with at least 120GB of free storage, 16GB of RAM, and 8 CPU
-cores" ([README at bdfcdd8](https://github.com/SWE-bench/SWE-bench/blob/bdfcdd8c2372a4442d469435faaac2353d87911f/README.md), read 2026-08-29), sized for the
-full benchmark's instance images. It states no time to a first eval; the 15
-to 50 minutes this page used to cite had no source and is withdrawn. Skeptic,
-measured 2026-08-29 at commit `bc82e34` from a fresh public clone on an Apple M4 Pro, for one
-task of a two-repo corpus: 11 s to the demo's two verdicts with no Docker and
-no key, 67 s to the first real verdict with the base image already pulled
-and the build cache pruned, 124 MB of files across the checkout, venv and
-workdir, and a 55 MB task image whose content includes the 43 MB base.
-The table and what it excludes are in [docs/evaluation.md](evaluation.md).
+Skeptic's own footprint was measured on 2026-08-29 at `bc82e34` on an Apple M4 Pro,
+from a fresh public clone, for one task of a two-repo corpus: 11 seconds from
+clone to the demo's two verdicts with no Docker and no key, 67 seconds to the
+first real verdict with the base image already pulled and the build cache
+pruned, and 124 MB across checkout, venv, and workdir. The 55 MB task image
+includes its 43 MB base. See [runtime and footprint measurements](evaluation.md#the-lanes)
+for the procedure and exclusions.
 
 ## Layout
 
-| Path | What |
-|---|---|
-| `skeptic/` | CLI, spec loader, workspace materializer, venv/docker sandbox, artifact admission, seedcheck engine, trace writer, stage cache, observation collector, `checks/` |
-| `tasks/` | Corpus task specs, one yaml per task |
-| `patches/` | Seed, gold and hack diffs per task |
-| `acceptance/` | Frozen acceptance suites, held out from the Builder, the detectors and adversarial testgen |
-| `constraints/` | One frozen dependency closure per corpus repo, read out of the image the published runs measured; every task install pins to it |
-| `evals/` | Published eval snapshots: `runs/` for Eval A, `arms/` for Eval B, each with its manifest, table and per-pair traces |
-| `docs/admission/` | Per-repo admission reports with pinned commits |
-| `docs/architecture.md` | This document |
-| `docs/evaluation.md` | The full evaluation record |
+| Path | Contents |
+| --- | --- |
+| `skeptic/` | CLI, task loading, workspace and execution code, artifact admission, seed checking, traces, cache, collector, and `checks/` |
+| `tasks/` | One YAML spec per corpus task |
+| `patches/` | Seed, reference, and hack diffs |
+| `acceptance/` | Frozen suites held out from the Builder, detectors, and adversarial test generator |
+| `constraints/` | Frozen dependency closures for the corpus repositories |
+| `evals/` | Evaluation snapshots, manifests, tables, and per-pair traces; `runs/` for Eval A and `arms/` for Eval B |
+| `docs/admission/` | Repository and task admission reports |
+| `docs/architecture.md` | Execution boundaries and verification rules |
+| `docs/evaluation.md` | Measurements and their limitations |
+| `docs/evidence.md` | Export format, retention, and historical evidence limits |
 | `docs/taxonomy.md` | Hack taxonomy, H1 to H10 |
-| `DECISIONS.md` | Decision provenance, including recorded dissents |
+| `DECISIONS.md` | Decision history, including recorded dissents |
 
-Python 3.12. `pip install -e ".[dev]" && pytest`.
-
-Every pytest session with the Docker daemon up leaves one more minirepo tag
-behind, a few megabytes each on shared base layers. `docker image prune`
-reclaims them.
+For local development, use Python 3.12 and run
+`pip install -e ".[dev]" && pytest`. Docker-backed tests create small minirepo
+image tags on shared base layers; include these in local cleanup planning.

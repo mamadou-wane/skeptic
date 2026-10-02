@@ -133,8 +133,9 @@ def test_evaluation_doc_quotes_the_script_verbatim(script):
     assert script.render_holdout() in section
     assert script.render_stability(script.EVAL_A) in section
     assert script.render_stability(script.HOLDOUT, load_holdout_registry(script.REGISTRY)) in section
+    assert "Every run named in the tables is under `evals/v1/runs/`" in " ".join(section.split())
     for _, run in script.EVAL_A + script.HOLDOUT:
-        assert f"`evals/v1/runs/{run}/`" in section, run
+        assert run in section, run
 
 
 def _collapsed(path: Path) -> str:
@@ -161,26 +162,29 @@ def test_doc_prose_states_the_bar_the_spread_and_the_spend_from_the_runs(script)
     under = sorted(k for k, n in h_len.items() if n / 11 < 0.85)
     assert under == ["h3", "h5"] and {h_len[k] for k in under} == {9}
     doc = _collapsed(EVALUATION_DOC)
-    assert ("met in every dev-set draw and in three holdout draws of five: h3 and "
-            "h5 read 9/11, 81.8 percent") in doc
-    assert f"lenient read {min(a_len.values())} to {max(a_len.values())} of 29 and " \
-           f"{min(h_len.values())} to {max(h_len.values())} of 11" in doc
+    assert ("Every development sweep met the pre-registered 85 percent bar. Three "
+            "holdout sweeps met it; h3 and h5 did not, each at 9/11 (81.8 percent), on "
+            "the same two sampled rows. The bar stands and the shortfall is published "
+            "with it") in doc
+    assert f"Lenient detection ranged from {min(a_len.values())}–{max(a_len.values())}/29 on " \
+           f"development and {min(h_len.values())}–{max(h_len.values())}/11 on the holdout" in doc
     spend_a = [sum(r.usd for r in v) for v in a.values()]
     spend_h = [sum(r.usd for r in v) for v in h.values()]
-    assert f"${min(spend_a):.2f} to ${max(spend_a):.2f} per Eval A sweep and " \
-           f"${min(spend_h):.2f} to ${max(spend_h):.2f} per holdout sweep" in doc
+    assert f"${min(spend_a):.2f}–${max(spend_a):.2f} per development sweep and " \
+           f"${min(spend_h):.2f}–${max(spend_h):.2f} per holdout sweep" in doc
     total = sum(spend_a) + sum(spend_h)
-    assert f"${total:.4f} spent" in doc
-    assert f"0 INFRA in {sum(len(v) for v in a.values()) + sum(len(v) for v in h.values())} rows" in doc
+    assert f"Total spend was ${total:.4f} of the $30 cap" in doc
+    pairs = sum(len(v) for v in a.values()) + sum(len(v) for v in h.values())
+    assert f"All {pairs} evaluated pairs completed without infrastructure errors" in doc
     a1, h1 = a["a1"], h["h1"]
     from skeptic.evalkit import false_positives
     fp = false_positives(a1)
     assert all(fp[s][0] == 0 for s in script.CLEAN_SPLITS)
     assert (f"{detection(a1)[0]}/29 lenient, {detection(a1, strict=True)[0]}/29 strict, "
-            "0/12 on each of gold, gold-prime and gold-large") in doc
-    assert f"{detection(h1)[0]}/11 lenient, {detection(h1, strict=True)[0]}/11 strict" in doc
-    assert "lenient read " + ", ".join(str(h_len[k]) for k, _ in script.HOLDOUT[:-1]) \
-           + f" and {h_len[script.HOLDOUT[-1][0]]} of 11" in doc
+            "and 0/12 in each clean group") in doc
+    assert f"{detection(h1)[0]}/11 lenient and {detection(h1, strict=True)[0]}/11 strict" in doc
+    assert "yielded " + ", ".join(str(h_len[k]) for k, _ in script.HOLDOUT[:-1]) \
+           + f", and {h_len[script.HOLDOUT[-1][0]]} detections of 11" in doc
 
 
 def test_doc_accounts_for_every_unstable_pass_draw(script):
@@ -206,6 +210,8 @@ def test_doc_accounts_for_every_unstable_pass_draw(script):
                 else:
                     exceptions.append((label, key))
     doc = _collapsed(EVALUATION_DOC)
-    assert f"read PASS in {passes} draws between them, and {empty} of the {passes} carry" in doc
+    assert (f"received `PASS` in {passes} draws between them. Of those passes, "
+            f"{empty} carried `advtest_zero_trusted`") in doc
     assert exceptions == [("h1", ("rich-0006", "holdout-h5"))]
-    assert "h1's rich-0006 holdout H5: the battery yielded 2 trusted tests and neither diverged" in doc
+    assert ("The remaining pass was rich-0006's holdout H5 in h1, with two trusted "
+            "tests and zero divergences") in doc

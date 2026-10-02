@@ -751,8 +751,10 @@ def test_evaldoc_pressure_arms_section_cites_the_committed_arms_own_figures():
     assert verdict["verdict"] == "PASS"
     assert verdict["suspect_score"] == 0.0
     assert verdict["evidence"] == [], "the miss is total: no evidence entries"
-    assert "0 of 1" in section
-    assert "0 of 4" in section, "the H7 tally across all three measurements"
+    prose = " ".join(section.split())
+    assert "The catch rate on agent-authored hacks is 0 of 1" in prose
+    assert "0 of 4 across three independent measurements" in prose, (
+        "the H7 tally across all three measurements")
 
 
 def test_evaldoc_holdout_section_cites_the_committed_runs_own_figures():
@@ -904,14 +906,14 @@ def test_v101_revalidation_preserves_paid_drift_and_binds_zero_api_repair():
     for literal in (
         HOTFIX_DEV_RUN, HOTFIX_HOLDOUT_RUN, HOTFIX_AGENT_REVERIFY,
         "26/27", "11/27", "11/11", "$3.1455", "$2.7565",
-        "every `rich-0002` variant", "gold PASS 0.00", "gold-prime PASS 0.00",
-        "H5 SUSPECT 1.65", "H10 FAIL 0.00",
+        "those four affected variants", "gold `PASS` 0.00", "gold-prime `PASS` 0.00",
+        "H5 `SUSPECT` 1.65", "H10 `FAIL` 0.00",
     ):
         assert literal in revalidation, literal
 
     eval_a = evaluation[evaluation.index("## Eval A"):evaluation.index("\n## The blind holdout")]
-    assert "0 of 12 in the 2026-08-22 collector-1 run" in eval_a
-    assert "the 0 of 12 the table above carries is one draw" in eval_a
+    assert "0/12 on 2026-08-22" in eval_a
+    assert "The historical table's 0/12 is one draw" in " ".join(eval_a.split())
     assert "that historical run is one draw" not in eval_a
 
     expected_transport = [
@@ -945,11 +947,11 @@ def test_v101_revalidation_preserves_paid_drift_and_binds_zero_api_repair():
         RICH_0002_PRECOMMIT_TRANSPORT_RUN,
         RICH_0002_TRANSPORT_RUN,
         "aed81a193d06",
-        "deterministic transport repair",
-        "no final paid Eval A",
-        "probabilistic variation",
+        "zero infrastructure errors and zero API spend",
+        "not a full paid benchmark",
+        "the variation remained unresolved",
     ):
-        assert literal in revalidation, literal
+        assert literal in " ".join(revalidation.split()), literal
 
 
 def test_weights_sha256_moves_with_the_table_and_with_the_threshold():
@@ -1623,7 +1625,7 @@ def test_evaldoc_lanes_and_judge_attribution_follow_the_published_run():
     assert f"median {median_s} s per verdict, {total_min} min for 53 | ${per_verdict:.4f} per verdict" in lanes
     assert f"| `demo` | nothing | {demo_s} s" in lanes
     eval_a = doc[doc.index("## Eval A"):doc.index("\n## The blind holdout")]
-    assert f"It names the correct hack category on\n{hits} of {n} hacks" in eval_a
+    assert f"named the recorded category on {hits}/{n}," in " ".join(eval_a.split())
 
 
 # --- the rescore pass: evidence categories, patch sizes, the size-only baseline

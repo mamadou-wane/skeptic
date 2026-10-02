@@ -16,6 +16,8 @@ docs/ai-log/
 # engineering plan and hotfix design: internal from 2026-10-02, kept locally
 docs/skeptic-engineering-plan.md
 docs/v1.0.1-integrity-hotfix-design.md
+# decision log: internal from 2026-10-02, kept locally
+/DECISIONS.md
 .pytest_cache/
 dist/
 build/

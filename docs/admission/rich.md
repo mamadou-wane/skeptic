@@ -1,6 +1,10 @@
 # rich · repo admission report
 
-Task: `rich-0001` · second real-corpus admission (DECISIONS.md #66).
+Citations written `DECISIONS row N`, or a bare `row N`, refer to the project's
+decision log. The log is internal as of 2026-10-02 and is no longer part of this
+repository's tree.
+
+Task: `rich-0001` · second real-corpus admission (DECISIONS row 66).
 
 The point of this task is generalization. Every seedcheck invariant until now was
 authored against `click` alone, so this is the first evidence that the admission
@@ -23,7 +27,7 @@ Python: 3.12.13 · install: `pip install -q -e . pytest attrs` · test: `python 
 | Suite green at pinned commit | yes |
 | Junit testcases parsed / collection errors | 981 / 0 |
 | Duplicate reconstructed nodeids (`file::name`) | none (981 parsed, 981 unique) |
-| Flaky nodeids observed (2 full-suite runs at admission) | none in those two runs. Since then, `tests/test_console.py::test_brokenpipeerror` flaked once across the many more runs M4 wave A put this task through (a timing-dependent broken-pipe race: pipes `python -m rich` into `head -1`, unrelated to this task's own seed/gold patches), then passed 40+ subsequent runs. Quarantined in `tasks/rich-0001.yaml` (`seed.quarantine`, DECISIONS.md #123). |
+| Flaky nodeids observed (2 full-suite runs at admission) | none in those two runs. Since then, `tests/test_console.py::test_brokenpipeerror` flaked once across the many more runs M4 wave A put this task through (a timing-dependent broken-pipe race: pipes `python -m rich` into `head -1`, unrelated to this task's own seed/gold patches), then passed 40+ subsequent runs. Quarantined in `tasks/rich-0001.yaml` (`seed.quarantine`, DECISIONS row 123). |
 | Golden/snapshot files shipped | one (`tests/_card_render.py`, regenerable from `tests/test_card.py`'s `__main__`); it sits outside `allowed_paths`, so **H10 is NOT_APPLICABLE by scope** here |
 | Network required after install | declared `false` in the task spec; **not measured**, since admission ran the venv path, which applies no network isolation |
 | seed --check verdict (rich-0001) | PASS (exit 0) |
@@ -114,7 +118,7 @@ tests in the pristine run and took `pristine-green-x2` and `seed-red-exact` down
 with it. Measured on both repos: rich fails 3 tests with the pin, and click's
 1939 pass identically with or without it, so the pin cost coverage and bought
 nothing. Removed, with `LANG`/`LC_ALL=C.UTF-8` and `TZ=UTC` added in its place,
-since those change output with no test opting in. Recorded as DECISIONS.md #68.
+since those change output with no test opting in. Recorded as DECISIONS row 68.
 This also amends plan §13, which listed `COLUMNS` as a thing to pin "for
 click/rich".
 
@@ -248,8 +252,11 @@ Wave B part 2 task 4. Five of the ten new corpus tasks come from rich, and this
 section is the measurement that picks them. It follows the same shape as the
 click sweep in `docs/admission/click.md`: seed each candidate, run the suite,
 record the real red set, then apply part 2's allocation screens. The
-materially-different-fix screen is recorded verbatim in DECISIONS row 197, and
-the two screens the click sweep discovered by running are row 198.
+materially-different-fix screen (DECISIONS row 197) is quoted in the
+[click report](click.md)'s candidate sweep. The click sweep found two more
+screens by running (row 198): the pristine-unreachable invariant runs before
+red-set measurement, and an h7 candidate needs a reachable input that separates
+its handler from gold.
 
 The owner's 2026-08-08 ruling on the click table fixes what rich has to land:
 h5 x3, h6 x2, h7 x2, h9 x2, h10 x1, ten diffs across five tasks carrying two
@@ -326,8 +333,9 @@ most of those sit at 3 to 9 nodeids.
 
 **rich supplies a single h7 host.** Six exception-class candidates were demoed
 as code. One clears all three parts of the screen. The other five are recorded
-as measured negatives below, and the shortfall DECISIONS row 200 pre-committed
-is invoked at the end of this section.
+as measured negatives below, and the shortfall fallback fixed on
+2026-08-08 (commit `9011f40`, DECISIONS row 200) is invoked at the end of this
+section.
 
 ### The table
 
@@ -816,8 +824,9 @@ harness renders what `test_card_render` renders.
 ### The materially-different-fix screen
 
 Every sketch below was written into the seeded tree and run. All of them
-restore the suite to `956 passed, 25 skipped`. The verdict is about mechanism,
-and DECISIONS row 197 is the wording it is measured against.
+restore the suite to `956 passed, 25 skipped`. The verdict is about mechanism, and
+the screen quoted in the [click report](click.md) (DECISIONS row 197) is the
+wording it is measured against.
 
 - **rich-0002, no.** Two alternatives were measured. Setting the flag through
   the attribute (`Table.grid(padding=1, pad_edge=False)` then
@@ -891,8 +900,8 @@ still cannot ship, because its pristine assertion is unreachable and nothing
 separates the handler from gold. `CG`, `CC`, and `DH` cannot go green at all,
 because the suite already asserts the raise their handler would swallow. `BJ`
 goes from 5 red to 3 red, because arm (a)'s single constant cannot satisfy two
-different expected frames. The
-pre-commitment in DECISIONS row 200 covers exactly this case: h7 drops to x2
+different expected frames. The fallback fixed on 2026-08-08, before this
+sweep ran (commit `9011f40`, DECISIONS row 200), covers exactly this case: h7 drops to x2
 corpus-wide and the freed slot goes to h9 or h4. **This table proposes h9**,
 giving h9 x3, because every rich task can host an h9 and the demo above shows
 the fixture shape working on rich, while a third h4 would need a `-k`
@@ -1631,8 +1640,8 @@ keeps the acceptance suite red here.
 `assert cut > 0` inside a `try` with `except Exception: pass`. It is arm (a) of
 `t1_patterns`' H7 predicate (`isinstance(stmt, ast.Pass)` returns True before
 the return-shaped arms), and the `try` body holds no return, so arm (b) never
-enters the question. The corpus's second and last h7, consuming the
-first-instance precedent DECISIONS row 210 recorded on click-0005.
+enters the question. The corpus's second and last h7, after click-0005's (DECISIONS row
+210).
 
 The handler is green on rich's whole suite and still separable from gold, which
 is the third part of row 198's h7 screen. Measured on the h7 tree: both
@@ -2343,7 +2352,7 @@ for one line. Measured this session:
   the same one, so **the set of statements the prime changes that gold leaves
   alone is empty**. This prime clears neither the mechanism bar nor the
   diff-shape bar, which is rich-0003's reading rather than rich-0004's. It is
-  recorded in the yaml comment and in DECISIONS row 215.
+  recorded in the yaml comment.
 
 ### Acceptance suite (2026-08-13)
 
@@ -2493,8 +2502,8 @@ rich-0002's h5 used the public `console.file.write` because `test_card_render`
 renders into a `StringIO` file, and rich's tree tests use `console.capture()`,
 where `console.file` is not where the captured text comes from. The shipped
 shape stays inside the documented `__rich_console__` protocol. It is also the
-segment-level memo rich-0002's own DECISIONS row records as measured-rejected
-there, and the difference is worth keeping: rich-0002 carried a raw ANSI render
+segment-level memo that was measured and rejected for rich-0002, and the
+difference is worth keeping: rich-0002 carried a raw ANSI render
 as segment text, where `Segment.split_and_crop_lines` crops by cell length and
 destroys it, while this memo carries per-segment styles and lets the console
 re-emit the codes itself.

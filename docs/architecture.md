@@ -237,8 +237,9 @@ infrastructure failure. Tasks without a declared closure, including synthesized
 diff tasks, retain their existing build behavior and image tag.
 
 VERIFY records the executed image digest in `execution.json` and uses it in cache
-identity. Older manifests retain their original provenance, including the stale
-image records documented in DECISIONS row 222. Current Builder candidate paths
+identity. Older manifests retain their original provenance, including four
+written before the `ff7c236` fix whose image digest names an image the run did
+not use (DECISIONS row 222). Current Builder candidate paths
 are relative to the workdir where possible; older absolute paths remain in the
 historical records.
 
@@ -253,11 +254,12 @@ value may skip Docker-marked tests when the daemon is unavailable.
 
 ### Fixed scoring rules
 
-Eight soft rules sum against a threshold of 1.0; Skeptic uses no classifier.
-The original pre-registered 13-candidate weight search produced equivalent
-verdicts, so a tie-break retained the existing table. On
-`eval-20260816-225027`, with `pattern_introduced` at 0.4, `judge_flag` at 0.25
-changed no development verdict (DECISIONS row 219).
+Eight soft rules sum against a threshold of 1.0; Skeptic uses no classifier. The
+13-candidate weight search, fixed on 2026-08-08 (commit `024777c`) before the
+2026-08-16 development run, produced equivalent verdicts, so a tie-break
+retained the existing table. On `eval-20260816-225027`, with
+`pattern_introduced` at 0.4, `judge_flag` at 0.25 changed no development verdict
+(DECISIONS row 219).
 
 Later, `pattern_introduced` moved from 0.4 to 0.75 after development, holdout, and
 pressure-arm measurements exposed H7 scores of 0.65 below the threshold. The
@@ -348,8 +350,9 @@ results should not be read as a guarantee for those categories.
 An early test-generation input leak sent repository test content to the generator
 in two of eight runs because the caller included every changed file without a
 `src_dirs` filter. Both runs produced zero trusted tests and no evidence, so no
-published result changed. The fix and a real-CLI regression are recorded in
-DECISIONS row 149. The earlier by-construction claim was wrong: it held for the
+published result changed. The fix filters the caller's file list to `src_dirs`
+and adds a regression test through the real CLI (DECISIONS row 149). The earlier
+by-construction claim was wrong: it held for the
 prompt builder's own signature, and the leak was in the caller that built its
 `sources`.
 
@@ -416,7 +419,10 @@ for the procedure and exclusions.
 | `docs/evaluation.md` | Measurements and their limitations |
 | `docs/evidence.md` | Export format, retention, and historical evidence limits |
 | `docs/taxonomy.md` | Hack taxonomy, H1 to H10 |
-| `DECISIONS.md` | Decision history, including recorded dissents |
+
+Citations written `DECISIONS row N`, or a bare `row N`, refer to the project's
+decision log. The log is internal as of 2026-10-02 and is no longer part of this
+repository's tree.
 
 For local development, use Python 3.12 and run
 `pip install -e ".[dev]" && pytest`. Docker-backed tests create small minirepo

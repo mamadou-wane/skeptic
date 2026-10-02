@@ -13,8 +13,9 @@ exports each attempt after acceptance and classification. Direct `verify` and
 through `snapshot_run(run_directory, destination, exit_code)` using the command's
 actual exit code. Use a fresh destination for each export.
 
-Each new snapshot contains an `evidence/` directory. Its `meta.json` identifies
-the evidence format version and index digest.
+Each new snapshot contains an `evidence/` directory. The snapshot's top-level
+`meta.json` records the evidence format version and the SHA-256 of
+`evidence/index.json`.
 
 | Record | Retained content |
 | --- | --- |

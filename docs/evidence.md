@@ -1,110 +1,108 @@
 # Decision evidence
 
-Skeptic is a supervised research and evaluation harness. Its exports preserve
-records needed to inspect a decision after disposable execution trees are
-removed. They do not prove a repair correct or authenticate measurements that
-candidate code produced during its own phase.
+Skeptic exports the records needed to inspect a decision after its disposable
+execution trees are removed. An export does not prove a repair correct or
+authenticate measurements produced during candidate execution. Skeptic is a
+supervised research harness; exports assume a host the researcher controls.
 
 ## What a new export contains
 
 `skeptic eval --out <directory>` exports each verification run. `build-arm`
 exports each attempt after acceptance and classification. Direct `verify` and
-`build` retain a source inventory in their run directory; the existing Python
-`snapshot_run(run_directory, destination, exit_code)` API can export it using
-the command's actual exit code. Use a fresh destination for each export.
+`build` commands retain a source inventory in their run directories; export it
+through `snapshot_run(run_directory, destination, exit_code)` using the command's
+actual exit code. Use a fresh destination for each export.
 
-Each new snapshot has an `evidence/` directory and `meta.json` identifies its
-format version and index digest. The bundle contains:
+Each new snapshot contains an `evidence/` directory. The snapshot's top-level
+`meta.json` records the evidence format version and the SHA-256 of
+`evidence/index.json`.
 
-- The admitted patch and captured task inputs, including seed/reference patch
-  bytes and dependency constraints where used, plus effective task settings.
-- The executed image identity and evaluator provenance.
-- Check reports, generated-test source and its admission results, including
-  rejected tests and negative observations.
-- Admitted collection, JUnit, coverage, mutation, probe and generated-test
-  execution records needed to inspect the checks that ran.
-- Actual application-level model requests and responses, captured at the API
-  boundary before interpretation. Each attempt has paired request/response or
-  error-type records. Credentials and HTTP headers are not part of this format.
-- Verdict or arm classification, traces, and the originating stage trace when
-  a cache result is replayed.
+| Record | Retained content |
+| --- | --- |
+| Inputs | Admitted patch, effective task settings, seed/reference patch bytes, and dependency constraints where used |
+| Provenance | Executed image identity and evaluator provenance |
+| Checks | Reports, generated-test source and admission results, rejected tests, and negative observations |
+| Execution | Admitted collection, JUnit, coverage, mutation, probe, and generated-test execution records needed to inspect the checks that ran |
+| Model calls | Application-level requests and responses captured at the API boundary before interpretation; each attempt has paired request/response or error-type records |
+| Outcomes | Verdict or arm classification, traces, and the originating stage trace for a replayed cache result |
 
-Builder test reports contain the original received JUnit bytes and execution
-records. Acceptance exports include the held-out suite inputs and admitted
-reports. These files are evidence for the researcher; never mount an exported
-bundle into a candidate environment.
+Credentials and HTTP headers are not part of the model-call format. Builder
+test reports retain the original received JUnit bytes and execution records.
+Acceptance exports include held-out suite inputs and admitted reports. These
+bundles are for researcher inspection; never mount one into a candidate
+environment.
 
 ## Completeness and publication
 
-A stage records an inventory of source-file digests. Export streams those files,
-checks their digests, and publishes files through the existing no-follow,
-regular-file and no-replace artifact machinery. The index is published last.
-An existing export is refused; a failed or partial export is not overwritten
-into apparent success. Re-export to a fresh destination after repairing the
-underlying problem.
+Each verify, build, and acceptance run records an inventory of source-file
+digests. Export streams the files, checks their
+digests, and publishes them through the no-follow, regular-file, no-replace
+artifact machinery. It publishes the index last. Existing exports are refused,
+including failed or partial ones. Repair the underlying problem and export to a
+new destination rather than overwriting a partial bundle.
 
-`evidence/index.json` records logical names, storage names, raw lengths and
-SHA-256 digests, stored-file digests, encoding, metadata and omission policy.
-A complete bundle means the declared decision evidence was retained. It does
-not mean the evaluation passed. Incomplete executions retain available
-diagnostics and remain explicitly incomplete. A missing required source,
-changed digest or publication error prevents a complete export.
+`evidence/index.json` records logical and storage names, raw lengths and SHA-256
+digests, stored-file digests, encoding, metadata, and omission policy. Missing
+required sources, changed digests, or publication errors prevent a complete
+export. Incomplete executions retain available diagnostics and remain marked
+incomplete. A complete bundle means the declared evidence was retained, not that
+the evaluated patch passed.
 
-`evalkit.load_rows` and `load_arm_rows` validate new bundles before consuming
-their summaries. They reject a missing index, changed evidence, partial export
-or removed version marker. Legacy snapshots remain readable; they acquire no
-new completeness guarantee. Digests detect damage or replacement relative to
-the index. A host owner who can replace both the records and index can bypass
-that check.
+`evalkit.load_rows` and `load_arm_rows` validate new bundles before reading their
+summaries. They reject missing indexes, changed evidence, partial exports, and
+removed version markers. Legacy snapshots remain readable without gaining a new
+completeness guarantee.
+
+Digests detect changes relative to the index. They cannot protect against a host
+owner who replaces both the evidence and its index.
 
 ## Large artifacts and disposable data
 
-Keep decisive measurements. Coverage databases and coverage JSON are retained
-with lossless gzip compression; other evidence files above 1 MiB are compressed
-as well, except line-oriented traces needed by existing readers. Copying and
-validation stream bounded chunks rather than loading large measurements into
-memory. The existing admitted coverage limit remains the upper bound; a file
-that cannot be retained within the contract causes an explicit export failure.
-No decisive measurement is omitted merely because it is large.
+Coverage databases and coverage JSON use lossless gzip compression. Other
+evidence files above 1 MiB are also compressed, except line-oriented traces
+needed by existing readers. Copying and validation use bounded streaming chunks.
+The admitted coverage limit is the per-file upper bound; a file that cannot be
+retained within it causes an explicit export failure. No decisive measurement
+is omitted merely because it is large.
 
-Do not retain whole workdirs. Pristine, seeded, candidate and mutant trees,
-venvs, containers, images and caches are omitted as disposable intermediates.
-The index states these omissions; captured inputs and recorded identities are
-retained when execution reached those steps. There is no remote storage service
-or automatic upload. Export location and access remain under the researcher.
+Exports omit whole workdirs and disposable intermediates: pristine, seeded,
+candidate, and mutant trees; venvs; containers; images; and caches. The index
+records these omissions. Captured inputs and execution identities are retained
+when execution reached those steps. There is no remote storage service or
+automatic upload; the researcher controls export location and access.
 
-A future reduction of measurement data must establish that the retained subset
-still supports inspection of the decision, then record the original digest,
-size and omission reason. This version keeps compressed originals instead of
-introducing a projection that could discard decisive context.
+Any future reduction of measurement data must establish that the retained subset
+still supports decision inspection and record the original digest, size, and
+omission reason. This format retains compressed originals instead.
 
 ## Historical paid runs
 
-The ten paid sweeps retain their original committed verdicts, summaries, traces,
-and manifests. The original generated tests, raw model responses, and detailed
-execution artifacts were not recovered from the available local records. Their
-sampled decisions cannot presently be fully inspected. A new evaluation would
-produce new evidence and would not recover those historical artifacts.
+The ten historical paid sweeps retain their original committed verdicts, summaries,
+traces, and manifests. Their original generated tests, raw model responses, and
+detailed execution artifacts were not recovered from the available local
+records. Those sampled decisions cannot currently be fully inspected.
 
-The 380 committed pair snapshots remain unchanged. Summaries and rescoring can
-be reproduced from those records; full inspection of the original sampled
-decisions cannot currently be promised. New export policy is prospective.
+The 380 committed pair snapshots remain unchanged. Their summaries and rescoring
+can be reproduced from the retained records, but the new export policy does not
+retroactively complete them. A new evaluation creates new evidence; it cannot
+recover the original sampled artifacts.
 
 ## Scope of the public results
 
-PASS means the configured mandatory checks completed or were explicitly not
-applicable, the declared seeded outcomes passed, and the evidence did not reach
-a rejection threshold. An independent adverse finding can still justify FAIL
-or SUSPECT while another check is incomplete. Seedless diff audits do not
-establish a seeded repair.
+`PASS` means the configured mandatory checks completed or were explicitly not
+applicable, the declared seeded outcomes passed, and the evidence stayed below
+the rejection thresholds. Independent adverse evidence can still justify `FAIL`
+or `SUSPECT` while another check is incomplete. Seedless diff audits establish no
+seeded repair.
 
-Registered clean variants are used by generated-test admission, so their
-results are conditioned controls for that mechanism. The holdout was authored
-blind but later informed tuning. Neither establishes a general probability of
-correct repair. Keep all negative results and separate denominators.
+Generated-test admission uses the registered clean variants, making their results
+conditioned controls for that mechanism. The holdout was authored blind but later
+informed tuning. Neither result establishes a general probability of correct
+repair. Retain all negative results and report each split with its own
+denominator.
 
-Published timing and footprint figures describe their measured revision,
-platform and exclusions. The 2026-08-29 footprint is commit `bc82e34`, with base
-image pull time excluded. It is not a current-version runtime promise. A future
-maintenance release and the corresponding Action tag example require separate
-release review; no release is created by this evidence change.
+Timing and footprint figures apply to their measured revision and platform,
+including the stated exclusions. The 2026-08-29 footprint describes `bc82e34`
+and excludes base-image pull time; it is not a current-version runtime promise.
+A maintenance release and its corresponding Action tag example require separate
+review. An evidence-policy change does not create a release.

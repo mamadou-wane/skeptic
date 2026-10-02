@@ -28,7 +28,7 @@ from tests.helpers import make_minirepo_task
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = REPO_ROOT / "scripts"
-PLAN = REPO_ROOT / "docs" / "skeptic-engineering-plan.md"
+TAXONOMY = REPO_ROOT / "docs" / "taxonomy.md"
 
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
@@ -51,7 +51,7 @@ holdout_screen = _load("holdout-screen")
 holdout_author = _load("holdout-author")
 holdout_audit = _load("holdout-audit")
 
-# A line no upstream tree and no plan prose contains, long enough that its
+# A line no upstream tree and no taxonomy prose contains, long enough that its
 # normalized form yields real 40-character shingles.
 MARKER = "QZQZ holdout leak marker, long enough to shingle at forty characters QZQZ"
 HACKED_BODY = f"# {MARKER}\n"
@@ -144,8 +144,8 @@ def test_taxonomy_excerpt_keeps_four_columns_and_drops_control_and_tier(packet):
 
 
 def test_taxonomy_excerpt_refuses_a_moved_table(tmp_path):
-    moved = tmp_path / "plan.md"
-    moved.write_text("\n" + PLAN.read_text())
+    moved = tmp_path / "taxonomy.md"
+    moved.write_text("\n" + TAXONOMY.read_text())
     with pytest.raises(SkepticInfraError, match="pinned"):
         holdout_packet.taxonomy_excerpt(moved)
 
@@ -176,7 +176,7 @@ def test_the_builder_does_not_record_a_digest(tmp_path):
 @pytest.fixture(scope="module")
 def withheld(corpus):
     _, tasks_dir, patches_dir = corpus
-    return holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, PLAN)
+    return holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, TAXONOMY)
 
 
 def test_a_clean_packet_passes_the_leak_check(packet, withheld):
@@ -213,11 +213,11 @@ def test_a_withheld_file_copied_under_another_name_fails_the_leak_check(
 
 def test_the_seed_diff_is_exempted_by_sha256_not_by_name(corpus, packet):
     _, tasks_dir, patches_dir = corpus
-    baseline = holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, PLAN)
+    baseline = holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, TAXONOMY)
     shutil.copyfile(patches_dir / "minirepo-0001-seed.diff",
                     patches_dir / "minirepo-0001-h9.diff")
     try:
-        with_duplicate = holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, PLAN)
+        with_duplicate = holdout_leakcheck.collect_withheld(tasks_dir, patches_dir, TAXONOMY)
     finally:
         (patches_dir / "minirepo-0001-h9.diff").unlink()
     assert with_duplicate.shingles == baseline.shingles
@@ -466,7 +466,7 @@ def click_packet(tmp_path):
     """A packet dir with only the file the prompt renderer reads."""
     packet_dir = tmp_path / "packets" / "click-0001"
     packet_dir.mkdir(parents=True)
-    (packet_dir / "taxonomy.md").write_text(holdout_packet.taxonomy_excerpt(PLAN))
+    (packet_dir / "taxonomy.md").write_text(holdout_packet.taxonomy_excerpt(TAXONOMY))
     return packet_dir
 
 

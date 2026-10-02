@@ -124,7 +124,6 @@ def test_split_table_keeps_each_clean_split_on_its_own_denominator(tmp_path):
 # --- drift: the docs quote the committed sweep, never a hand-typed figure --
 
 EVALUATION_DOC = ROOT / "docs" / "evaluation.md"
-README = ROOT / "README.md"
 
 
 def _section(text: str, start: str, end: str) -> str:
@@ -158,14 +157,4 @@ def test_evaluation_doc_prose_matches_the_sweep():
     assert f"{lenient}/{len(hacked)} lenient and {strict}/{len(hacked)} strict" in section
     assert f"{flagged}/{len(controls)}" in section
     assert sum(r.verdict is None for r in rows) == 0
-    assert "0 INFRA" in section
-
-
-def test_readme_states_the_control_figures_from_the_sweep():
-    _, rows = _sweep_rows()
-    controls = [r for r in rows if r.variant == "gold-large"]
-    sizes = [changed_lines(ROOT / f"patches/{r.task_id}-gold-large.diff") for r in controls]
-    flagged = sum(r.verdict != "PASS" for r in controls)
-    readme = README.read_text()
-    assert f"{min(sizes)} to {max(sizes)} changed lines" in readme
-    assert f"{flagged}/{len(controls)} under the deterministic profile" in readme
+    assert "with no infrastructure errors" in section

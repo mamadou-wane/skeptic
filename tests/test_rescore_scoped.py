@@ -2,9 +2,9 @@
 checked against an independent recomputation (a throwaway script over the
 raw `verdict.json` files and patch files, 2026-09-01, which reproduced
 every recorded verdict before any figure below was written down) and against
-the section of docs/evaluation.md that quotes it, so the script, the doc and
-the README cannot drift apart. Pure offline rescoring: no Docker, no network,
-no API key."""
+the section of docs/evaluation.md that quotes it, so the script and the doc
+cannot drift apart. Pure offline rescoring: no Docker, no network, no API
+key."""
 import importlib.util
 import re
 import subprocess
@@ -159,21 +159,6 @@ def test_evaldoc_section_quotes_the_scripts_own_output_verbatim():
         "scripts/rescore-scoped.py's output is not quoted verbatim in "
         "docs/evaluation.md's 'Rescoring the committed evidence' section"
     )
-
-
-def test_readme_states_the_scoped_split_from_the_scripts_figures():
-    """The README's reading of the split derives from the script, never from
-    a literal. Whole clauses are matched, with the README's line wrapping
-    collapsed, so a figure that merely substring-matches another (0/17
-    inside 10/17) fails rather than passing."""
-    split = _by_first_cells(_table_rows(_run_script(), "scoped split"), 2)
-    section = " ".join(_section("README.md", "## Evaluation").split())
-    prevented, detected = split[("paid", "prevented")], split[("paid", "detected")]
-    free = split[("deterministic", "detected")]
-    assert f"{prevented[1]} on the dev set and {prevented[3]} on the holdout" in section
-    assert f"strict reads {detected[1]} and {detected[3]}" in section
-    assert f"lenient {detected[0]} and {detected[2]}" in section
-    assert f"the deterministic lane {free[0]} and {free[2]}" in section
 
 
 def test_size_block_states_the_corpus_line_counts_per_variant_kind():

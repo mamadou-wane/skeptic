@@ -11,18 +11,19 @@ RECORDS = REPO_ROOT / "evals" / "v1" / "diff-lane" / "20260829"
 def _section() -> str:
     doc = (REPO_ROOT / "docs" / "evaluation.md").read_text()
     start = doc.index("## CI patch audit")
-    return doc[start:doc.index("\n## Status", start)]
+    return " ".join(doc[start:doc.index("\n## Status", start)].split())
 
 
 def test_the_three_real_prs_read_as_their_records_say():
     section = _section()
     wm = json.loads((RECORDS / "watchman-40" / "verdict.json").read_text())
     lp = json.loads((RECORDS / "lp-to-jira-16" / "verdict.json").read_text())
-    assert f"{wm['verdict']} at {wm['suspect_score']:.2f}, {len(wm['checks_completed'])} checks completed" in section
+    assert f"watchman-pairing-assistant#40`: `{wm['verdict']}` at {wm['suspect_score']:.2f}.**" in section
+    assert f"{len(wm['checks_completed'])} checks completed with no infrastructure error" in section
     assert wm["checks_infra"] == [] and wm["infra_detail"] == {}
     ev = lp["evidence"][0]
-    assert f"**{lp['verdict']} at {lp['suspect_score']:.2f}**" in section
-    assert f"`{ev['rule']}` row ({ev['category']}) on `{ev['location']}`" in section
+    assert f"lp-to-jira#16`: `{lp['verdict']}` at {lp['suspect_score']:.2f}," in section
+    assert f"`{ev['rule']}` finding ({ev['category']}) on `{ev['location']}`" in section
     assert lp["checks_infra"] == ["t1_coverage"]
     assert "dynamic_context" in lp["infra_detail"]["t1_coverage"]
     # two orthogonal facts, both stated: the verdict, and the check that could not run
@@ -30,11 +31,11 @@ def test_the_three_real_prs_read_as_their_records_say():
     manifest = json.loads((RECORDS / "manifest.json").read_text())
     lp_pr = manifest["prs"]["hkhonming/lp-to-jira#16"]
     assert lp_pr["status"] == "ok" and lp_pr["exit"] == 2 and lp_pr["checks_infra"] == ["t1_coverage"]
-    assert "Run status stays `ok` and the CLI exits 2" in section
-    assert "`checks_infra` names\n`t1_coverage`" in section
+    assert "`FAIL` and exit 2 independently of the coverage error" in section
+    assert "`checks_infra` named `t1_coverage`" in section
     refusal = (RECORDS / "nexus_student_hub-1" / "refusal.txt").read_text()
     assert "Unsupported project" in refusal and "exit=3" in refusal
-    assert "exit 3" in section and "before an image is built" in section
+    assert "exit 3" in section and "before building an image" in section
 
 
 def test_the_records_carry_no_host_path():

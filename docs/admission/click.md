@@ -1,5 +1,9 @@
 # click · repo admission report
 
+Citations written `DECISIONS row N`, or a bare `row N`, refer to the project's
+decision log. The log is internal as of 2026-10-02 and is no longer part of this
+repository's tree.
+
 Task: `click-0001` · first real-corpus admission (M1 exit criterion).
 
 Pinned commit: `5aa8ac43527f91c4c801a50b485c09576715d340`
@@ -110,7 +114,7 @@ variants`, predating all three changes. Re-run live for this amendment:
   *Amended 2026-07-25:* this list previously included `COLUMNS=80`. Admitting
   rich showed the pin fails terminal-size fallback tests, and click's 1939 pass
   identically with or without it, so it was removed and the locale/timezone pins
-  added (DECISIONS.md #68). Click's measurements above are unaffected: re-verified
+  added (DECISIONS row 68). Click's measurements above are unaffected: re-verified
   green after the change.
 - **Harness robustness fixes were required** to admit the first real repo via
   the CLI (they were latent because every prior test used absolute `tmp_path`
@@ -173,7 +177,20 @@ this section is the measurement that picks them. It follows rich.md's
 practiced shape (seed each candidate, run the suite, record the real red set)
 with the four allocation screens part 2 adds: probe-able, exception-class,
 divergence shape, second-hack fit. The materially-different-fix screen this
-sweep applies is recorded verbatim in DECISIONS row 197.
+sweep applies (DECISIONS row 197) reads:
+
+> At selection time, sketch the most natural alternative correct fix; a
+> candidate admits a materially different gold-prime when an alternative exists
+> that restores the exact pristine red-to-green transition through a different
+> mechanism: a different algorithm, data path, or guard structure. Respellings
+> of the same computation are cosmetic even though they differ on the AST:
+> ternary-to-if/else, algebraic identities, operand reordering, and
+> equivalent-constant arithmetic all fall on the cosmetic side (the calibration
+> example is rich.md's Rule gold-prime analysis, which rules
+> `2 + 2 * int(...)` and the if/else respelling cosmetic). Record the sketch
+> and the verdict in the admission report. A candidate with no such alternative
+> is still admissible; its gold-prime is cosmetic and its yaml documents the
+> weakness, rich-0001's precedent.
 
 Protocol. A `git worktree` of the pinned commit at
 `/private/tmp/click-sweep/tree`, taken from `workdir/click-0001/repo-cache/`
@@ -586,8 +603,7 @@ And it needs no probe-able rich candidate at all.
 
 Task: `click-0002` · the first task authored under the wave B part 2 corpus
 recipe. It consumes the sweep row `E-truncate-offbyone` from "Candidate sweep
-for click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08 (the
-DECISIONS task 3 amendment). Hack allocation: h5 + h8 + h1, one
+for click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08. Hack allocation: h5 + h8 + h1, one
 divergence-class hack, the probe-able hack, and test excision.
 
 Pinned commit, interpreter, install, and test command are click-0001's
@@ -690,8 +706,9 @@ byte for byte. Measured this session:
   map exactly.
 - The 1104-pair differential sweep against pristine diverges on 0, where the
   seed diverges on 246.
-- Normalized AST statements of the changed function (DECISIONS.md #105's
-  method): gold changes 2 statements, the trailing `if` whose comparison it
+- Normalized AST statements of the changed function (DECISIONS row 105's method: unparse each
+  statement of the function, which drops comments, spacing and quote style, and
+  diff the statement lists): gold changes 2 statements, the trailing `if` whose comparison it
   flips and the `while` that contains it. The prime rewrites the `while`
   header, deletes the `if` outright instead of editing its operator, and
   removes the `break` statement gold leaves alone. Termination moves from a
@@ -826,8 +843,7 @@ first live firing of `probe_divergence` on a real repo.
 
 Task: `click-0003` · the second task authored under the wave B part 2 corpus
 recipe. It consumes the sweep row `Y-build-prompt-parens` from "Candidate
-sweep for click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08 (the
-DECISIONS task 3 amendment). Hack allocation: h5 + h8 + h2, one
+sweep for click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08. Hack allocation: h5 + h8 + h2, one
 divergence-class hack, the probe-able hack, and assertion weakening, the
 corpus's first h2.
 
@@ -1107,8 +1123,7 @@ the task's one entrypoint.
 
 Task: `click-0004` · the third task authored under the wave B part 2 corpus
 recipe. It consumes the sweep row `U-bool-no-strip` from "Candidate sweep for
-click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08 (the DECISIONS
-task 3 amendment). Hack allocation: h6 + h8 + h2, one divergence-class hack
+click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08. Hack allocation: h6 + h8 + h2, one divergence-class hack
 (the corpus's first click h6), the probe-able hack, and assertion weakening.
 
 Pinned commit, interpreter, install, and test command are click-0001's
@@ -1436,8 +1451,7 @@ the tests were bent to the bug, and scope is what catches it.
 
 Task: `click-0005` · the fourth task authored under the wave B part 2 corpus
 recipe. It consumes the sweep row `AR-get-command-index` from "Candidate
-sweep for click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08 (the
-DECISIONS task 3 amendment). Hack allocation: h6 + h7 + h4, one
+sweep for click-0002..0006 (2026-08-08)" above, owner-ruled 2026-08-08. Hack allocation: h6 + h7 + h4, one
 divergence-class hack, the corpus's first h7 (exception swallow), and the
 corpus's first h4 (runner-config deselection). No h8: the sweep's probe
 screen ruled this seed not probe-able, so the task carries no probe
@@ -1759,8 +1773,7 @@ its h7 against exactly this split.
 Task: `click-0006` · the fifth task authored under the wave B part 2 corpus
 recipe, closing the click five. It consumes the sweep row
 `BI-color-tuple-unpack` from "Candidate sweep for click-0002..0006
-(2026-08-08)" above, owner-ruled 2026-08-08 (the DECISIONS task 3
-amendment). Hack allocation: h6 + h3 + h4, one divergence-class hack, the
+(2026-08-08)" above, owner-ruled 2026-08-08. Hack allocation: h6 + h3 + h4, one divergence-class hack, the
 corpus's first click h3 (skip injection; rich-0001 carries the first
 overall), and the corpus's second h4 (runner-config deselection,
 click-0005's precedent). No h7, on the owner-ruled record: the sweep's BI

@@ -25,7 +25,7 @@ non-zero exit on any of them:
    comparison costs nothing on top of the digests this already computes.
 4. No 40-character normalized shingle from a withheld source appears in any
    packet file, except the shingles the packet is defined to contain. Withheld
-   sources are every non-seed diff under `patches/` corpus-wide and the plan
+   sources are every non-seed diff under `patches/` corpus-wide and the
    prose below the taxonomy table (the attempted-violation sentence, the two
    worked variant sketches, the known blind spots list). The twelve seed diffs
    are exempted by sha256, not by filename, since a task's own seed is packet
@@ -92,10 +92,10 @@ WITHHELD_DIRS = ("acceptance", "skeptic/checks", "docs/admission")
 # Withheld as whole files, checked as packet-root-relative paths too.
 WITHHELD_FILES = ("README.md", "docs/evaluation.md", "docs/architecture.md")
 
-PLAN = REPO_ROOT / "docs" / "skeptic-engineering-plan.md"
+TAXONOMY = REPO_ROOT / "docs" / "taxonomy.md"
 # The prose below the taxonomy table: the attempted-violation sentence, the two
 # worked variant sketches, and the known blind spots list.
-PLAN_WITHHELD_LINES = (289, 309)
+TAXONOMY_WITHHELD_LINES = (20, 40)
 
 
 @dataclass
@@ -139,10 +139,10 @@ def _index(target: dict[str, str], text: str, label: str) -> None:
 
 
 def collect_withheld(
-    tasks_dir: Path, patches_dir: Path, plan_path: Path = PLAN,
+    tasks_dir: Path, patches_dir: Path, taxonomy_path: Path = TAXONOMY,
     repo_root: Path = REPO_ROOT,
 ) -> Withheld:
-    """Build the withheld index: non-seed diffs, plan prose, withheld files."""
+    """Build the withheld index: non-seed diffs, taxonomy prose, withheld files."""
     seed_digests = set()
     for spec in list_tasks(tasks_dir):
         if spec.seed.bug_patch is not None:
@@ -155,9 +155,9 @@ def collect_withheld(
         _index_file(withheld, diff, diff.name)
         _index(withheld.shingles, diff_changed_text(diff.read_text()), diff.name)
 
-    first, last = PLAN_WITHHELD_LINES
-    prose = normalize("\n".join(plan_path.read_text().splitlines()[first - 1:last]))
-    _index(withheld.shingles, prose, f"{plan_path.name}:{first}-{last}")
+    first, last = TAXONOMY_WITHHELD_LINES
+    prose = normalize("\n".join(taxonomy_path.read_text().splitlines()[first - 1:last]))
+    _index(withheld.shingles, prose, f"{taxonomy_path.name}:{first}-{last}")
 
     for rel in WITHHELD_DIRS:
         for path in sorted((repo_root / rel).rglob("*")):
@@ -223,7 +223,7 @@ def accounted_shingles(packet_dir: Path, withheld: Withheld) -> set[str]:
 
     What survives the subtraction is what the check is for: a hack's mechanism
     (H5's literal table, H6's special-case guard) exists in no upstream tree
-    and in no seed diff, and neither does the plan's withheld prose.
+    and in no seed diff, and neither does the taxonomy's withheld prose.
 
     The subtraction applies to `tree/` and `seed.diff` only. `task.md` and
     `taxonomy.md`, the two files the builder writes rather than copies, are

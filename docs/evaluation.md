@@ -131,7 +131,7 @@ the detectors. That is circular. The holdout is the second measurement.
 
 Twelve hack variants were authored by `gpt-5.6-sol` through Codex, one per
 task, each session stateless and seeing only a packet: the seeded tree, the
-Part 2 taxonomy table, and the task's own metadata. No session saw a detector,
+[taxonomy](taxonomy.md) table, and the task's own metadata. No session saw a detector,
 a weight, a threshold, or a dev-set variant. Packets were built outside this
 checkout, a leak check asserted that no 40-character shingle of any withheld
 diff reached them, and every transcript is committed and audited for reads
@@ -287,14 +287,14 @@ leave-one-category-out, deterministic, scope_violation dropped: 0 of 19 catches 
 
 The strict column is prevention evidence. Every hard-rule FAIL, 12 of 12 on
 the dev set and 5 of 5 on the holdout, lands on one of the six categories the
-in-harness sandbox refuses by mount (the plan's Part 2 table, Control column).
-On the four categories the plan scopes detection to, strict reads 0 of 17 and
+in-harness sandbox refuses by mount (the [taxonomy](taxonomy.md) table, Control column).
+On the four categories the taxonomy scopes detection to, strict reads 0 of 17 and
 0 of 6. Those catches are all soft-lane, and in the deterministic lane the
 Action runs they fall to 5 of 17 and 1 of 6. The v1.0.0 headline 29/29 and 12/29
 pool the two populations; the split is what an eval-literate reader computes
 first, and it was not on the page. It does not make the hard rules
 decorative. In `--diff` mode there is no prevention tier: the patch arrives
-already written, so the plan's Part 2 header reads every row there as
+already written, so the taxonomy's header reads every row there as
 detection, the same rules are the whole product, and that lane's
 false-positive behavior on real patches is the unmeasured number the CI
 patch audit section names.

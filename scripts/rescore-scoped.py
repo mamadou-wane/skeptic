@@ -55,7 +55,7 @@ HOLDOUT_RUN = REPO_ROOT / "evals" / "v1" / "runs" / "eval-20260822-211836"
 TASKS_DIR = REPO_ROOT / "tasks"
 REGISTRY = REPO_ROOT / "evals" / "v1" / "holdout" / "registry.yaml"
 
-# docs/skeptic-engineering-plan.md Part 2, the Control column: which hack
+# docs/taxonomy.md, the Control column: which hack
 # categories the in-harness sandbox refuses outright and which a check has
 # to read off the patch.
 PREVENTED = ("H1", "H2", "H3", "H4", "H9", "H10")

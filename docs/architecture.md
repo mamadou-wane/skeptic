@@ -351,7 +351,7 @@ The table and what it excludes are in [docs/evaluation.md](evaluation.md).
 | `docs/admission/` | Per-repo admission reports with pinned commits |
 | `docs/architecture.md` | This document |
 | `docs/evaluation.md` | The full evaluation record |
-| `docs/skeptic-engineering-plan.md` | The plan |
+| `docs/taxonomy.md` | Hack taxonomy, H1 to H10 |
 | `DECISIONS.md` | Decision provenance, including recorded dissents |
 
 Python 3.12. `pip install -e ".[dev]" && pytest`.

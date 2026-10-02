@@ -8,7 +8,7 @@ are fixed by the M6 spec's blind-holdout section:
                   the way admission does it (`clone_pinned`, `materialize`,
                   then the seed patch, all through `seedcheck._fresh_seeded`)
                   and chmod'd read-only afterwards
-    taxonomy.md   the engineering plan's Part 2 table, columns ID / Name /
+    taxonomy.md   the `docs/taxonomy.md` table, columns ID / Name /
                   What the patch does / Seed recipe
     task.md       task id, repo and pinned commit, install and test commands,
                   config_files, golden_dirs, problem statement, allowed_paths,
@@ -18,7 +18,7 @@ are fixed by the M6 spec's blind-holdout section:
 Withheld, and never written here: `notes_private`, the `verification` block,
 `evaluation.variants`, `acceptance/`, every non-seed diff under `patches/`,
 `skeptic/checks/`, `docs/admission/`, README.md, `docs/evaluation.md`,
-`docs/architecture.md`, and the plan's prose below the taxonomy table (the
+`docs/architecture.md`, and the prose below the taxonomy table (the
 attempted-violation sentence, the two worked variant sketches, the known
 blind spots list). The Control column, both detector
 columns and the Tier column are withheld with them: tiers are defined as
@@ -64,27 +64,26 @@ from skeptic.seedcheck import _fresh_seeded
 from skeptic.spec import TaskSpec, find_task
 from skeptic.workspace import clone_pinned
 
-PLAN = REPO_ROOT / "docs" / "skeptic-engineering-plan.md"
+TAXONOMY = REPO_ROOT / "docs" / "taxonomy.md"
 
-# The plan's Part 2 table: header, separator, then H1 through H10. Pinned by
-# line number because the spec names the range, and located by header text so
-# an edit above the table moves the range and fails here instead of silently
-# excerpting the wrong twelve lines.
+# The taxonomy table: header, separator, then H1 through H10. Pinned by line
+# number and located by header text, so an edit above the table moves the
+# range and fails here instead of silently excerpting the wrong twelve lines.
 TAXONOMY_HEADER = "| ID | Name | What the patch does | Seed recipe |"
-TAXONOMY_LINES = (276, 287)
+TAXONOMY_LINES = (7, 18)
 TAXONOMY_COLUMNS = 8
 KEPT_COLUMNS = 4
 
 
-def taxonomy_excerpt(plan_path: Path = PLAN) -> str:
-    """The Part 2 table reduced to its first four columns."""
-    lines = plan_path.read_text().splitlines()
+def taxonomy_excerpt(taxonomy_path: Path = TAXONOMY) -> str:
+    """The taxonomy table reduced to its first four columns."""
+    lines = taxonomy_path.read_text().splitlines()
     starts = [i for i, line in enumerate(lines, 1) if line.startswith(TAXONOMY_HEADER)]
     if len(starts) != 1:
         raise SkepticInfraError(
-            f"expected exactly one taxonomy table header in {plan_path}, found "
+            f"expected exactly one taxonomy table header in {taxonomy_path}, found "
             f"{len(starts)} at lines {starts}. The packet excerpts that table "
-            f"and nothing else. Next: check the plan's Part 2 heading."
+            f"and nothing else. Next: check the table's header row."
         )
     first = starts[0]
     last = first
@@ -92,11 +91,10 @@ def taxonomy_excerpt(plan_path: Path = PLAN) -> str:
         last += 1
     if (first, last) != TAXONOMY_LINES:
         raise SkepticInfraError(
-            f"the taxonomy table is at lines {first}-{last} of {plan_path}, not "
-            f"the pinned {TAXONOMY_LINES[0]}-{TAXONOMY_LINES[1]}. The M6 spec "
-            f"names that range, so a moved table means the spec and the plan "
-            f"disagree about what a packet shows. Next: reconcile them, then "
-            f"update TAXONOMY_LINES."
+            f"the taxonomy table is at lines {first}-{last} of {taxonomy_path}, not "
+            f"the pinned {TAXONOMY_LINES[0]}-{TAXONOMY_LINES[1]}. A moved table "
+            f"means an edit changed what a packet shows. Next: review the "
+            f"edit, then update TAXONOMY_LINES."
         )
     rows = []
     for line in lines[first - 1:last]:
@@ -167,7 +165,7 @@ already applied in `tree/`.
 
 
 def build_packet(
-    spec: TaskSpec, packet_dir: Path, repo_cache: Path, plan_path: Path = PLAN
+    spec: TaskSpec, packet_dir: Path, repo_cache: Path, taxonomy_path: Path = TAXONOMY
 ) -> str:
     """Build one packet and return its sha256.
 
@@ -183,7 +181,7 @@ def build_packet(
     packet_dir.mkdir(parents=True)
     repo = clone_pinned(spec.repo.url, spec.repo.commit, repo_cache)
     tree = _fresh_seeded(spec, repo, packet_dir / "tree")
-    (packet_dir / "taxonomy.md").write_text(taxonomy_excerpt(plan_path))
+    (packet_dir / "taxonomy.md").write_text(taxonomy_excerpt(taxonomy_path))
     (packet_dir / "task.md").write_text(render_task_md(spec))
     shutil.copyfile(Path(spec.seed.bug_patch), packet_dir / "seed.diff")
     _make_readonly(tree)

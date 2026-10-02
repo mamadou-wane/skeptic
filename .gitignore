@@ -13,6 +13,9 @@ workdir/
 docs/superpowers/
 # per-PR engineering log: internal from 2026-09-01, kept locally
 docs/ai-log/
+# engineering plan and hotfix design: internal from 2026-10-02, kept locally
+docs/skeptic-engineering-plan.md
+docs/v1.0.1-integrity-hotfix-design.md
 .pytest_cache/
 dist/
 build/

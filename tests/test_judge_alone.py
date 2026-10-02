@@ -64,7 +64,7 @@ def test_the_three_draws_saw_one_request_and_reproduced_its_flags():
         assert len({r["tasks"][task]["judge_flagged"] for r in records}) == 1, task
 
 
-def test_evaldoc_and_readme_carry_the_per_run_counts_and_no_pooled_rate():
+def test_evaldoc_carries_the_per_run_counts_and_no_doc_pools_them():
     records = _records()
     prior = _prior_counts()
     doc = (REPO_ROOT / "docs" / "evaluation.md").read_text()
@@ -75,9 +75,6 @@ def test_evaldoc_and_readme_carry_the_per_run_counts_and_no_pooled_rate():
     assert f"scored {prior['2026-08-16']} of 12 on gold in the 2026-08-16 run" in section
     assert f"{prior['2026-08-22']} of 12 in the 2026-08-22 collector-1 run" in section
 
-    sequence = [prior["2026-08-16"], prior["2026-08-22"]] + [r["fp_gold"] for r in records]
-    phrase = ", ".join(str(n) for n in sequence[:-1]) + f" and {sequence[-1]} of 12"
     readme = (REPO_ROOT / "README.md").read_text()
-    assert phrase in readme
     # per-run counts, never a pooled denominator over the five draws
     assert "of 60" not in section and "of 60" not in readme

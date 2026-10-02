@@ -1,9 +1,9 @@
 """`scripts/rescore-deterministic.py` against the committed published run,
 checked two ways: its own fixed shape (task 4 brief's expected-answer
 cross-check, the adversarial panel's independent 16/29 rescore) and against
-the figures docs/evaluation.md's "CI patch audit" section and the README's
-CI summary cite, so none of the three can drift apart silently. Pure offline
-rescoring of a committed snapshot: no live network, no Docker, no API key."""
+the figures docs/evaluation.md's "CI patch audit" section cites, so the two
+cannot drift apart silently. Pure offline rescoring of a committed snapshot:
+no live network, no Docker, no API key."""
 import re
 import subprocess
 import sys
@@ -42,8 +42,8 @@ def _parse_script_output(output: str) -> tuple[str, str, dict[str, str]]:
     return lenient, strict, categories
 
 
-def _ci_section(path: str = "docs/evaluation.md") -> str:
-    doc = (REPO_ROOT / path).read_text()
+def _ci_section() -> str:
+    doc = (REPO_ROOT / "docs" / "evaluation.md").read_text()
     start = doc.index("## CI patch audit")
     end = doc.index("\n## ", start + 1)
     return doc[start:end]
@@ -79,17 +79,3 @@ def test_evaldoc_ci_section_cites_the_scripts_own_output_verbatim():
     # verified here rather than assumed.
     assert paid_strict == EXPECTED_STRICT
     assert paid_strict in section
-
-
-def test_readme_ci_summary_cites_the_scripts_figures():
-    """The README keeps a one-sentence summary of the lane comparison; its
-    figures are derived here from the script and the run, never pinned, so
-    the front page cannot drift from either."""
-    lenient, strict, _ = _parse_script_output(_run_script())
-    section = _ci_section("README.md")
-    assert lenient in section
-    assert strict in section
-
-    paid_rows = evalkit.load_rows(RUN_DIR, TASKS_DIR)
-    paid_lenient_hits, paid_lenient_n = evalkit.detection(paid_rows)
-    assert f"{paid_lenient_hits}/{paid_lenient_n}" in section

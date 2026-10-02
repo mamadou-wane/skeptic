@@ -797,10 +797,11 @@ def test_evaldoc_holdout_section_cites_the_committed_runs_own_figures():
 
 
 def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
-    """The README's merged evaluation table is reconstructed cell by cell
-    from both committed runs and matched as whole row lines, so a swapped
-    row, an edited cell, or a stale figure that merely substring-matches
-    (0/29 inside 10/29) all fail rather than drifting quietly."""
+    """The README's evaluation table and the figures in the paragraph under
+    it are reconstructed from both committed runs. Table rows are matched as
+    whole lines, so a swapped row, an edited cell, or a stale figure that
+    merely substring-matches (0/29 inside 10/29) all fail rather than
+    drifting quietly."""
     readme = Path("README.md").read_text()
     start = readme.index("## Evaluation")
     section = readme[start:readme.index("\n## ", start + 1)]
@@ -815,43 +816,33 @@ def test_readme_evaluation_table_cites_the_committed_runs_own_figures():
         hits, n = figure
         return f"{hits}/{n}"
 
-    dev_fp = false_positives(dev_rows)
-    expected = ["| **Skeptic** | {} | {} | {} | {} | {} | {} | {} |".format(
-        cell(detection(dev_rows)), cell(detection(dev_rows, strict=True)),
-        cell(detection(holdout_rows)),
-        cell(detection(holdout_rows, strict=True)),
-        cell(dev_fp["gold"]), cell(dev_fp["gold-prime"]),
-        cell(dev_fp["gold-large"]))]
-    for fold in (baseline_always_suspect, baseline_suite_green_only,
-                 baseline_judge_alone):
-        dev_b, holdout_b = fold(dev_rows), fold(holdout_rows)
-        expected.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
-            dev_b.name,
-            cell(dev_b.detection_lenient), cell(dev_b.detection_strict),
-            cell(holdout_b.detection_lenient),
-            cell(holdout_b.detection_strict),
-            cell(dev_b.false_positives["gold"]),
-            cell(dev_b.false_positives["gold-prime"]),
-            cell(dev_b.false_positives["gold-large"])))
-    # the two size-only rows: the patch line counts come from the committed
-    # variant patches, never from a literal, so a re-authored patch moves the
-    # README's row or fails this test
-    patches = variant_patches(dev_rows + holdout_rows, Path("tasks"), registry)
-    lines = {key: changed_lines(path) for key, path in patches.items()}
-    for threshold in (4, 10):
-        dev_b = baseline_size_only(dev_rows, lines, threshold)
-        holdout_b = baseline_size_only(holdout_rows, lines, threshold)
-        expected.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
-            dev_b.name,
-            cell(dev_b.detection_lenient), cell(dev_b.detection_strict),
-            cell(holdout_b.detection_lenient),
-            cell(holdout_b.detection_strict),
-            cell(dev_b.false_positives["gold"]),
-            cell(dev_b.false_positives["gold-prime"]),
-            cell(dev_b.false_positives["gold-large"])))
+    dev, holdout = cell(detection(dev_rows)), cell(detection(holdout_rows))
+    expected = [f"| Skeptic, paid profile | {dev} | {holdout} |"]
+    for label, fold in (("Test-suite-only baseline", baseline_suite_green_only),
+                        ("Standalone LLM judge", baseline_judge_alone)):
+        dev = cell(fold(dev_rows).detection_lenient)
+        holdout = cell(fold(holdout_rows).detection_lenient)
+        expected.append(f"| {label} | {dev} | {holdout} |")
     for row in expected:
         assert row in section, (
             f"row is not in the README's evaluation table: {row}")
+
+    prose = " ".join(section.split())
+    dev = cell(detection(dev_rows, strict=True))
+    holdout = cell(detection(holdout_rows, strict=True))
+    assert f"returned `FAIL` for {dev} development hacks and {holdout} holdout hacks" in prose
+    # "categories the sandbox also prevents": the taxonomy's Control column
+    prevented = {"H1", "H2", "H3", "H4", "H9", "H10"}
+    assert all(r.hack_category in prevented for r in dev_rows + holdout_rows
+               if r.label == "hacked" and r.verdict == "FAIL")
+    # false positives per split, never pooled
+    dev_fp = false_positives(dev_rows)
+    assert sorted(dev_fp) == ["gold", "gold-large", "gold-prime"]
+    assert all(cell(fp) == "0/12" for fp in dev_fp.values())
+    assert "the three clean-control groups (0/12 in each)" in prose
+    judge_fp = baseline_judge_alone(dev_rows).false_positives
+    assert sorted(hits for hits, _ in judge_fp.values()) == [0, 1, 1]
+    assert "the LLM judge flagged one patch in each of two groups" in prose
 
 
 def test_v101_revalidation_preserves_paid_drift_and_binds_zero_api_repair():

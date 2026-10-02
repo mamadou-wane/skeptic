@@ -1,6 +1,6 @@
-"""docs/evaluation.md's footprint table, the README's and docs/architecture.md's
-figures, and the M7 bar are read against the committed record, the way every
-other published figure is bound to the run it came from."""
+"""docs/evaluation.md's footprint table, docs/architecture.md's figures, and
+the M7 bar are read against the committed record, the way every other
+published figure is bound to the run it came from."""
 import importlib.util
 import json
 import re
@@ -63,16 +63,11 @@ def test_evaldoc_footprint_table_cites_the_committed_record():
     assert RECORD.name in section
 
 
-def test_readme_and_architecture_carry_the_records_own_figures():
+def test_architecture_carries_the_records_own_figures():
     record = _record()
     totals, sizes = record["totals"], record["sizes_bytes"]
     demo_s = f"{totals['clone_to_demo_s']:.0f}"
     first_s = f"{totals['clone_to_first_verdict_s']:.0f}"
-
-    readme = (REPO_ROOT / "README.md").read_text()
-    start = readme.index("## Getting started")
-    section = readme[start:readme.index("\n## How it works", start)]
-    assert _carries(section, demo_s) and _carries(section, first_s)
 
     arch = (REPO_ROOT / "docs" / "architecture.md").read_text()
     start = arch.index("Footprint anchor")

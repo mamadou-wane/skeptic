@@ -457,8 +457,7 @@ release itself is a separate decision. The other nine sit here. The runs, in ord
 
 The block below is `scripts/paid-repeats.py`'s output over the ten runs,
 machine-generated; do not reflow it. `tests/test_paid_repeats.py` recomputes
-every cell from the raw `verdict.json` files and binds this section and the
-README to it.
+every cell from the raw `verdict.json` files and binds this section to it.
 
 verifier_revision b18754bfacc3, collector_version 4, ten fresh workdirs, total spend $20.4120
 

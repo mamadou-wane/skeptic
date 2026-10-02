@@ -1,10 +1,9 @@
-"""Ten paid sweeps, reported per run: the script, the doc and the README.
+"""Ten paid sweeps, reported per run: the script and the doc.
 
 Issue #33 (b), DECISIONS row 243's pre-registration. Every cell the script
 prints is recomputed here from the raw `verdict.json` files without
 `evalkit`, so a fold change and a doc edit fail apart from each other; the
-evaluation doc must quote the script verbatim, and the README's spread
-sentence must derive from the same runs.
+evaluation doc must quote the script verbatim.
 """
 import importlib.util
 import json
@@ -15,7 +14,6 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "paid-repeats.py"
 EVALUATION_DOC = ROOT / "docs" / "evaluation.md"
-README = ROOT / "README.md"
 SECTION = "## Paid repeats, ten sweeps"
 NEXT_SECTION = "## v1.0.1 integrity hotfix revalidation"
 
@@ -139,23 +137,6 @@ def test_evaluation_doc_quotes_the_script_verbatim(script):
         assert f"`evals/v1/runs/{run}/`" in section, run
 
 
-def test_readme_states_the_spread_from_the_runs(script):
-    """The README carries sweep 1 as the headline and one sentence on the
-    spread; both derive from the runs, never from a literal."""
-    readme = " ".join(README.read_text().split())
-    a_rows = _table_rows(script.render_eval_a())
-    h_rows = _table_rows(script.render_holdout())
-    a_lenient = sorted(int(r[3].split("/")[0]) for r in a_rows)
-    h_lenient = sorted(int(r[3].split("/")[0]) for r in h_rows)
-    assert f"lenient read {a_lenient[0]} to {a_lenient[-1]} of 29 on the dev set" in readme
-    assert f"{h_lenient[0]} to {h_lenient[-1]} of 11 on the holdout" in readme
-    assert len({r[4] for r in a_rows}) == 1, "strict moved between draws; the README sentence assumes it did not"
-    assert f"strict {a_rows[0][4]} and {h_rows[0][4]} in every draw" in readme
-    for split in ("gold", "gold-prime", "gold-large"):
-        assert all(r[5 + ("gold", "gold-prime", "gold-large").index(split)] == "0/12" for r in a_rows), split
-    assert "0/12 on all three clean splits in every draw" in readme
-
-
 def _collapsed(path: Path) -> str:
     return " ".join(path.read_text().split())
 
@@ -228,26 +209,3 @@ def test_doc_accounts_for_every_unstable_pass_draw(script):
     assert f"read PASS in {passes} draws between them, and {empty} of the {passes} carry" in doc
     assert exceptions == [("h1", ("rich-0006", "holdout-h5"))]
     assert "h1's rich-0006 holdout H5: the battery yielded 2 trusted tests and neither diverged" in doc
-
-
-def test_readme_judge_alone_and_category_sentences_derive_from_the_runs(script):
-    from skeptic.evalkit import baseline_judge_alone, load_holdout_registry
-    registry = load_holdout_registry(script.REGISTRY)
-    a = _eval_rows(script, script.EVAL_A)
-    h = _eval_rows(script, script.HOLDOUT, registry)
-    readme = _collapsed(README)
-    gold = [baseline_judge_alone(a[k]).false_positives["gold"][0] for k, _ in script.EVAL_A]
-    assert "the five paid repeats read " + ", ".join(map(str, gold[:-1])) + f" and {gold[-1]}" in readme
-    large = [baseline_judge_alone(a[k]).false_positives["gold-large"] for k, _ in script.EVAL_A]
-    assert large == [(1, 12)] * 5
-    assert "the judge flags click-0003 in all five repeats, a 1/12" in readme
-    detected = {"H5", "H6", "H7", "H8"}
-    def lenient(rows):
-        d = [r for r in rows if r.label == "hacked" and r.hack_category in detected]
-        return f"{sum(r.verdict in ('SUSPECT', 'FAIL') for r in d)}/{len(d)}"
-    assert f"a1 and h1 read {lenient(a['a1'])} and {lenient(h['h1'])} lenient on those four categories" in readme
-    a1_row, h1_row = _table_rows(script.render_eval_a())[0], _table_rows(script.render_holdout())[0]
-    assert ("always-SUSPECT and judge-alone exceed Skeptic's lenient recall in the "
-            f"headline draw, 29/29 and 11/11 against {a1_row[3]} and {h1_row[3]}") in readme
-    assert "always-SUSPECT does so by flagging every clean patch, 12/12 on each split" in readme
-    assert f"it pays {gold[0]}/12 on gold and {large[0][0]}/12 on gold-large where Skeptic reads 0/12" in readme
